@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hardware_pipeline
+      POSTGRES_USER: hardware_pipeline
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hardware_pipeline"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Hardware Pipeline Application
+  app:
+    build: .
+    ports:
+      - "8000:8000"   # FastAPI
+      - "8501:8501"   # Streamlit
+    environment:
+      - DATABASE_URL=postgresql://hardware_pipeline:password@db:5432/hardware_pipeline
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./output:/app/output
+      - ./chroma_data:/app/chroma_data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
