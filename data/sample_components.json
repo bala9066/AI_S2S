@@ -1,0 +1,97 @@
+{
+  "components": [
+    {
+      "part_number": "STM32F407VGT6",
+      "manufacturer": "STMicroelectronics",
+      "description": "ARM Cortex-M4 32-bit MCU, 168MHz, 1MB Flash, 192KB RAM",
+      "category": "MCU",
+      "key_specs": {
+        "Core": "ARM Cortex-M4",
+        "Clock": "168 MHz",
+        "Flash": "1 MB",
+        "RAM": "192 KB",
+        "Voltage": "1.8V to 3.6V",
+        "Packages": "LQFP-100"
+      },
+      "datasheet_url": "https://www.st.com/resource/en/datasheet/stm32f407vg.pdf",
+      "lifecycle_status": "active",
+      "estimated_cost_usd": 12.50,
+      "rohs_compliant": true,
+      "search_text": "ARM microcontroller MCU 32-bit Cortex-M4 168MHz 1MB Flash 192KB RAM LQFP-100"
+    },
+    {
+      "part_number": "AMS1117-3.3",
+      "manufacturer": "AMS",
+      "description": "1A Low Dropout Regulator, 3.3V Fixed Output",
+      "category": "Power",
+      "key_specs": {
+        "Output Voltage": "3.3V",
+        "Output Current": "1A",
+        "Dropout Voltage": "1.1V @ 1A",
+        "Input Voltage": "4.75V to 15V",
+        "Packages": "SOT-223, TO-252"
+      },
+      "datasheet_url": "https://ams.com/documents/20143/36002/AMS1117_DS.pdf",
+      "lifecycle_status": "active",
+      "estimated_cost_usd": 0.15,
+      "rohs_compliant": true,
+      "search_text": "LDO voltage regulator 3.3V 1A low dropout power supply AMS1117"
+    },
+    {
+      "part_number": "MPU-6050",
+      "manufacturer": "TDK InvenSense",
+      "description": "6-Axis Motion Tracking Device, 3-Axis Gyro + 3-Axis Accelerometer",
+      "category": "Sensor",
+      "key_specs": {
+        "Gyro Range": "±250 to ±2000 °/s",
+        "Accel Range": "±2 to ±16 g",
+        "Interface": "I2C/SPI",
+        "Voltage": "2.375V to 3.46V",
+        "Packages": "QFN-24"
+      },
+      "datasheet_url": "https://www.invensense.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf",
+      "lifecycle_status": "active",
+      "estimated_cost_usd": 3.50,
+      "rohs_compliant": true,
+      "search_text": "IMU gyroscope accelerometer motion sensor 6-axis I2C SPI MPU6050"
+    },
+    {
+      "part_number": "nRF24L01+",
+      "manufacturer": "Nordic Semiconductor",
+      "description": "2.4GHz RF Transceiver, 250kbps-2Mbps",
+      "category": "Wireless",
+      "key_specs": {
+        "Frequency": "2.4GHz",
+        "Data Rate": "250Kbps, 1Mbps, 2Mbps",
+        "Output Power": "-18dBm to 0dBm",
+        "Interface": "SPI",
+        "Voltage": "1.9V to 3.6V",
+        "Range": "100m (outdoor)"
+      },
+      "datasheet_url": "https://www.nordicsemi.com/products/nrf24l01-plus",
+      "lifecycle_status": "active",
+      "estimated_cost_usd": 2.00,
+      "rohs_compliant": true,
+      "search_text": "2.4GHz wireless transceiver RF module SPI nRF24"
+    },
+    {
+      "part_number": "DRV8313",
+      "manufacturer": "Texas Instruments",
+      "description": "Three-Phase Brushless DC Motor Pre-Driver",
+      "category": "Motor Driver",
+      "key_specs": {
+        "Motor Type": "BLDC",
+        "Phases": "3",
+        "Max Current": "1.7A peak per phase",
+        "Input Voltage": "8V to 60V",
+        "Interface": "SPI/PWM",
+        "Packages": "HTSSOP-28"
+      },
+      "datasheet_url": "https://www.ti.com/lit/ds/symlink/drv8313.pdf",
+      "lifecycle_status": "active",
+      "estimated_cost_usd": 5.00,
+      "rohs_compliant": true,
+      "search_text": "BLDC motor driver 3-phase predriver PWM SPI DRV8313"
+    }
+  ]
+}

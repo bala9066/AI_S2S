@@ -219,7 +219,7 @@ class BaseAgent(ABC):
                 },
             )
             response.raise_for_status()
-            data = response.json()
+            data = await response.json()
 
         return {
             "content": data.get("message", {}).get("content", ""),
@@ -245,18 +245,21 @@ class BaseAgent(ABC):
             glm_messages.append({"role": "system", "content": system})
         glm_messages.extend(messages)
 
+        if not settings.glm_api_key:
+            raise RuntimeError("GLM API key not configured")
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                headers={"Authorization": f"Bearer {settings.anthropic_api_key}"},
+                f"{settings.glm_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.glm_api_key}"},
                 json={
-                    "model": "glm-4",
+                    "model": settings.glm_model,
                     "messages": glm_messages,
                     "max_tokens": max_tokens,
                 },
             )
             response.raise_for_status()
-            data = response.json()
+            data = await response.json()
 
         choice = data.get("choices", [{}])[0]
         return {

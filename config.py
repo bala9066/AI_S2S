@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # --- LLM API Keys ---
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    glm_api_key: str = Field(default="", alias="GLM_API_KEY")
 
     # --- LLM Models ---
     primary_model: str = Field(default="claude-opus-4-6", alias="PRIMARY_MODEL")
@@ -25,6 +26,17 @@ class Settings(BaseSettings):
     # --- Ollama (Air-Gap) ---
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen2.5-coder:32b", alias="OLLAMA_MODEL")
+
+    # --- GLM-4 (Last Resort) ---
+    glm_base_url: str = Field(default="https://open.bigmodel.cn/api/paas/v4", alias="GLM_BASE_URL")
+    glm_model: str = Field(default="glm-4", alias="GLM_MODEL")
+
+    # --- Component Search APIs ---
+    digikey_client_id: str = Field(default="", alias="DIGIKEY_CLIENT_ID")
+    digikey_client_secret: str = Field(default="", alias="DIGIKEY_CLIENT_SECRET")
+    digikey_api_url: str = Field(default="https://api.digikey.com/v3", alias="DIGIKEY_API_URL")
+    mouser_api_key: str = Field(default="", alias="MOUSER_API_KEY")
+    mouser_api_url: str = Field(default="https://api.mouser.com/api/v2", alias="MOUSER_API_URL")
 
     # --- Database ---
     database_url: str = Field(
