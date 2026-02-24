@@ -18,18 +18,20 @@ class Settings(BaseSettings):
     glm_api_key: str = Field(default="", alias="GLM_API_KEY")
 
     # --- LLM Models ---
-    primary_model: str = Field(default="claude-opus-4-6", alias="PRIMARY_MODEL")
-    fast_model: str = Field(default="claude-haiku-4-5-20251001", alias="FAST_MODEL")
+    # Defaults to GLM-4.7 if no Anthropic key; override with PRIMARY_MODEL env var
+    primary_model: str = Field(default="glm-4.7", alias="PRIMARY_MODEL")
+    fast_model: str = Field(default="glm-4-flash", alias="FAST_MODEL")
     fallback_model: str = Field(default="ollama/qwen2.5-coder:32b", alias="FALLBACK_MODEL")
-    last_resort_model: str = Field(default="glm-4", alias="LAST_RESORT_MODEL")
+    last_resort_model: str = Field(default="glm-4.7", alias="LAST_RESORT_MODEL")
 
     # --- Ollama (Air-Gap) ---
     ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen2.5-coder:32b", alias="OLLAMA_MODEL")
 
-    # --- GLM-4 (Last Resort) ---
-    glm_base_url: str = Field(default="https://open.bigmodel.cn/api/paas/v4", alias="GLM_BASE_URL")
-    glm_model: str = Field(default="glm-4", alias="GLM_MODEL")
+    # --- GLM / Z.AI (primary when no Anthropic key) ---
+    glm_base_url: str = Field(default="https://api.z.ai/api/anthropic", alias="GLM_BASE_URL")
+    glm_model: str = Field(default="glm-4.7", alias="GLM_MODEL")
+    glm_fast_model: str = Field(default="glm-4-flash", alias="GLM_FAST_MODEL")
 
     # --- Component Search APIs ---
     digikey_client_id: str = Field(default="", alias="DIGIKEY_CLIENT_ID")
@@ -90,9 +92,14 @@ class Settings(BaseSettings):
         ]
 
     @property
+    def has_any_llm_key(self) -> bool:
+        """True if at least one cloud LLM API key is configured."""
+        return bool(self.anthropic_api_key or self.glm_api_key)
+
+    @property
     def is_air_gapped(self) -> bool:
-        """Check if running in air-gapped mode (no API keys)."""
-        return not self.anthropic_api_key
+        """True when running fully offline (no cloud LLM keys)."""
+        return not self.has_any_llm_key
 
     @property
     def api_base_url(self) -> str:
@@ -105,11 +112,11 @@ class Settings(BaseSettings):
         Returns dict of {provider: (is_configured, status_icon)}
         """
         return {
-            "Anthropic": (bool(self.anthropic_api_key), "✅" if self.anthropic_api_key else "❌"),
-            "OpenAI": (bool(self.openai_api_key), "✅" if self.openai_api_key else "❌"),
-            "GLM-4": (bool(self.glm_api_key), "✅" if self.glm_api_key else "❌"),
-            "DigiKey": (bool(self.digikey_client_id and self.digikey_client_secret), "✅" if self.digikey_client_id else "❌"),
-            "Mouser": (bool(self.mouser_api_key), "✅" if self.mouser_api_key else "❌"),
+            "Anthropic": (bool(self.anthropic_api_key), "✅" if self.anthropic_api_key else "⬜"),
+            "GLM / Z.AI": (bool(self.glm_api_key), "✅" if self.glm_api_key else "⬜"),
+            "OpenAI": (bool(self.openai_api_key), "✅" if self.openai_api_key else "⬜"),
+            "DigiKey": (bool(self.digikey_client_id and self.digikey_client_secret), "✅" if self.digikey_client_id else "⬜"),
+            "Mouser": (bool(self.mouser_api_key), "✅" if self.mouser_api_key else "⬜"),
         }
 
     model_config = {

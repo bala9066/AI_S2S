@@ -1,16 +1,19 @@
 """
-Hardware Pipeline - Streamlit Main Entry Point
+Hardware Pipeline — Streamlit UI
+High-level, professional UX with draft-approve flow for Phase 1.
 """
 
-import streamlit as st
-from pathlib import Path
-import httpx
+import asyncio
 import logging
+from pathlib import Path
 
-# Configure logging
+import httpx
+import streamlit as st
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Hardware Pipeline",
     page_icon="⚡",
@@ -18,428 +21,674 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ─── Custom CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Global */
+[data-testid="stAppViewContainer"] { background: #0f1117; }
+[data-testid="stSidebar"] { background: #161b22; border-right: 1px solid #30363d; }
 
-def main():
-    # Initialize tab from query params (allows programmatic switching)
-    if "tab" not in st.query_params:
-        st.query_params["tab"] = "new"
-    current_tab = st.query_params["tab"]
+/* Phase status pills */
+.phase-pill {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 2px 0;
+}
+.phase-pending  { background:#21262d; color:#8b949e; }
+.phase-active   { background:#1f4e8a; color:#58a6ff; }
+.phase-done     { background:#1a4731; color:#3fb950; }
+.phase-failed   { background:#4c1d1d; color:#f85149; }
 
-    # Sidebar
-    with st.sidebar:
-        st.title("Hardware Pipeline")
-        st.caption("AI-Powered Hardware Design Automation")
-        st.divider()
+/* Pipeline progress bar */
+.pipeline-bar {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 16px 0;
+}
+.pipe-step {
+    flex: 1;
+    text-align: center;
+    padding: 8px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    border-top: 3px solid #30363d;
+    color: #8b949e;
+}
+.pipe-step.done  { border-color: #3fb950; color: #3fb950; }
+.pipe-step.active{ border-color: #58a6ff; color: #58a6ff; }
 
-        st.markdown("### Pipeline Phases")
-        phases = [
-            ("1️⃣", "Requirements Capture", "P1"),
-            ("2️⃣", "HRS Generation", "P2"),
-            ("3️⃣", "Compliance Validation", "P3"),
-            ("4️⃣", "Netlist Generation", "P4"),
-            ("5️⃣", "PCB Layout (Manual)", "P5"),
-            ("6️⃣", "GLR Generation", "P6"),
-            ("7️⃣", "FPGA HDL (Manual)", "P7"),
-            ("8a", "SRS Generation", "P8a"),
-            ("8b", "SDD Generation", "P8b"),
-            ("8c", "Code Generation", "P8c"),
-        ]
+/* Draft approval card */
+.approval-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+}
 
-        # Show phase status if project is loaded
-        if "current_project" in st.session_state:
-            project = st.session_state.current_project
-            statuses = project.get("phase_statuses", {})
-            for icon, name, phase_id in phases:
-                status = statuses.get(phase_id, {}).get("status", "pending")
-                status_icon = {
-                    "pending": "⬜", "in_progress": "🔄",
-                    "completed": "✅", "failed": "❌", "skipped": "⏭️"
-                }.get(status, "⬜")
-                st.text(f"{status_icon} {icon} {name}")
-        else:
-            for icon, name, _ in phases:
-                st.text(f"⬜ {icon} {name}")
-
-        st.divider()
-        st.markdown("### System Info")
-        try:
-            from config import settings
-            st.text(f"Mode: {'Air-Gapped' if settings.is_air_gapped else 'Online'}")
-            st.text(f"Primary: {settings.primary_model}")
-            st.text(f"Fast: {settings.fast_model}")
-
-            st.divider()
-            st.markdown("### API Key Status")
-            api_status = settings.get_api_key_status()
-            configured_count = sum(1 for is_configured, _ in api_status.values() if is_configured)
-            st.caption(f"{configured_count}/{len(api_status)} configured")
-            for provider, (_, icon) in api_status.items():
-                st.text(f"{icon} {provider}")
-        except ImportError:
-            st.text("Config not loaded")
-        except Exception as e:
-            st.text(f"Config error: {e}")
-
-    # Main content
-    st.title("Hardware Pipeline")
-    st.markdown("**AI-Powered Hardware Design Automation** | IEEE Compliant | Air-Gap Ready")
-    st.divider()
-
-    # Tab definitions with icons
-    tabs = {
-        "new": "📝 New Project",
-        "chat": "💬 Design Chat",
-        "docs": "📄 Documents",
-        "netlist": "🔌 Netlist Viewer",
-        "code": "🔍 Code Review",
-        "dashboard": "📊 Dashboard",
-    }
-
-    # Render tab buttons
-    cols = st.columns(len(tabs))
-    for i, (key, label) in enumerate(tabs.items()):
-        with cols[i]:
-            if st.button(label, use_container_width=True, type="primary" if key == current_tab else "secondary"):
-                st.query_params["tab"] = key
-                st.rerun()
-
-    st.divider()
-
-    # Render active tab content
-    if current_tab == "new":
-        render_new_project()
-    elif current_tab == "chat":
-        render_design_chat()
-    elif current_tab == "docs":
-        render_documents()
-    elif current_tab == "netlist":
-        render_netlist_viewer()
-    elif current_tab == "code":
-        render_code_review()
-    elif current_tab == "dashboard":
-        render_dashboard()
+/* Metric cards */
+.metric-card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 14px 18px;
+    text-align: center;
+}
+.metric-card .metric-value { font-size: 28px; font-weight: 700; color: #58a6ff; }
+.metric-card .metric-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+</style>
+""", unsafe_allow_html=True)
 
 
-def _create_project_directly(name: str, description: str, design_type: str) -> None:
-    """Helper function to create project directly in database."""
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+PHASE_META = [
+    ("P1",  "1", "Requirements",    "agents.requirements_agent"),
+    ("P2",  "2", "HRS Document",    None),
+    ("P3",  "3", "Compliance",      None),
+    ("P4",  "4", "Netlist",         None),
+    ("P5",  "5", "PCB (Manual)",    None),
+    ("P6",  "6", "GLR",             None),
+    ("P7",  "7", "FPGA (Manual)",   None),
+    ("P8a", "8a","SRS",             None),
+    ("P8b", "8b","SDD",             None),
+    ("P8c", "8c","Code + Review",   None),
+]
+
+APPROVAL_KEYWORDS = {"approve", "approved", "yes", "ok", "okay", "looks good",
+                     "good", "correct", "proceed", "go ahead", "lgtm", "perfect", "great"}
+
+
+def _is_approval(text: str) -> bool:
+    return any(kw in text.lower() for kw in APPROVAL_KEYWORDS)
+
+
+def _phase_status(statuses: dict, pid: str) -> str:
+    return statuses.get(pid, {}).get("status", "pending")
+
+
+def _create_project_db(name: str, description: str, design_type: str):
     from database.models import get_session, ProjectDB
-
     session = get_session()
     project_dir = Path("output") / name.replace(" ", "_").lower()
     project_dir.mkdir(parents=True, exist_ok=True)
-    db_proj = ProjectDB(
-        name=name, description=description,
-        design_type=design_type, output_dir=str(project_dir),
-    )
+    db_proj = ProjectDB(name=name, description=description,
+                        design_type=design_type, output_dir=str(project_dir))
     session.add(db_proj)
     session.commit()
-    st.session_state.current_project = {
-        "id": db_proj.id, "name": name, "output_dir": str(project_dir)
-    }
-    st.session_state.project_id = db_proj.id
+    result = {"id": db_proj.id, "name": name, "design_type": design_type,
+              "output_dir": str(project_dir), "phase_statuses": {}}
     session.close()
-    st.success(f"Project '{name}' created locally!")
-    # Auto-switch to Design Chat tab
-    st.query_params["tab"] = "chat"
-    st.rerun()
+    return result
 
+
+# ─── Sidebar ─────────────────────────────────────────────────────────────────
+
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("## ⚡ Hardware Pipeline")
+        st.caption("AI-Powered Hardware Design Automation")
+        st.divider()
+
+        # Current project info
+        if "current_project" in st.session_state:
+            proj = st.session_state.current_project
+            st.markdown(f"**Project:** {proj.get('name', '—')}")
+            st.markdown(f"**Type:** `{proj.get('design_type', '—')}`")
+            st.divider()
+
+            # Phase status list
+            st.markdown("### Pipeline Status")
+            statuses = proj.get("phase_statuses", {})
+            for pid, num, name, _ in PHASE_META:
+                status = _phase_status(statuses, pid)
+                icon = {"pending": "⬜", "in_progress": "🔄",
+                        "completed": "✅", "failed": "❌", "skipped": "⏭️"}.get(status, "⬜")
+                css  = {"pending": "phase-pending", "in_progress": "phase-active",
+                        "completed": "phase-done", "failed": "phase-failed"}.get(status, "phase-pending")
+                st.markdown(
+                    f'<span class="phase-pill {css}">{icon} P{num} {name}</span>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No project loaded. Create one to begin.")
+
+        st.divider()
+
+        # System info
+        st.markdown("### System")
+        try:
+            from config import settings
+            mode_color = "#f85149" if settings.is_air_gapped else "#3fb950"
+            mode_label = "🔴 Air-Gapped" if settings.is_air_gapped else "🟢 Online"
+            st.markdown(f"**Mode:** {mode_label}")
+            st.caption(f"Primary: `{settings.primary_model}`")
+            st.caption(f"Fast: `{settings.fast_model}`")
+            st.divider()
+            st.markdown("### API Keys")
+            for provider, (ok, icon) in settings.get_api_key_status().items():
+                st.caption(f"{icon} {provider}")
+        except Exception as e:
+            st.caption(f"Config error: {e}")
+
+
+# ─── Tab nav ─────────────────────────────────────────────────────────────────
+
+TABS = {
+    "overview":   "🏠 Overview",
+    "new":        "➕ New Project",
+    "chat":       "💬 Design Chat",
+    "docs":       "📄 Documents",
+    "netlist":    "🔌 Netlist",
+    "code":       "🔍 Code Review",
+    "dashboard":  "📊 Dashboard",
+}
+
+
+def render_tab_nav():
+    current = st.query_params.get("tab", "overview")
+    cols = st.columns(len(TABS))
+    for i, (key, label) in enumerate(TABS.items()):
+        with cols[i]:
+            btn_type = "primary" if key == current else "secondary"
+            if st.button(label, use_container_width=True, type=btn_type, key=f"tab_{key}"):
+                st.query_params["tab"] = key
+                st.rerun()
+    st.divider()
+    return current
+
+
+# ─── Overview ────────────────────────────────────────────────────────────────
+
+def render_overview():
+    st.markdown("## Welcome to Hardware Pipeline")
+    st.markdown("**AI-Powered Hardware Design Automation** — From requirements to production-ready code.")
+    st.markdown("")
+
+    # Pipeline visual
+    st.markdown("### End-to-End Design Pipeline")
+    statuses = {}
+    if "current_project" in st.session_state:
+        statuses = st.session_state.current_project.get("phase_statuses", {})
+
+    steps_html = '<div class="pipeline-bar">'
+    for pid, num, name, _ in PHASE_META:
+        status = _phase_status(statuses, pid)
+        css = "done" if status == "completed" else ("active" if status == "in_progress" else "")
+        steps_html += f'<div class="pipe-step {css}">P{num}<br>{name}</div>'
+    steps_html += "</div>"
+    st.markdown(steps_html, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # Feature cards
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown("#### 📋 IEEE Docs")
+        st.caption("HRS (29148), SRS (830), SDD (1016) — audit-ready, traceable requirements")
+    with c2:
+        st.markdown("#### 🔌 Netlist")
+        st.caption("Visual connectivity graph before PCB layout, with DRC checks via NetworkX")
+    with c3:
+        st.markdown("#### ✅ Compliance")
+        st.caption("RoHS / REACH / FCC rules engine with PASS / FAIL / REVIEW status")
+    with c4:
+        st.markdown("#### 💻 Code Gen")
+        st.caption("C/C++ drivers + test suites, reviewed with tree-sitter AST analysis")
+
+    st.divider()
+
+    # Quick actions
+    st.markdown("### Quick Start")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("➕ New Project", use_container_width=True, type="primary"):
+            st.query_params["tab"] = "new"
+            st.rerun()
+    with col2:
+        if st.button("📊 Dashboard", use_container_width=True):
+            st.query_params["tab"] = "dashboard"
+            st.rerun()
+    with col3:
+        if st.button("📄 Documents", use_container_width=True):
+            st.query_params["tab"] = "docs"
+            st.rerun()
+
+
+# ─── New Project ─────────────────────────────────────────────────────────────
 
 def render_new_project():
-    """New project creation form."""
-    st.header("Create New Project")
+    st.markdown("## ➕ New Project")
+    st.caption("Create a project and jump straight into the AI design chat.")
+    st.markdown("")
 
-    with st.form("new_project_form"):
-        name = st.text_input("Project Name", placeholder="e.g., BLDC Motor Controller 10kW")
-        description = st.text_area(
-            "Description",
-            placeholder="Brief description of the hardware design project..."
-        )
-        design_type = st.selectbox(
-            "Design Type",
-            ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
-            help="Helps the AI tailor its questions and component recommendations"
-        )
+    with st.form("new_project_form", clear_on_submit=False):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            name = st.text_input("Project Name *",
+                                 placeholder="e.g., BLDC Motor Controller 10kW")
+            description = st.text_area("Description",
+                                       placeholder="Brief description of the hardware design…",
+                                       height=100)
+        with col2:
+            design_type = st.selectbox(
+                "Design Type *",
+                ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
+                help="Helps the AI tailor component recommendations",
+            )
+            st.markdown("")
+            st.markdown("")
+            submitted = st.form_submit_button("🚀 Create & Start", type="primary",
+                                              use_container_width=True)
 
-        submitted = st.form_submit_button("Create Project", type="primary")
+        if submitted:
+            if not name.strip():
+                st.error("Project name is required.")
+                return
 
-        if submitted and name:
             from config import settings
-            api_url = f"{settings.api_base_url}/api/v1/projects"
-
-            with st.spinner("Creating project..."):
+            with st.spinner("Creating project…"):
                 try:
                     with httpx.Client(timeout=10.0) as client:
                         resp = client.post(
-                            api_url,
-                            json={"name": name, "description": description, "design_type": design_type},
+                            f"{settings.api_base_url}/api/v1/projects",
+                            json={"name": name, "description": description,
+                                  "design_type": design_type},
                         )
                         if resp.status_code == 200:
                             result = resp.json()
                             st.session_state.current_project = result
                             st.session_state.project_id = result["id"]
-                            st.success(f"Project '{name}' created!")
-                            # Auto-switch to Design Chat tab
+                            _reset_chat()
+                            st.success(f"✅ Project '{name}' created!")
                             st.query_params["tab"] = "chat"
                             st.rerun()
-                        elif resp.status_code in (400, 422):
-                            st.error(f"Validation error: {resp.text}")
-                        elif resp.status_code == 500:
-                            st.error("Server error. Please try again or contact support.")
                         else:
-                            st.error(f"Error {resp.status_code}: {resp.text}")
+                            st.error(f"API error {resp.status_code}: {resp.text}")
                 except httpx.ConnectError:
-                    # Fallback: direct DB creation without API
-                    st.warning("API server not running. Creating project directly...")
-                    _create_project_directly(name, description, design_type)
-                except httpx.TimeoutException:
-                    st.error("Request timed out. The API server may be busy.")
-                except httpx.HTTPError as e:
-                    st.error(f"HTTP error: {e}")
+                    st.warning("API server not running — creating locally…")
+                    result = _create_project_db(name, description, design_type)
+                    st.session_state.current_project = result
+                    st.session_state.project_id = result["id"]
+                    _reset_chat()
+                    st.success(f"✅ Project '{name}' created locally!")
+                    st.query_params["tab"] = "chat"
+                    st.rerun()
                 except Exception as e:
-                    logger.exception("Unexpected error creating project")
-                    st.error(f"Unexpected error: {e}")
+                    logger.exception("Error creating project")
+                    st.error(f"Error: {e}")
+
+
+# ─── Design Chat (Phase 1) ────────────────────────────────────────────────────
+
+def _reset_chat():
+    st.session_state.chat_messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "👋 **Welcome to Hardware Pipeline!**\n\n"
+                "Tell me what you want to design — I'll instantly generate a **draft block diagram** "
+                "for you to review. No long questionnaires.\n\n"
+                "**Examples:**\n"
+                "- *3-phase BLDC motor controller, 10kW, 48V bus*\n"
+                "- *RF amplifier, 40dBm output, 2.4GHz*\n"
+                "- *48V → 3.3V/5V/12V power supply, 200W total*\n\n"
+                "Just describe your design and I'll produce a draft in seconds. ⚡"
+            ),
+        }
+    ]
+    st.session_state.draft_pending = False
+    st.session_state.current_draft = None
+    st.session_state.phase1_complete = False
 
 
 def render_design_chat():
-    """Phase 1: Conversational requirements capture."""
-    st.header("Design Chat - Requirements Capture")
+    st.markdown("## 💬 Design Chat — Phase 1: Requirements")
 
     if "project_id" not in st.session_state:
-        st.info("Create a project first in the 'New Project' tab.")
+        st.info("Create a project first in **New Project**.")
+        if st.button("➕ Create Project", type="primary"):
+            st.query_params["tab"] = "new"
+            st.rerun()
         return
 
-    # Show phase completion status if previously completed
+    proj = st.session_state.current_project
+    st.caption(f"Project: **{proj.get('name')}** · Type: `{proj.get('design_type', 'general')}`")
+
+    # ── Phase complete banner ─────────────────────────────────────────────────
     if st.session_state.get("phase1_complete"):
-        st.success("✅ **Phase 1 Complete!** Requirements have been captured.")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📄 View Generated Documents", use_container_width=True):
+        st.success("✅ **Phase 1 Complete!** All requirement documents generated.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("📄 View Documents", use_container_width=True, type="primary"):
                 st.query_params["tab"] = "docs"
                 st.rerun()
-        with col2:
-            if st.button("🔄 Start New Requirements Chat", use_container_width=True):
-                st.session_state.chat_messages = []
-                st.session_state.phase1_complete = False
+        with c2:
+            if st.button("🔌 View Netlist", use_container_width=True):
+                st.query_params["tab"] = "netlist"
+                st.rerun()
+        with c3:
+            if st.button("🔄 New Chat", use_container_width=True):
+                _reset_chat()
                 st.rerun()
         st.divider()
 
-    # Initialize chat history
+    # Initialise chat
     if "chat_messages" not in st.session_state:
-        st.session_state.chat_messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "Welcome to Hardware Pipeline! I'm your AI design assistant.\n\n"
-                    "Tell me about the hardware you want to design. For example:\n"
-                    "- *'Design a 3-phase BLDC motor controller with 10kW output, 48V bus'*\n"
-                    "- *'I need an RF amplifier with 40dBm output at 2.4GHz'*\n"
-                    "- *'Design a power supply: 48V input, 3.3V/5V/12V outputs, 200W total'*\n\n"
-                    "I'll ask clarifying questions to understand your requirements fully."
-                ),
-            }
-        ]
+        _reset_chat()
 
-    # Display chat messages
+    # ── Chat history ──────────────────────────────────────────────────────────
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Chat input
-    if user_input := st.chat_input("Describe your hardware design..."):
-        # Add user message
-        st.session_state.chat_messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    # ── Approval buttons (shown when a draft is pending) ──────────────────────
+    if st.session_state.get("draft_pending") and not st.session_state.get("phase1_complete"):
+        st.markdown("")
+        col_a, col_b = st.columns([1, 2])
+        with col_a:
+            if st.button("✅ Approve — Generate Full Docs", type="primary",
+                         use_container_width=True, key="btn_approve"):
+                _handle_chat_input("Approved. Please generate the full requirements documents.")
+        with col_b:
+            change_text = st.text_input("Or describe changes…", key="change_input",
+                                        placeholder="e.g., change voltage to 24V, add CAN bus interface")
+            if st.button("🔄 Apply Changes", use_container_width=True, key="btn_changes"):
+                if change_text.strip():
+                    _handle_chat_input(change_text.strip())
 
-        # Get AI response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    import asyncio
-                    from agents.requirements_agent import RequirementsAgent
+    # ── Chat input ────────────────────────────────────────────────────────────
+    elif not st.session_state.get("phase1_complete"):
+        if user_input := st.chat_input("Describe your hardware design…"):
+            _handle_chat_input(user_input)
 
-                    agent = RequirementsAgent()
-                    project = st.session_state.current_project
 
-                    result = asyncio.run(agent.execute(
-                        project_context={
-                            "project_id": project.get("id"),
-                            "name": project.get("name", ""),
-                            "design_type": project.get("design_type", "general"),
-                            "conversation_history": st.session_state.chat_messages,
-                            "output_dir": project.get("output_dir", "output"),
-                        },
-                        user_input=user_input,
-                    ))
+def _handle_chat_input(user_input: str):
+    """Process a user message through the RequirementsAgent."""
+    st.session_state.chat_messages.append({"role": "user", "content": user_input})
 
-                    response = result.get("response", "I'm processing your request...")
-                    st.markdown(response)
-                    st.session_state.chat_messages.append(
-                        {"role": "assistant", "content": response}
-                    )
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-                    # Show generated outputs if phase complete
-                    if result.get("phase_complete"):
-                        st.session_state.phase1_complete = True
-                        st.balloons()  # Celebration animation
-                        st.success("✅ **Phase 1 Complete!** Requirements captured successfully.")
+    with st.chat_message("assistant"):
+        with st.spinner("⚡ Generating draft…"):
+            try:
+                from agents.requirements_agent import RequirementsAgent
 
-                        # Show generated files with better formatting
-                        if result.get("outputs"):
-                            st.markdown("### 📁 Generated Documents")
-                            cols = st.columns(min(4, len(result["outputs"])))
-                            for i, fname in enumerate(result["outputs"].keys()):
-                                with cols[i % len(cols)]:
-                                    st.info(f"**{fname}**")
+                agent = RequirementsAgent()
+                proj = st.session_state.current_project
 
-                            with st.expander("📄 View Document Contents", expanded=False):
-                                for fname, content in result["outputs"].items():
-                                    st.markdown(f"**{fname}**")
-                                    st.code(content, language="markdown", height=200)
+                result = asyncio.run(agent.execute(
+                    project_context={
+                        "project_id": proj.get("id"),
+                        "name": proj.get("name", ""),
+                        "design_type": proj.get("design_type", "general"),
+                        "conversation_history": st.session_state.chat_messages,
+                        "output_dir": proj.get("output_dir", "output"),
+                    },
+                    user_input=user_input,
+                ))
 
-                            # Add action buttons
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                if st.button("📄 View Documents", use_container_width=True):
-                                    st.query_params["tab"] = "docs"
-                                    st.rerun()
-                            with col2:
-                                if st.button("🔄 New Chat", use_container_width=True):
-                                    st.session_state.chat_messages = []
-                                    st.session_state.phase1_complete = False
-                                    st.rerun()
-                            with col3:
-                                st.markdown("*Phase 1 done!*")
+                response = result.get("response", "Processing…")
+                st.markdown(response)
+                st.session_state.chat_messages.append(
+                    {"role": "assistant", "content": response}
+                )
 
-                except ImportError as e:
-                    error_msg = f"Module not found: {e}. Please ensure all dependencies are installed."
-                    logger.error(f"Import error: {e}")
-                    st.error(error_msg)
-                except asyncio.TimeoutError:
-                    error_msg = "The AI request timed out. Please try again."
-                    st.error(error_msg)
-                except ConnectionError as e:
-                    error_msg = "Connection error. Please check your network and API keys."
-                    logger.error(f"Connection error: {e}")
-                    st.error(error_msg)
-                except Exception as e:
-                    logger.exception("Unexpected error in design chat")
-                    st.error(f"Error: {str(e)}")
+                # Update draft state
+                if result.get("draft_pending"):
+                    st.session_state.draft_pending = True
+                    st.session_state.current_draft = result.get("draft", {})
 
+                # Phase complete
+                if result.get("phase_complete"):
+                    st.session_state.phase1_complete = True
+                    st.session_state.draft_pending = False
+                    st.balloons()
+                    st.success("✅ **Phase 1 Complete!**")
+                    if result.get("outputs"):
+                        with st.expander("📁 Generated Files", expanded=True):
+                            for fname in result["outputs"]:
+                                st.markdown(f"- 📄 `{fname}`")
+                    st.rerun()
+
+            except ImportError as e:
+                st.error(f"Module missing: {e}")
+            except Exception as e:
+                logger.exception("Chat error")
+                st.error(f"Error: {e}")
+
+
+# ─── Documents ───────────────────────────────────────────────────────────────
 
 def render_documents():
-    """View and download generated documents (HRS, SRS, SDD, GLR)."""
-    st.header("Generated Documents")
+    st.markdown("## 📄 Generated Documents")
 
     if "project_id" not in st.session_state:
-        st.info("Create a project first.")
+        st.info("No project loaded.")
         return
 
-    project = st.session_state.get("current_project", {})
-    output_dir = Path(project.get("output_dir", "output"))
+    proj = st.session_state.get("current_project", {})
+    output_dir = Path(proj.get("output_dir", "output"))
 
     if not output_dir.exists():
-        st.info("No documents generated yet. Complete the design phases first.")
+        st.info("No documents yet — complete Phase 1 in Design Chat.")
         return
 
-    # Find all .md files in output
     md_files = sorted(output_dir.glob("*.md"))
     if not md_files:
         st.info("No documents generated yet.")
         return
 
+    # Summary metrics row
+    cols = st.columns(len(md_files) if len(md_files) <= 4 else 4)
+    for i, f in enumerate(md_files[:4]):
+        with cols[i]:
+            size_kb = f.stat().st_size / 1024
+            st.markdown(
+                f'<div class="metric-card">'
+                f'<div class="metric-value">{size_kb:.1f}KB</div>'
+                f'<div class="metric-label">{f.name}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+    st.markdown("")
+
+    # Document viewer
     for md_file in md_files:
-        with st.expander(f"📄 {md_file.name}", expanded=False):
+        with st.expander(f"📄 {md_file.stem.replace('_', ' ').title()}", expanded=False):
             content = md_file.read_text(encoding="utf-8")
-            st.markdown(content)
+            tab_view, tab_raw = st.tabs(["Rendered", "Raw Markdown"])
+            with tab_view:
+                st.markdown(content)
+            with tab_raw:
+                st.code(content, language="markdown")
             st.download_button(
-                label=f"Download {md_file.name}",
+                label=f"⬇️ Download {md_file.name}",
                 data=content,
                 file_name=md_file.name,
                 mime="text/markdown",
-                key=f"download_{md_file.name}",
+                key=f"dl_{md_file.name}",
             )
 
 
-def render_netlist_viewer():
-    """Phase 4: Interactive netlist visualization."""
-    st.header("Netlist Viewer")
+# ─── Netlist Viewer ──────────────────────────────────────────────────────────
+
+def render_netlist():
+    st.markdown("## 🔌 Netlist Viewer — Phase 4")
 
     if "project_id" not in st.session_state:
-        st.info("Create a project first.")
+        st.info("No project loaded.")
         return
 
-    project = st.session_state.get("current_project", {})
-    output_dir = Path(project.get("output_dir", "output"))
+    proj = st.session_state.get("current_project", {})
+    output_dir = Path(proj.get("output_dir", "output"))
     netlist_file = output_dir / "netlist_visual.md"
 
     if netlist_file.exists():
         content = netlist_file.read_text(encoding="utf-8")
         st.markdown(content)
+        st.download_button("⬇️ Download Netlist", data=content,
+                           file_name="netlist_visual.md", mime="text/markdown")
     else:
-        st.info("Netlist not generated yet. Complete Phases 1-4 first.")
+        st.info("Netlist not generated yet — complete Phases 1–4 first.")
+        st.markdown("""
+**Phase 4 will generate:**
+- `netlist.json` — machine-readable netlist
+- `netlist_visual.md` — Mermaid connectivity diagram
+- `block_diagram.svg` — exportable diagram
 
+Complete Phase 1 (Design Chat) to begin.
+""")
+
+
+# ─── Code Review ─────────────────────────────────────────────────────────────
 
 def render_code_review():
-    """Phase 8c: Code review results."""
-    st.header("Code Review")
+    st.markdown("## 🔍 Code Review — Phase 8c")
 
     if "project_id" not in st.session_state:
-        st.info("Create a project first.")
+        st.info("No project loaded.")
         return
 
-    project = st.session_state.get("current_project", {})
-    output_dir = Path(project.get("output_dir", "output"))
+    proj = st.session_state.get("current_project", {})
+    output_dir = Path(proj.get("output_dir", "output"))
     review_file = output_dir / "code_review_report.md"
 
     if review_file.exists():
         content = review_file.read_text(encoding="utf-8")
         st.markdown(content)
+        st.download_button("⬇️ Download Review Report", data=content,
+                           file_name="code_review_report.md", mime="text/markdown")
     else:
-        st.info("Code not generated yet. Complete all phases first.")
+        st.info("Code not generated yet — complete all phases first.")
+        st.markdown("""
+**Phase 8c will generate:**
+- `drivers/` — C/C++ device driver source files
+- `tests/` — unit and integration tests
+- `code_review_report.md` — quality score + MISRA-C compliance report
+""")
 
+
+# ─── Dashboard ───────────────────────────────────────────────────────────────
 
 def render_dashboard():
-    """Project overview dashboard."""
-    st.header("Dashboard")
+    st.markdown("## 📊 Projects Dashboard")
 
-    # Load all projects
     try:
         from database.models import get_session, ProjectDB
         session = get_session()
         projects = session.query(ProjectDB).order_by(ProjectDB.created_at.desc()).all()
 
         if not projects:
-            st.info("No projects yet. Create one in the 'New Project' tab.")
+            st.info("No projects yet — create one in **New Project**.")
+            session.close()
             return
 
-        for p in projects:
-            with st.expander(f"📁 {p.name} ({p.design_type})", expanded=(len(projects) == 1)):
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Phase", p.current_phase or "P1")
-                col2.metric("Type", p.design_type)
-                col3.metric("Created", p.created_at.strftime("%Y-%m-%d") if p.created_at else "N/A")
+        # Summary metrics
+        total = len(projects)
+        completed = sum(1 for p in projects if p.current_phase == "DONE")
+        in_progress = total - completed
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(
+                f'<div class="metric-card">'
+                f'<div class="metric-value">{total}</div>'
+                f'<div class="metric-label">Total Projects</div>'
+                f'</div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(
+                f'<div class="metric-card">'
+                f'<div class="metric-value">{in_progress}</div>'
+                f'<div class="metric-label">In Progress</div>'
+                f'</div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(
+                f'<div class="metric-card">'
+                f'<div class="metric-value">{completed}</div>'
+                f'<div class="metric-label">Completed</div>'
+                f'</div>', unsafe_allow_html=True)
 
-                if st.button(f"Load Project", key=f"load_{p.id}"):
-                    st.session_state.current_project = {
-                        "id": p.id,
-                        "name": p.name,
-                        "design_type": p.design_type,
-                        "output_dir": p.output_dir,
-                        "phase_statuses": p.phase_statuses or {},
-                    }
-                    st.session_state.project_id = p.id
-                    st.session_state.chat_messages = []
-                    st.rerun()
+        st.markdown("")
+
+        # Project list
+        for p in projects:
+            phase_statuses = p.phase_statuses or {}
+            completed_phases = sum(
+                1 for v in phase_statuses.values() if v.get("status") == "completed"
+            )
+            total_phases = 8  # automated phases
+
+            with st.expander(
+                f"📁 {p.name}  ·  `{p.design_type}`  ·  "
+                f"Phase {p.current_phase or 'P1'}  ·  "
+                f"{completed_phases}/{total_phases} phases done",
+                expanded=False,
+            ):
+                col1, col2, col3 = st.columns([2, 2, 1])
+                with col1:
+                    st.caption(f"**Created:** {p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—'}")
+                    st.caption(f"**Output:** `{p.output_dir}`")
+                with col2:
+                    # Mini phase progress
+                    for pid, num, name, _ in PHASE_META:
+                        status = _phase_status(phase_statuses, pid)
+                        icon = {"completed": "✅", "in_progress": "🔄",
+                                "failed": "❌", "skipped": "⏭️"}.get(status, "⬜")
+                        st.caption(f"{icon} P{num} {name}")
+                with col3:
+                    if st.button("Load →", key=f"load_{p.id}", type="primary",
+                                 use_container_width=True):
+                        st.session_state.current_project = {
+                            "id": p.id,
+                            "name": p.name,
+                            "design_type": p.design_type,
+                            "output_dir": p.output_dir,
+                            "phase_statuses": p.phase_statuses or {},
+                        }
+                        st.session_state.project_id = p.id
+                        _reset_chat()
+                        st.query_params["tab"] = "chat"
+                        st.rerun()
 
         session.close()
+
     except ImportError as e:
         st.error(f"Database module not found: {e}")
-    except OSError as e:
-        st.error(f"Database connection error: {e}")
     except Exception as e:
         logger.exception("Dashboard error")
         st.error(f"Database error: {e}")
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    render_sidebar()
+
+    st.markdown("# ⚡ Hardware Pipeline")
+    st.caption("AI-Powered Hardware Design Automation · IEEE Compliant · Air-Gap Ready")
+    st.divider()
+
+    current_tab = render_tab_nav()
+
+    if current_tab == "overview":
+        render_overview()
+    elif current_tab == "new":
+        render_new_project()
+    elif current_tab == "chat":
+        render_design_chat()
+    elif current_tab == "docs":
+        render_documents()
+    elif current_tab == "netlist":
+        render_netlist()
+    elif current_tab == "code":
+        render_code_review()
+    elif current_tab == "dashboard":
+        render_dashboard()
 
 
 if __name__ == "__main__":

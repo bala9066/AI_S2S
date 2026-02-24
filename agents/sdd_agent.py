@@ -135,24 +135,153 @@ class SDDAgent(BaseAgent):
         }
 
     async def _extract_modules(self, srs: str) -> list:
-        """Extract software modules from SRS."""
-        return [
-            {"name": "Main", "description": "Main application loop", "file": "main.c"},
-            {"name": "HAL", "description": "Hardware abstraction", "file": "hal.c"},
-            {"name": "Drivers", "description": "Device drivers", "file": "drivers/"},
-            {"name": "Comms", "description": "Communication", "file": "comms.c"},
-        ]
+        """Extract software modules from SRS by parsing headers and component names."""
+        import re
+        modules = []
+
+        if not srs:
+            return self._default_modules()
+
+        # Look for section headers (## ...) that indicate modules
+        header_pattern = r'^##\s+([^\n]+?)(?:\s*\(([^)]*)\))?$'
+        matches = re.findall(header_pattern, srs, re.MULTILINE)
+
+        for title, desc in matches:
+            module_name = title.strip()
+            # Skip generic headings
+            if not any(skip in module_name.lower() for skip in ['introduction', 'overview', 'references', 'appendix']):
+                modules.append({
+                    "name": module_name,
+                    "description": desc.strip() if desc else module_name,
+                    "file": module_name.lower().replace(" ", "_") + ".c"
+                })
+
+        # Look for software component patterns
+        component_pattern = r'(?:module|component|driver|subsystem)[\s:]+([A-Za-z0-9_\s]+?)(?:\n|,|;)'
+        components = re.findall(component_pattern, srs, re.IGNORECASE)
+
+        for comp in components:
+            comp_name = comp.strip()
+            if comp_name and len(comp_name) < 50:  # Filter out overly long matches
+                if not any(m["name"].lower() == comp_name.lower() for m in modules):
+                    modules.append({
+                        "name": comp_name,
+                        "description": f"{comp_name} implementation",
+                        "file": comp_name.lower().replace(" ", "_") + ".c"
+                    })
+
+        # Look for common module patterns
+        if not modules:
+            keywords = ['initialization', 'driver', 'control', 'interface', 'handler', 'manager', 'service']
+            for keyword in keywords:
+                if keyword in srs.lower():
+                    modules.append({
+                        "name": keyword.capitalize(),
+                        "description": f"{keyword.capitalize()} module",
+                        "file": keyword + ".c"
+                    })
+
+        return modules if modules else self._default_modules()
 
     async def _extract_interfaces(self, srs: str, glr: str) -> list:
-        """Extract interfaces from SRS/GLR."""
+        """Extract API interfaces from SRS by parsing function signatures and protocol names."""
+        import re
+        interfaces = []
+
+        content = (srs or "") + "\n" + (glr or "")
+        if not content:
+            return self._default_interfaces()
+
+        # Look for function signatures
+        func_pattern = r'(\w+)\s*\(\s*([^)]*?)\s*\)'
+        functions = re.findall(func_pattern, content)
+
+        # Extract unique function names
+        func_names = set()
+        for func_name, params in functions:
+            if func_name and not func_name.startswith('#') and len(func_name) > 2:
+                func_names.add(func_name)
+
+        # Group by protocol/type
+        protocol_funcs = {}
+        protocols = ['UART', 'SPI', 'I2C', 'CAN', 'USB', 'GPIO', 'ADC', 'PWM', 'DMA']
+
+        for protocol in protocols:
+            matching = [f for f in func_names if protocol.lower() in f.lower()]
+            if matching:
+                protocol_funcs[protocol] = matching
+
+        # Build interface list
+        for protocol, funcs in protocol_funcs.items():
+            interfaces.append({
+                "name": protocol,
+                "type": "Hardware",
+                "functions": ", ".join(sorted(list(funcs)[:5]))
+            })
+
+        # Add HAL/abstraction layer if any init/control functions found
+        if any(f in ' '.join(func_names) for f in ['init', 'control', 'config']):
+            if not any(i["name"] == "HAL" for i in interfaces):
+                interfaces.insert(0, {
+                    "name": "HAL",
+                    "type": "Internal",
+                    "functions": "hal_init(), hal_read(), hal_write(), hal_control()"
+                })
+
+        return interfaces if interfaces else self._default_interfaces()
+
+    async def _extract_state_machines(self, srs: str) -> list:
+        """Extract state machines from SRS by parsing state-related keywords."""
+        import re
+        state_machines = []
+
+        if not srs:
+            return self._default_state_machines()
+
+        # Look for state machine mentions
+        sm_pattern = r'(?:state\s+machine|state\s+diagram|states?)[:\s]+([^\n]+)'
+        sm_matches = re.findall(sm_pattern, srs, re.IGNORECASE)
+
+        # Extract state names
+        state_pattern = r'\b(?:init|idle|running|active|sleep|waiting|error|fault|shutdown|standby)\b'
+        states = list(set(re.findall(state_pattern, srs, re.IGNORECASE)))
+
+        if sm_matches:
+            for sm_desc in sm_matches[:3]:  # Limit to 3 state machines
+                state_machines.append({
+                    "name": sm_desc.strip()[:50],
+                    "states": states if states else ["Init", "Idle", "Running", "Error"]
+                })
+
+        if not state_machines:
+            # Fallback: create default state machine if any control/state keywords found
+            if re.search(r'state|mode|status|condition', srs, re.IGNORECASE):
+                state_machines.append({
+                    "name": "Main Control State Machine",
+                    "states": states if states else ["Init", "Idle", "Running", "Error"]
+                })
+
+        return state_machines if state_machines else self._default_state_machines()
+
+    def _default_modules(self) -> list:
+        """Default modules."""
+        return [
+            {"name": "Main", "description": "Main application loop", "file": "main.c"},
+            {"name": "HAL", "description": "Hardware abstraction layer", "file": "hal.c"},
+            {"name": "Drivers", "description": "Device drivers", "file": "drivers.c"},
+            {"name": "Comms", "description": "Communication interface", "file": "comms.c"},
+        ]
+
+    def _default_interfaces(self) -> list:
+        """Default interfaces."""
         return [
             {"name": "HAL", "type": "Internal", "functions": "hal_init(), hal_read(), hal_write()"},
             {"name": "UART", "type": "Hardware", "functions": "uart_init(), uart_send(), uart_recv()"},
             {"name": "SPI", "type": "Hardware", "functions": "spi_transfer()"},
         ]
 
-    async def _extract_state_machines(self, srs: str) -> list:
-        """Extract state machines from SRS."""
+    def _default_state_machines(self) -> list:
+        """Default state machines."""
         return [
             {"name": "Main State Machine", "states": ["Init", "Idle", "Running", "Error"]}
         ]

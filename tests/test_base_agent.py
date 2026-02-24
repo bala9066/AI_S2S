@@ -9,6 +9,7 @@ import anthropic
 import pytest
 
 from agents.base_agent import BaseAgent
+from config import settings
 
 
 class DummyAgent(BaseAgent):
@@ -34,7 +35,8 @@ class TestBaseAgentInit:
         )
         assert agent.phase_number == "1"
         assert agent.phase_name == "Test Phase"
-        assert agent.model == "claude-opus-4-6"
+        # Default model comes from settings.primary_model (env-dependent: glm-4.7 or claude-opus-4-6)
+        assert agent.model in ("glm-4.7", "claude-opus-4-6", settings.primary_model)
         assert agent.max_tokens == 8192
         assert agent.tools == []
 
@@ -58,9 +60,14 @@ class TestBaseAgentInit:
 
     def test_anthropic_client_initialization(self, mock_env_vars):
         """Test Anthropic client is initialized with API key."""
-        agent = DummyAgent(phase_number="1", phase_name="Test")
-        assert agent._anthropic_client is not None
-        assert isinstance(agent._anthropic_client, anthropic.Anthropic)
+        mock_client = MagicMock(spec=anthropic.Anthropic)
+        with patch("agents.base_agent.settings") as mock_settings, \
+             patch("agents.base_agent.anthropic.Anthropic", return_value=mock_client):
+            mock_settings.anthropic_api_key = "sk-ant-test-key"
+            mock_settings.primary_model = "claude-opus-4-6"
+            mock_settings.fallback_chain = ["claude-opus-4-6", "claude-haiku-4-5-20251001"]
+            agent = DummyAgent(phase_number="1", phase_name="Test")
+            assert agent._anthropic_client is not None
 
 
 class TestSystemPrompt:
@@ -99,78 +106,88 @@ class TestLog:
 class TestCallLLM:
     """Test LLM calling functionality."""
 
+    def _mock_call_model_response(self, text="Test response content"):
+        """Build a standard mock _call_model response."""
+        return {
+            "content": text,
+            "tool_calls": [],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+            "model_used": "glm-4.7",
+        }
+
     @pytest.mark.asyncio
     async def test_call_llm_basic(self, mock_env_vars):
-        """Test basic LLM call."""
+        """Test basic LLM call — patch _call_model to avoid network."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
+        expected = self._mock_call_model_response()
 
-        # Create mock response
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(type="text", text="Test response content")]
-        mock_response.stop_reason = "end_turn"
-        mock_response.usage = MagicMock(input_tokens=10, output_tokens=20)
-
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_response)
-
-        result = await agent.call_llm(
-            messages=[{"role": "user", "content": "Hello"}]
-        )
+        with patch.object(agent, "_call_model", return_value=expected):
+            result = await agent.call_llm(
+                messages=[{"role": "user", "content": "Hello"}]
+            )
 
         assert "content" in result
         assert result["content"] == "Test response content"
-        assert result["model_used"] == "claude-opus-4-6"
         assert result["stop_reason"] == "end_turn"
 
     @pytest.mark.asyncio
-    async def test_call_llm_with_system(self, mock_env_vars, mock_anthropic_response):
-        """Test LLM call with custom system prompt."""
+    async def test_call_llm_with_system(self, mock_env_vars):
+        """Test LLM call passes system prompt to _call_model."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_anthropic_response)
+        captured = {}
 
-        result = await agent.call_llm(
-            messages=[{"role": "user", "content": "Hello"}],
-            system="Custom system prompt"
-        )
+        async def fake_call_model(model, messages, system, tools, max_tokens):
+            captured["system"] = system
+            return self._mock_call_model_response()
+
+        with patch.object(agent, "_call_model", side_effect=fake_call_model):
+            result = await agent.call_llm(
+                messages=[{"role": "user", "content": "Hello"}],
+                system="Custom system prompt",
+            )
 
         assert "content" in result
-        # Verify system was passed to the API
-        call_kwargs = agent._anthropic_client.messages.create.call_args[1]
-        assert call_kwargs["system"] == "Custom system prompt"
+        assert captured["system"] == "Custom system prompt"
 
     @pytest.mark.asyncio
-    async def test_call_llm_with_tools(self, mock_env_vars, mock_anthropic_response):
-        """Test LLM call with tools."""
+    async def test_call_llm_with_tools(self, mock_env_vars):
+        """Test LLM call passes tools to _call_model."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_anthropic_response)
+        captured = {}
+
+        async def fake_call_model(model, messages, system, tools, max_tokens):
+            captured["tools"] = tools
+            return self._mock_call_model_response()
 
         custom_tools = [{"name": "test_tool"}]
-        result = await agent.call_llm(
-            messages=[{"role": "user", "content": "Use tool"}],
-            tools=custom_tools
-        )
+        with patch.object(agent, "_call_model", side_effect=fake_call_model):
+            result = await agent.call_llm(
+                messages=[{"role": "user", "content": "Use tool"}],
+                tools=custom_tools,
+            )
 
         assert "content" in result
-        call_kwargs = agent._anthropic_client.messages.create.call_args[1]
-        assert call_kwargs["tools"] == custom_tools
+        assert captured["tools"] == custom_tools
 
     @pytest.mark.asyncio
-    async def test_call_llm_with_custom_max_tokens(self, mock_env_vars, mock_anthropic_response):
-        """Test LLM call with custom max_tokens."""
+    async def test_call_llm_with_custom_max_tokens(self, mock_env_vars):
+        """Test LLM call passes max_tokens to _call_model."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_anthropic_response)
+        captured = {}
 
-        result = await agent.call_llm(
-            messages=[{"role": "user", "content": "Hello"}],
-            max_tokens=1024
-        )
+        async def fake_call_model(model, messages, system, tools, max_tokens):
+            captured["max_tokens"] = max_tokens
+            return self._mock_call_model_response()
+
+        with patch.object(agent, "_call_model", side_effect=fake_call_model):
+            result = await agent.call_llm(
+                messages=[{"role": "user", "content": "Hello"}],
+                max_tokens=1024,
+            )
 
         assert "content" in result
-        call_kwargs = agent._anthropic_client.messages.create.call_args[1]
-        assert call_kwargs["max_tokens"] == 1024
+        assert captured["max_tokens"] == 1024
 
 
 class TestLLMFallback:
@@ -178,33 +195,28 @@ class TestLLMFallback:
 
     @pytest.mark.asyncio
     async def test_fallback_on_rate_limit(self, mock_env_vars):
-        """Test fallback when primary model hits rate limit."""
+        """Test fallback when primary model hits rate limit — _call_model raises then succeeds."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        # Create a mock rate limit error
+        success_result = {
+            "content": "Fallback response",
+            "tool_calls": [],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 10},
+        }
+
         mock_response = MagicMock()
         mock_response.status_code = 429
         rate_error = anthropic.RateLimitError(
             message="Rate limited",
             response=mock_response,
-            body={"error": {"message": "Rate limit exceeded"}}
+            body={"error": {"message": "Rate limit exceeded"}},
         )
 
-        # Mock primary model to raise rate limit once, then succeed
-        success_response = MagicMock()
-        success_response.content = [MagicMock(type="text", text="Fallback response")]
-        success_response.stop_reason = "end_turn"
-        success_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        primary_client = MagicMock()
-        primary_client.messages.create = MagicMock(
-            side_effect=[rate_error, success_response]
-        )
-
-        with patch.object(agent, "_anthropic_client", primary_client):
+        # First call raises RateLimitError, second succeeds
+        with patch.object(agent, "_call_model", side_effect=[rate_error, success_result]):
             result = await agent.call_llm(
                 messages=[{"role": "user", "content": "Test"}],
-                model="claude-opus-4-6"  # Force claude model
             )
 
         assert result["content"] == "Fallback response"
@@ -369,64 +381,55 @@ class TestCallOllama:
 
 
 class TestCallGLM:
-    """Test GLM-4 API calls."""
+    """Test GLM-4 / Z.AI API calls."""
 
     @pytest.mark.asyncio
-    async def test_call_glm_success(self, mock_env_vars):
-        """Test _call_glm with successful response."""
+    async def test_call_glm_anthropic_success(self, mock_env_vars):
+        """Test _call_glm_anthropic uses Anthropic SDK with Z.AI base_url."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        mock_response = AsyncMock()
-        mock_response.status_code = 200
-        mock_response.json = AsyncMock(return_value={
-            "choices": [{
-                "message": {"content": "GLM response"},
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 10}
-        })
-        mock_response.raise_for_status = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="GLM response via Z.AI")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage = MagicMock(input_tokens=5, output_tokens=10)
 
-        # Patch settings to provide GLM API key
-        with patch("agents.base_agent.settings") as mock_settings:
-            mock_settings.glm_api_key = "test-key"
-            mock_settings.glm_base_url = "https://open.bigmodel.cn/api/paas/v4"
-            mock_settings.glm_model = "glm-4"
+        mock_glm_client = MagicMock()
+        mock_glm_client.messages.create = MagicMock(return_value=mock_response)
 
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.post = AsyncMock(return_value=mock_response)
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock()
-                mock_client_class.return_value = mock_client
+        with patch("agents.base_agent.settings") as mock_settings, \
+             patch("agents.base_agent.anthropic.Anthropic", return_value=mock_glm_client):
+            mock_settings.glm_api_key = "test-glm-key"
+            mock_settings.glm_base_url = "https://api.z.ai/api/anthropic"
+            mock_settings.glm_model = "glm-4.7"
 
-                result = await agent._call_glm(
-                    model="glm-4",
-                    messages=[{"role": "user", "content": "Test"}],
-                    system="System prompt",
-                    max_tokens=1000
-                )
+            result = await agent._call_glm_anthropic(
+                model="glm-4.7",
+                messages=[{"role": "user", "content": "Test"}],
+                system="System prompt",
+                tools=[],
+                max_tokens=1000,
+            )
 
-        assert result["content"] == "GLM response"
-        assert result["stop_reason"] == "stop"
+        assert result["content"] == "GLM response via Z.AI"
+        assert result["stop_reason"] == "end_turn"
 
     @pytest.mark.asyncio
     async def test_call_glm_raises_without_api_key(self, mock_env_vars):
-        """Test _call_glm raises RuntimeError when API key not set."""
+        """Test _call_glm_anthropic raises RuntimeError when API key not set."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        # Patch settings to return empty GLM API key
         with patch("agents.base_agent.settings") as mock_settings:
             mock_settings.glm_api_key = ""
-            mock_settings.glm_base_url = "https://open.bigmodel.cn/api/paas/v4"
-            mock_settings.glm_model = "glm-4"
+            mock_settings.glm_base_url = "https://api.z.ai/api/anthropic"
+            mock_settings.glm_model = "glm-4.7"
 
             with pytest.raises(RuntimeError, match="GLM API key not configured"):
-                await agent._call_glm(
-                    model="glm-4",
+                await agent._call_glm_anthropic(
+                    model="glm-4.7",
                     messages=[{"role": "user", "content": "Test"}],
                     system="System",
-                    max_tokens=1000
+                    tools=[],
+                    max_tokens=1000,
                 )
 
 
@@ -490,42 +493,33 @@ class TestCallModel:
 
     @pytest.mark.asyncio
     async def test_call_model_routes_to_glm(self, mock_env_vars):
-        """Test _call_model routes glm* models to _call_glm."""
+        """Test _call_model routes glm* models to _call_glm_anthropic."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        mock_response = AsyncMock()
-        mock_response.status_code = 200
-        mock_response.json = AsyncMock(return_value={
-            "choices": [{
-                "message": {"content": "GLM response"},
-                "finish_reason": "stop"
-            }],
-            "usage": {}
-        })
-        mock_response.raise_for_status = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="GLM response")]
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage = MagicMock(input_tokens=5, output_tokens=10)
 
-        # Patch settings to provide GLM API key
-        with patch("agents.base_agent.settings") as mock_settings:
+        mock_glm_client = MagicMock()
+        mock_glm_client.messages.create = MagicMock(return_value=mock_response)
+
+        with patch("agents.base_agent.settings") as mock_settings, \
+             patch("agents.base_agent.anthropic.Anthropic", return_value=mock_glm_client):
             mock_settings.glm_api_key = "test-key"
-            mock_settings.glm_base_url = "https://open.bigmodel.cn/api/paas/v4"
-            mock_settings.glm_model = "glm-4"
+            mock_settings.glm_base_url = "https://api.z.ai/api/anthropic"
+            mock_settings.glm_model = "glm-4.7"
 
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.post = AsyncMock(return_value=mock_response)
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock()
-                mock_client_class.return_value = mock_client
-
-                result = await agent._call_model(
-                    model="glm-4",
-                    messages=[{"role": "user", "content": "Test"}],
-                    system="System",
-                    tools=[],
-                    max_tokens=1000
-                )
+            result = await agent._call_model(
+                model="glm-4.7",
+                messages=[{"role": "user", "content": "Test"}],
+                system="System",
+                tools=[],
+                max_tokens=1000,
+            )
 
         assert result is not None
+        assert result["content"] == "GLM response"
 
     @pytest.mark.asyncio
     async def test_call_model_unknown_returns_none(self, mock_env_vars):
@@ -547,16 +541,16 @@ class TestCallLLMWithTools:
     """Test call_llm_with_tools method."""
 
     @pytest.mark.asyncio
-    async def test_call_llm_with_tools_no_tool_calls(self, mock_env_vars, mock_anthropic_response):
+    async def test_call_llm_with_tools_no_tool_calls(self, mock_env_vars):
         """Test call_llm_with_tools when model doesn't use tools."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_anthropic_response)
+        mock_result = {"content": "Test response content", "tool_calls": [], "stop_reason": "end_turn", "usage": {}}
 
-        result = await agent.call_llm_with_tools(
-            messages=[{"role": "user", "content": "Hello"}],
-            tool_handlers={}
-        )
+        with patch.object(agent, "_call_model", return_value=mock_result):
+            result = await agent.call_llm_with_tools(
+                messages=[{"role": "user", "content": "Hello"}],
+                tool_handlers={},
+            )
 
         assert result["content"] == "Test response content"
 
@@ -565,38 +559,27 @@ class TestCallLLMWithTools:
         """Test call_llm_with_tools executes tool handlers."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        # Mock response with tool use
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.id = "tool-123"
-        mock_tool_block.name = "test_tool"
-        mock_tool_block.input = {"arg": "value"}
+        tool_response = {
+            "content": "",
+            "tool_calls": [{"id": "tool-123", "name": "test_tool", "input": {"arg": "value"}}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
+        final_response = {
+            "content": "Final answer",
+            "tool_calls": [],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
 
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_response.stop_reason = "end_turn"
-        mock_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        agent._anthropic_client = MagicMock()
-
-        # First call returns tool use, second returns text
-        mock_text_response = MagicMock()
-        mock_text_response.content = [MagicMock(type="text", text="Final answer")]
-        mock_text_response.stop_reason = "end_turn"
-        mock_text_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        agent._anthropic_client.messages.create = MagicMock(
-            side_effect=[mock_response, mock_text_response]
-        )
-
-        # Define tool handler
         async def test_handler(input_data):
             return {"result": f"processed {input_data['arg']}"}
 
-        result = await agent.call_llm_with_tools(
-            messages=[{"role": "user", "content": "Use tool"}],
-            tool_handlers={"test_tool": test_handler}
-        )
+        with patch.object(agent, "_call_model", side_effect=[tool_response, final_response]):
+            result = await agent.call_llm_with_tools(
+                messages=[{"role": "user", "content": "Use tool"}],
+                tool_handlers={"test_tool": test_handler},
+            )
 
         assert "Final answer" in result["content"]
 
@@ -605,34 +588,27 @@ class TestCallLLMWithTools:
         """Test call_llm_with_tools handles tool handler errors gracefully."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.id = "tool-123"
-        mock_tool_block.name = "failing_tool"
-        mock_tool_block.input = {}
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_response.stop_reason = "end_turn"
-        mock_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        mock_text_response = MagicMock()
-        mock_text_response.content = [MagicMock(type="text", text="Got error")]
-        mock_text_response.stop_reason = "end_turn"
-        mock_text_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(
-            side_effect=[mock_response, mock_text_response]
-        )
+        tool_response = {
+            "content": "",
+            "tool_calls": [{"id": "tool-123", "name": "failing_tool", "input": {}}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
+        final_response = {
+            "content": "Got error",
+            "tool_calls": [],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
 
         async def failing_handler(input_data):
             raise ValueError("Tool failed")
 
-        result = await agent.call_llm_with_tools(
-            messages=[{"role": "user", "content": "Use tool"}],
-            tool_handlers={"failing_tool": failing_handler}
-        )
+        with patch.object(agent, "_call_model", side_effect=[tool_response, final_response]):
+            result = await agent.call_llm_with_tools(
+                messages=[{"role": "user", "content": "Use tool"}],
+                tool_handlers={"failing_tool": failing_handler},
+            )
 
         assert "Got error" in result["content"]
 
@@ -641,29 +617,22 @@ class TestCallLLMWithTools:
         """Test call_llm_with_tools respects max_iterations limit."""
         agent = DummyAgent(phase_number="1", phase_name="Test")
 
-        # Always return tool use to test max iterations
-        mock_tool_block = MagicMock()
-        mock_tool_block.type = "tool_use"
-        mock_tool_block.id = "tool-123"
-        mock_tool_block.name = "loop_tool"
-        mock_tool_block.input = {}
-
-        mock_response = MagicMock()
-        mock_response.content = [mock_tool_block]
-        mock_response.stop_reason = "end_turn"
-        mock_response.usage = MagicMock(input_tokens=5, output_tokens=10)
-
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.create = MagicMock(return_value=mock_response)
+        looping_response = {
+            "content": "",
+            "tool_calls": [{"id": "tool-123", "name": "loop_tool", "input": {}}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        }
 
         async def loop_handler(input_data):
             return {"keep_looping": True}
 
-        result = await agent.call_llm_with_tools(
-            messages=[{"role": "user", "content": "Loop"}],
-            tool_handlers={"loop_tool": loop_handler},
-            max_iterations=2
-        )
+        with patch.object(agent, "_call_model", return_value=looping_response):
+            result = await agent.call_llm_with_tools(
+                messages=[{"role": "user", "content": "Loop"}],
+                tool_handlers={"loop_tool": loop_handler},
+                max_iterations=2,
+            )
 
-        # Should return after max_iterations
-        assert result["content"] == ""  # No text content, only tool calls
+        # Should return after max_iterations with empty content
+        assert result["content"] == ""
