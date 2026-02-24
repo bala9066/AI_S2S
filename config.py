@@ -94,6 +94,24 @@ class Settings(BaseSettings):
         """Check if running in air-gapped mode (no API keys)."""
         return not self.anthropic_api_key
 
+    @property
+    def api_base_url(self) -> str:
+        """Get the FastAPI base URL for the backend."""
+        return f"http://{self.fastapi_host}:{self.fastapi_port}"
+
+    def get_api_key_status(self) -> dict[str, tuple[bool, str]]:
+        """
+        Get status of all configured API keys.
+        Returns dict of {provider: (is_configured, status_icon)}
+        """
+        return {
+            "Anthropic": (bool(self.anthropic_api_key), "✅" if self.anthropic_api_key else "❌"),
+            "OpenAI": (bool(self.openai_api_key), "✅" if self.openai_api_key else "❌"),
+            "GLM-4": (bool(self.glm_api_key), "✅" if self.glm_api_key else "❌"),
+            "DigiKey": (bool(self.digikey_client_id and self.digikey_client_secret), "✅" if self.digikey_client_id else "❌"),
+            "Mouser": (bool(self.mouser_api_key), "✅" if self.mouser_api_key else "❌"),
+        }
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

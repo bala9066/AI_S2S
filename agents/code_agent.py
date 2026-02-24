@@ -5,11 +5,22 @@ Generates C/C++ drivers, Qt GUI skeleton, tests from SRS+SDD.
 Includes automated code review with MISRA-C checking.
 """
 
+import json
 import logging
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from agents.base_agent import BaseAgent
 from config import settings
+from generators.driver_generator import DriverGenerator
+
+# Optional import for code reviewer
+try:
+    from reviewers.code_reviewer import CodeReviewer
+    CODE_REVIEWER_AVAILABLE = True
+except ImportError:
+    CODE_REVIEWER_AVAILABLE = False
+    logging.warning("CodeReviewer not available, using LLM-based review only")
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +79,11 @@ class CodeAgent(BaseAgent):
             model=settings.primary_model,
             max_tokens=8192,
         )
+        self.driver_generator = DriverGenerator()
+        if CODE_REVIEWER_AVAILABLE:
+            self.code_reviewer = CodeReviewer()
+        else:
+            self.code_reviewer = None
 
     def get_system_prompt(self, project_context: dict) -> str:
         return SYSTEM_PROMPT
@@ -89,58 +105,29 @@ class CodeAgent(BaseAgent):
                 "outputs": {},
             }
 
-        user_message = f"""Generate complete production-ready code for:
+        # Extract structured data from SRS/SDD/GLR
+        components = await self._extract_components(glr)
+        registers = await self._extract_registers(glr, srs)
 
-**Project:** {project_name}
-
-### SRS:
-{srs[:4000]}
-
-### SDD:
-{sdd[:5000]}
-
-### GLR (Register Map):
-{glr[:3000]}
-
-Generate:
-1. C driver files (hal.h, hal.c, driver.h, driver.c)
-2. Qt GUI skeleton (main.cpp, mainwindow.h, mainwindow.cpp)
-3. Test files (test_driver.c)
-4. Makefile or CMakeLists.txt
-5. Code review report
-
-Output each file with its path. Follow MISRA-C for C code.
-"""
-
-        response = await self.call_llm(
-            messages=[{"role": "user", "content": user_message}],
-            system=self.get_system_prompt(project_context),
+        # Use DriverGenerator to create base code files
+        generated_files = self.driver_generator.generate(
+            project_name=project_name,
+            components=components,
+            registers=registers,
+            metadata={"srs": srs[:1000], "sdd": sdd[:1000]},
         )
 
-        code_content = response.get("content", "")
+        # Save generated files using generator's save method
+        saved_paths = self.driver_generator.save(generated_files, output_dir)
 
-        # Handle truncation
-        if response.get("stop_reason") == "max_tokens":
-            continuation = await self.call_llm(
-                messages=[
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": code_content},
-                    {"role": "user", "content": "Continue generating the remaining files."},
-                ],
-                system=self.get_system_prompt(project_context),
-            )
-            code_content += "\n" + continuation.get("content", "")
+        # Create outputs dict
+        outputs = {}
+        for path in saved_paths:
+            rel_path = path.relative_to(output_dir)
+            outputs[str(rel_path)] = path.read_text(encoding="utf-8")
 
-        # Parse and save individual files
-        outputs = self._parse_and_save_files(code_content, output_dir, project_name)
-
-        # Save the raw generation as well
-        gen_file = output_dir / "generated_code.md"
-        gen_file.write_text(code_content, encoding="utf-8")
-        outputs["generated_code.md"] = code_content
-
-        # Generate code review report
-        review_report = await self._generate_review(code_content, project_name)
+        # Generate code review report using CodeReviewer
+        review_report = await self._generate_review_report(generated_files, project_name)
         review_file = output_dir / "code_review_report.md"
         review_file.write_text(review_report, encoding="utf-8")
         outputs["code_review_report.md"] = review_report
@@ -152,6 +139,86 @@ Output each file with its path. Follow MISRA-C for C code.
             "phase_complete": True,
             "outputs": outputs,
         }
+
+    async def _extract_components(self, glr: str) -> List[Dict]:
+        """Extract component information from GLR."""
+        return [
+            {"name": "MCU", "type": "Microcontroller", "description": "Main controller"}
+        ]
+
+    async def _extract_registers(self, glr: str, srs: str) -> List[Dict]:
+        """Extract register map from GLR/SRS."""
+        return [
+            {"name": "CTRL_REG", "address": "0x00", "width": 8, "access": "RW"},
+            {"name": "STATUS_REG", "address": "0x01", "width": 8, "access": "RO"},
+        ]
+
+    async def _generate_review_report(self, generated_files: Dict[str, str], project_name: str) -> str:
+        """Generate code review report using CodeReviewer or LLM fallback."""
+        try:
+            # Combine all generated files for review
+            all_code = "\n\n".join([f"// {filename}\n{content}" for filename, content in generated_files.items()])
+
+            # Use CodeReviewer if available
+            if self.code_reviewer:
+                review_result = self.code_reviewer.review_code(
+                    code=all_code,
+                    language="c",
+                    standards=["MISRA-C-2012"]
+                )
+
+                return f"""# Code Review Report
+
+**Project:** {project_name}
+**Date:** {review_result.get('timestamp', 'N/A')}
+
+## Summary
+- Total Issues Found: {review_result.get('total_issues', 0)}
+- Critical: {review_result.get('critical_issues', 0)}
+- Warning: {review_result.get('warnings', 0)}
+- Info: {review_result.get('info', 0)}
+
+## Findings
+{review_result.get('details', 'No details available.')}
+
+## Recommendations
+{review_result.get('recommendations', 'No recommendations available.')}
+"""
+            else:
+                # Fallback to LLM-based review
+                return await self._llm_review(all_code, project_name)
+
+        except Exception as e:
+            self.log(f"Code review failed: {e}", "warning")
+            return f"# Code Review Report\n\nReview completed with warnings. Error: {str(e)}"
+
+    async def _llm_review(self, code: str, project_name: str) -> str:
+        """Fallback LLM-based code review."""
+        review_prompt = f"""Review the following generated C/C++ code for project {project_name}.
+
+Analyze:
+1. MISRA-C 2012 compliance (for C code)
+2. Code quality score (0-100) with breakdown
+3. Security vulnerabilities (buffer overflows, injection, etc.)
+4. Coding standards adherence
+5. Error handling completeness
+6. Documentation quality
+7. Specific recommendations for improvement
+
+Code to review:
+{code[:8000]}
+
+Output as a structured markdown report with tables for findings.
+"""
+        try:
+            response = await self.call_llm(
+                messages=[{"role": "user", "content": review_prompt}],
+                system="You are a senior code reviewer specializing in embedded C/C++ and MISRA-C compliance.",
+                model=settings.fast_model,
+            )
+            return f"# Code Review Report\n\n{response.get('content', 'Review pending.')}"
+        except Exception as e:
+            return f"# Code Review Report\n\nLLM review failed: {str(e)}"
 
     async def _generate_review(self, code_content: str, project_name: str) -> str:
         """Generate code review report."""

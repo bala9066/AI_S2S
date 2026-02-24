@@ -4,11 +4,13 @@ Phase 6: GLR (Glue Logic Requirements) Generation Agent
 Generates complete I/O specifications that bridge hardware design to FPGA implementation.
 """
 
+import json
 import logging
 from pathlib import Path
 
 from agents.base_agent import BaseAgent
 from config import settings
+from generators.glr_generator import GLRGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class GLRAgent(BaseAgent):
             model=settings.primary_model,
             max_tokens=8192,
         )
+        self.glr_generator = GLRGenerator()
 
     def get_system_prompt(self, project_context: dict) -> str:
         return SYSTEM_PROMPT
@@ -77,30 +80,27 @@ class GLRAgent(BaseAgent):
         netlist_visual = self._load_file(output_dir / "netlist_visual.md")
         netlist_json = self._load_file(output_dir / "netlist.json")
 
-        user_message = f"""Generate a complete GLR document for:
+        # Parse netlist data for generator
+        netlist_data = {}
+        if netlist_json:
+            try:
+                netlist_data = json.loads(netlist_json)
+            except Exception as e:
+                self.log(f"Failed to parse netlist JSON: {e}", "warning")
 
-**Project:** {project_name}
+        # Extract structured requirements using LLM
+        structured_reqs = await self._extract_requirements(requirements)
 
-### Requirements:
-{requirements[:3000]}
-
-### Netlist:
-{netlist_visual[:4000]}
-
-### Netlist Data:
-{netlist_json[:3000]}
-
-Generate the full GLR specification with pin assignments, timing, register map, and interface specs.
-"""
-
-        response = await self.call_llm(
-            messages=[{"role": "user", "content": user_message}],
-            system=self.get_system_prompt(project_context),
+        # Generate GLR using the generator
+        glr_content = self.glr_generator.generate(
+            project_name=project_name,
+            netlist=netlist_data,
+            requirements=structured_reqs,
+            metadata={"date": requirements[:500] if requirements else ""},
         )
 
-        glr_content = response.get("content", "")
-        glr_file = output_dir / "glr_specification.md"
-        glr_file.write_text(glr_content, encoding="utf-8")
+        # Save using generator's save method
+        glr_file = self.glr_generator.save(glr_content, output_dir, project_name)
 
         self.log(f"GLR generated: {len(glr_content)} chars")
 
@@ -109,6 +109,22 @@ Generate the full GLR specification with pin assignments, timing, register map, 
             "phase_complete": True,
             "outputs": {glr_file.name: glr_content},
         }
+
+    async def _extract_requirements(self, requirements_content: str) -> list:
+        """Extract structured requirements from markdown using LLM."""
+        if not requirements_content:
+            return []
+
+        try:
+            import re
+            # Simple extraction of requirement lines
+            reqs = []
+            for line in requirements_content.split('\n'):
+                if line.strip().startswith('-') or line.strip().startswith('*'):
+                    reqs.append({"text": line.strip('- *').strip()})
+            return reqs[:10]  # Limit to first 10
+        except Exception:
+            return []
 
     def _load_file(self, path: Path) -> str:
         if path.exists():

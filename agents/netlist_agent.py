@@ -11,6 +11,7 @@ from pathlib import Path
 
 from agents.base_agent import BaseAgent
 from config import settings
+from generators.netlist_generator import NetlistGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class NetlistAgent(BaseAgent):
             tools=[GENERATE_NETLIST_TOOL],
             max_tokens=8192,
         )
+        self.netlist_generator = NetlistGenerator()
 
     def get_system_prompt(self, project_context: dict) -> str:
         return SYSTEM_PROMPT
@@ -168,14 +170,43 @@ Generate the netlist using the generate_netlist tool. Include:
                     netlist_data = tc["input"]
 
         if netlist_data:
-            # Save netlist JSON
-            netlist_json = output_dir / "netlist.json"
-            netlist_json.write_text(json.dumps(netlist_data, indent=2), encoding="utf-8")
-            outputs["netlist.json"] = json.dumps(netlist_data, indent=2)
+            # Transform tool call data to generator format
+            components = []
+            for node in netlist_data.get("nodes", []):
+                components.append({
+                    "id": node.get("instance_id", ""),
+                    "name": node.get("component_name", ""),
+                    "type": node.get("part_number", ""),
+                    "pins": [],
+                    "properties": node,
+                })
 
-            # Save visual netlist markdown with Mermaid
-            mermaid = netlist_data.get("mermaid_diagram", "")
-            visual_content = self._build_visual_md(netlist_data, project_name, mermaid)
+            connections = []
+            for edge in netlist_data.get("edges", []):
+                connections.append({
+                    "source": edge.get("from_instance", ""),
+                    "source_pin": edge.get("from_pin", ""),
+                    "target": edge.get("to_instance", ""),
+                    "target_pin": edge.get("to_pin", ""),
+                    "signal": edge.get("net_name", ""),
+                    "type": edge.get("signal_type", "wire"),
+                })
+
+            # Use NetlistGenerator to create structured netlist
+            generator_netlist = self.netlist_generator.generate(
+                project_name=project_name,
+                components=components,
+                connections=connections,
+                metadata=netlist_data.get("metadata", {}),
+            )
+
+            # Save using generator's save method
+            netlist_json = self.netlist_generator.save(generator_netlist, output_dir, project_name)
+            outputs["netlist.json"] = json.dumps(generator_netlist, indent=2)
+
+            # Generate and save visual markdown
+            mermaid_diagram = self.netlist_generator.to_mermaid(generator_netlist)
+            visual_content = self._build_visual_md(netlist_data, project_name, mermaid_diagram)
             visual_file = output_dir / "netlist_visual.md"
             visual_file.write_text(visual_content, encoding="utf-8")
             outputs["netlist_visual.md"] = visual_content

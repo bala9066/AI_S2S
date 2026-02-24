@@ -96,10 +96,17 @@ class OrchestratorAgent:
                 phase_output.completed_at - phase_output.started_at
             ).total_seconds()
             phase_output.model_used = result.get("model_used", "")
-            phase_output.content = str(result.get("outputs", {}))
+            # Safely encode outputs for database storage
+            outputs = result.get("outputs", {})
+            try:
+                phase_output.content = str(outputs)
+            except UnicodeEncodeError:
+                # Fallback: encode problematic characters
+                phase_output.content = json.dumps(outputs, ensure_ascii=True)
 
             # Update project phase status
-            statuses = project.phase_statuses or {}
+            # Use copy to ensure SQLAlchemy detects the change
+            statuses = dict(project.phase_statuses) if project.phase_statuses else {}
             statuses[phase_number] = {
                 "status": "completed",
                 "completed_at": datetime.now().isoformat(),

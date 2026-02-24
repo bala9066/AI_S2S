@@ -5,12 +5,14 @@ Generates a 50-100 page Hardware Requirements Specification in markdown format.
 Uses IEEE 29148:2018 section structure with requirement traceability.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 
 from agents.base_agent import BaseAgent
 from config import settings
+from generators.hrs_generator import HRSGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ class DocumentAgent(BaseAgent):
             model=settings.fast_model,  # Haiku for speed on large doc generation
             max_tokens=8192,
         )
+        self.hrs_generator = HRSGenerator()
 
     def get_system_prompt(self, project_context: dict) -> str:
         return SYSTEM_PROMPT
@@ -108,33 +111,32 @@ class DocumentAgent(BaseAgent):
                 "outputs": {},
             }
 
-        # Build the prompt with all Phase 1 data
-        user_message = f"""Generate a complete IEEE 29148 Hardware Requirements Specification for:
+        # Extract structured requirements using LLM
+        structured_requirements = await self._extract_requirements(requirements_content, project_name)
 
-**Project:** {project_name}
+        # Extract component data
+        component_data = await self._extract_components(components)
 
-## Phase 1 Outputs:
+        # Extract metadata from project context
+        metadata = {
+            "version": project_context.get("version", "1.0"),
+            "author": project_context.get("author", "Hardware Pipeline AI"),
+            "input_voltage": project_context.get("design_parameters", {}).get("input_voltage", "12-24"),
+            "max_power": project_context.get("design_parameters", {}).get("max_power", "TBD"),
+            "temp_min": project_context.get("design_parameters", {}).get("temp_min", "-40"),
+            "temp_max": project_context.get("design_parameters", {}).get("temp_max", "+85"),
+        }
 
-### Requirements:
-{requirements_content}
+        # Use HRSGenerator for IEEE-compliant document
+        hrs_content = self.hrs_generator.generate(
+            project_name=project_name,
+            requirements=structured_requirements,
+            component_data=component_data,
+            metadata=metadata,
+        )
 
-### Block Diagram:
-{block_diagram}
-
-### Architecture:
-{architecture}
-
-### Component Recommendations:
-{components}
-
-Generate the FULL HRS document now. Be thorough and detailed."""
-
-        # Call LLM (may need multiple calls for long documents)
-        hrs_content = await self._generate_hrs(user_message, project_name)
-
-        # Save output
-        hrs_file = output_dir / f"HRS_{project_name.replace(' ', '_')}.md"
-        hrs_file.write_text(hrs_content, encoding="utf-8")
+        # Save output using generator's save method
+        hrs_file = self.hrs_generator.save(hrs_content, output_dir, project_name)
 
         self.log(f"HRS generated: {len(hrs_content)} chars -> {hrs_file}")
 
@@ -175,3 +177,40 @@ Generate the FULL HRS document now. Be thorough and detailed."""
         if path.exists():
             return path.read_text(encoding="utf-8")
         return ""
+
+    async def _extract_requirements(self, requirements_content: str, project_name: str) -> list:
+        """Extract structured requirements from markdown using LLM."""
+        system_prompt = """Extract structured hardware requirements from the markdown content.
+Return a JSON array of requirements with fields: id, text, priority (HIGH/MEDIUM/LOW)."""
+
+        try:
+            response = await self.call_llm(
+                messages=[{
+                    "role": "user",
+                    "content": f"Extract structured requirements from:\n\n{requirements_content[:8000]}\n\nReturn JSON array."
+                }],
+                system=system_prompt,
+            )
+
+            content = response.get("content", "")
+            # Try to extract JSON from the response
+            import re
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+        except Exception as e:
+            self.log(f"Failed to extract structured requirements: {e}", "warning")
+
+        # Fallback: return basic structure
+        return [
+            {"id": "REQ-HW-001", "text": "System shall meet all specified requirements", "priority": "HIGH"}
+        ]
+
+    async def _extract_components(self, components_content: str) -> dict:
+        """Extract component data from markdown."""
+        if not components_content:
+            return {}
+
+        return {
+            "components_markdown": components_content[:5000],
+        }
