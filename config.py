@@ -43,7 +43,7 @@ class Settings:
 
         # --- LLM Models ---
         self.primary_model = _env("PRIMARY_MODEL", "glm-4.7")
-        self.fast_model = _env("FAST_MODEL", "glm-4.5-air")
+        self.fast_model = _env("FAST_MODEL", "glm-4-flash")
         self.fallback_model = _env("FALLBACK_MODEL", "ollama/qwen2.5-coder:32b")
         self.last_resort_model = _env("LAST_RESORT_MODEL", "glm-4.7")
 
@@ -54,7 +54,7 @@ class Settings:
         # --- GLM / Z.AI ---
         self.glm_base_url = _env("GLM_BASE_URL", "https://api.z.ai/api/anthropic")
         self.glm_model = _env("GLM_MODEL", "glm-4.7")
-        self.glm_fast_model = _env("GLM_FAST_MODEL", "glm-4.5-air")
+        self.glm_fast_model = _env("GLM_FAST_MODEL", "glm-4-flash")
 
         # --- Component Search APIs ---
         self.digikey_client_id = _env("DIGIKEY_CLIENT_ID", "")
