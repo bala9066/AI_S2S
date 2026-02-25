@@ -1,10 +1,12 @@
 """
 Hardware Pipeline — Streamlit UI
-High-level, professional UX with draft-approve flow for Phase 1.
+Professional UX with draft-approve flow for Phase 1, auto-progression through all phases.
 """
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -21,26 +23,22 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── Custom CSS ───────────────────────────────────────────────────────────────
+# ─── Clean Light Theme CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* Global */
-[data-testid="stAppViewContainer"] { background: #0f1117; }
-[data-testid="stSidebar"] { background: #161b22; border-right: 1px solid #30363d; }
-
 /* Phase status pills */
 .phase-pill {
     display: inline-block;
-    padding: 3px 10px;
+    padding: 4px 12px;
     border-radius: 12px;
     font-size: 12px;
     font-weight: 600;
     margin: 2px 0;
 }
-.phase-pending  { background:#21262d; color:#8b949e; }
-.phase-active   { background:#1f4e8a; color:#58a6ff; }
-.phase-done     { background:#1a4731; color:#3fb950; }
-.phase-failed   { background:#4c1d1d; color:#f85149; }
+.phase-pending  { background:#f0f0f0; color:#888; }
+.phase-active   { background:#dbeafe; color:#1d4ed8; }
+.phase-done     { background:#dcfce7; color:#16a34a; }
+.phase-failed   { background:#fee2e2; color:#dc2626; }
 
 /* Pipeline progress bar */
 .pipeline-bar {
@@ -52,34 +50,59 @@ st.markdown("""
 .pipe-step {
     flex: 1;
     text-align: center;
-    padding: 8px 4px;
+    padding: 10px 4px;
     font-size: 11px;
     font-weight: 600;
-    border-top: 3px solid #30363d;
-    color: #8b949e;
+    border-top: 4px solid #e5e7eb;
+    color: #9ca3af;
 }
-.pipe-step.done  { border-color: #3fb950; color: #3fb950; }
-.pipe-step.active{ border-color: #58a6ff; color: #58a6ff; }
-
-/* Draft approval card */
-.approval-card {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 16px;
-    margin: 12px 0;
-}
+.pipe-step.done  { border-color: #22c55e; color: #16a34a; background: #f0fdf4; }
+.pipe-step.active{ border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
 
 /* Metric cards */
 .metric-card {
-    background: #161b22;
-    border: 1px solid #21262d;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
     border-radius: 8px;
-    padding: 14px 18px;
+    padding: 16px 20px;
     text-align: center;
 }
-.metric-card .metric-value { font-size: 28px; font-weight: 700; color: #58a6ff; }
-.metric-card .metric-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+.metric-card .metric-value { font-size: 28px; font-weight: 700; color: #2563eb; }
+.metric-card .metric-label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+
+/* Processing indicator */
+.processing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    margin: 8px 0;
+    font-weight: 500;
+    color: #1d4ed8;
+}
+.processing-indicator .spinner {
+    width: 20px; height: 20px;
+    border: 3px solid #bfdbfe;
+    border-top: 3px solid #2563eb;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin { 100% { transform: rotate(360deg); } }
+
+/* Phase execution card */
+.phase-exec-card {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    margin: 8px 0;
+}
+.phase-exec-card.running { border-left: 4px solid #3b82f6; }
+.phase-exec-card.done { border-left: 4px solid #22c55e; }
+.phase-exec-card.failed { border-left: 4px solid #ef4444; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -88,16 +111,19 @@ st.markdown("""
 
 PHASE_META = [
     ("P1",  "1", "Requirements",    "agents.requirements_agent"),
-    ("P2",  "2", "HRS Document",    None),
-    ("P3",  "3", "Compliance",      None),
-    ("P4",  "4", "Netlist",         None),
+    ("P2",  "2", "HRS Document",    "agents.document_agent"),
+    ("P3",  "3", "Compliance",      "agents.compliance_agent"),
+    ("P4",  "4", "Netlist",         "agents.netlist_agent"),
     ("P5",  "5", "PCB (Manual)",    None),
-    ("P6",  "6", "GLR",             None),
+    ("P6",  "6", "GLR",             "agents.glr_agent"),
     ("P7",  "7", "FPGA (Manual)",   None),
-    ("P8a", "8a","SRS",             None),
-    ("P8b", "8b","SDD",             None),
-    ("P8c", "8c","Code + Review",   None),
+    ("P8a", "8a","SRS",             "agents.srs_agent"),
+    ("P8b", "8b","SDD",             "agents.sdd_agent"),
+    ("P8c", "8c","Code + Review",   "agents.code_agent"),
 ]
+
+# Automated phase order (skip P5/P7 manual phases)
+AUTO_PHASES = ["P1", "P2", "P3", "P4", "P6", "P8a", "P8b", "P8c"]
 
 APPROVAL_KEYWORDS = {"approve", "approved", "yes", "ok", "okay", "looks good",
                      "good", "correct", "proceed", "go ahead", "lgtm", "perfect", "great"}
@@ -126,6 +152,17 @@ def _create_project_db(name: str, description: str, design_type: str):
     return result
 
 
+def _update_phase_status(pid: str, status: str, extra: dict = None):
+    """Update phase status in session state."""
+    if "current_project" in st.session_state:
+        statuses = st.session_state.current_project.get("phase_statuses", {})
+        entry = {"status": status}
+        if extra:
+            entry.update(extra)
+        statuses[pid] = entry
+        st.session_state.current_project["phase_statuses"] = statuses
+
+
 # ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 def render_sidebar():
@@ -134,22 +171,20 @@ def render_sidebar():
         st.caption("AI-Powered Hardware Design Automation")
         st.divider()
 
-        # Current project info
         if "current_project" in st.session_state:
             proj = st.session_state.current_project
             st.markdown(f"**Project:** {proj.get('name', '—')}")
             st.markdown(f"**Type:** `{proj.get('design_type', '—')}`")
             st.divider()
 
-            # Phase status list
             st.markdown("### Pipeline Status")
             statuses = proj.get("phase_statuses", {})
             for pid, num, name, _ in PHASE_META:
                 status = _phase_status(statuses, pid)
                 icon = {"pending": "⬜", "in_progress": "🔄",
                         "completed": "✅", "failed": "❌", "skipped": "⏭️"}.get(status, "⬜")
-                css  = {"pending": "phase-pending", "in_progress": "phase-active",
-                        "completed": "phase-done", "failed": "phase-failed"}.get(status, "phase-pending")
+                css = {"pending": "phase-pending", "in_progress": "phase-active",
+                       "completed": "phase-done", "failed": "phase-failed"}.get(status, "phase-pending")
                 st.markdown(
                     f'<span class="phase-pill {css}">{icon} P{num} {name}</span>',
                     unsafe_allow_html=True,
@@ -159,11 +194,9 @@ def render_sidebar():
 
         st.divider()
 
-        # System info
         st.markdown("### System")
         try:
             from config import settings
-            mode_color = "#f85149" if settings.is_air_gapped else "#3fb950"
             mode_label = "🔴 Air-Gapped" if settings.is_air_gapped else "🟢 Online"
             st.markdown(f"**Mode:** {mode_label}")
             st.caption(f"Primary: `{settings.primary_model}`")
@@ -182,6 +215,7 @@ TABS = {
     "overview":   "🏠 Overview",
     "new":        "➕ New Project",
     "chat":       "💬 Design Chat",
+    "pipeline":   "🔄 Pipeline",
     "docs":       "📄 Documents",
     "netlist":    "🔌 Netlist",
     "code":       "🔍 Code Review",
@@ -209,7 +243,6 @@ def render_overview():
     st.markdown("**AI-Powered Hardware Design Automation** — From requirements to production-ready code.")
     st.markdown("")
 
-    # Pipeline visual
     st.markdown("### End-to-End Design Pipeline")
     statuses = {}
     if "current_project" in st.session_state:
@@ -225,7 +258,6 @@ def render_overview():
 
     st.markdown("")
 
-    # Feature cards
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown("#### 📋 IEEE Docs")
@@ -242,7 +274,6 @@ def render_overview():
 
     st.divider()
 
-    # Quick actions
     st.markdown("### Quick Start")
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -264,7 +295,6 @@ def render_overview():
 def render_new_project():
     st.markdown("## ➕ New Project")
     st.caption("Create a project and jump straight into the AI design chat.")
-    st.markdown("")
 
     with st.form("new_project_form", clear_on_submit=False):
         col1, col2 = st.columns([2, 1])
@@ -278,9 +308,7 @@ def render_new_project():
             design_type = st.selectbox(
                 "Design Type *",
                 ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
-                help="Helps the AI tailor component recommendations",
             )
-            st.markdown("")
             st.markdown("")
             submitted = st.form_submit_button("🚀 Create & Start", type="primary",
                                               use_container_width=True)
@@ -301,6 +329,8 @@ def render_new_project():
                         )
                         if resp.status_code == 200:
                             result = resp.json()
+                            result["phase_statuses"] = {}
+                            result["design_type"] = design_type
                             st.session_state.current_project = result
                             st.session_state.project_id = result["id"]
                             _reset_chat()
@@ -323,7 +353,7 @@ def render_new_project():
                     st.error(f"Error: {e}")
 
 
-# ─── Design Chat (Phase 1) ────────────────────────────────────────────────────
+# ─── Design Chat (Phase 1) ──────────────────────────────────────────────────
 
 def _reset_chat():
     st.session_state.chat_messages = [
@@ -344,6 +374,7 @@ def _reset_chat():
     st.session_state.draft_pending = False
     st.session_state.current_draft = None
     st.session_state.phase1_complete = False
+    st.session_state.pipeline_running = False
 
 
 def render_design_chat():
@@ -359,20 +390,24 @@ def render_design_chat():
     proj = st.session_state.current_project
     st.caption(f"Project: **{proj.get('name')}** · Type: `{proj.get('design_type', 'general')}`")
 
-    # ── Phase complete banner ─────────────────────────────────────────────────
-    if st.session_state.get("phase1_complete"):
-        st.success("✅ **Phase 1 Complete!** All requirement documents generated.")
+    # ── Phase 1 complete → offer to run full pipeline ───────────────────────
+    if st.session_state.get("phase1_complete") and not st.session_state.get("pipeline_running"):
+        st.success("✅ **Phase 1 Complete!** Requirements and block diagrams generated.")
+        st.markdown("")
+
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("📄 View Documents", use_container_width=True, type="primary"):
-                st.query_params["tab"] = "docs"
+            if st.button("🚀 Run Full Pipeline (P2→P8c)", use_container_width=True, type="primary",
+                         key="btn_run_pipeline"):
+                st.session_state.pipeline_running = True
+                st.query_params["tab"] = "pipeline"
                 st.rerun()
         with c2:
-            if st.button("🔌 View Netlist", use_container_width=True):
-                st.query_params["tab"] = "netlist"
+            if st.button("📄 View Documents", use_container_width=True, key="btn_view_docs"):
+                st.query_params["tab"] = "docs"
                 st.rerun()
         with c3:
-            if st.button("🔄 New Chat", use_container_width=True):
+            if st.button("🔄 New Chat", use_container_width=True, key="btn_new_chat"):
                 _reset_chat()
                 st.rerun()
         st.divider()
@@ -381,12 +416,12 @@ def render_design_chat():
     if "chat_messages" not in st.session_state:
         _reset_chat()
 
-    # ── Chat history ──────────────────────────────────────────────────────────
+    # ── Chat history ────────────────────────────────────────────────────────
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # ── Approval buttons (shown when a draft is pending) ──────────────────────
+    # ── Approval buttons (shown when a draft is pending) ────────────────────
     if st.session_state.get("draft_pending") and not st.session_state.get("phase1_complete"):
         st.markdown("")
         col_a, col_b = st.columns([1, 2])
@@ -401,7 +436,7 @@ def render_design_chat():
                 if change_text.strip():
                     _handle_chat_input(change_text.strip())
 
-    # ── Chat input ────────────────────────────────────────────────────────────
+    # ── Chat input ──────────────────────────────────────────────────────────
     elif not st.session_state.get("phase1_complete"):
         if user_input := st.chat_input("Describe your hardware design…"):
             _handle_chat_input(user_input)
@@ -415,52 +450,259 @@ def _handle_chat_input(user_input: str):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("⚡ Generating draft…"):
+        # Show processing indicator with elapsed time
+        status_placeholder = st.empty()
+        start_time = time.time()
+
+        is_approval = _is_approval(user_input)
+        action_text = "Generating full requirements documentation…" if is_approval else "Generating draft block diagram…"
+
+        status_placeholder.markdown(
+            f'<div class="processing-indicator">'
+            f'<div class="spinner"></div>'
+            f'{action_text}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        try:
+            from agents.requirements_agent import RequirementsAgent
+
+            agent = RequirementsAgent()
+            proj = st.session_state.current_project
+
+            result = asyncio.run(agent.execute(
+                project_context={
+                    "project_id": proj.get("id"),
+                    "name": proj.get("name", ""),
+                    "design_type": proj.get("design_type", "general"),
+                    "conversation_history": st.session_state.chat_messages,
+                    "output_dir": proj.get("output_dir", "output"),
+                },
+                user_input=user_input,
+            ))
+
+            elapsed = time.time() - start_time
+            status_placeholder.empty()
+
+            response = result.get("response", "Processing…")
+            st.markdown(response)
+            st.caption(f"⏱️ Generated in {elapsed:.1f}s")
+            st.session_state.chat_messages.append(
+                {"role": "assistant", "content": response}
+            )
+
+            # Update draft state
+            if result.get("draft_pending"):
+                st.session_state.draft_pending = True
+                st.session_state.current_draft = result.get("draft", {})
+
+            # Phase complete
+            if result.get("phase_complete"):
+                st.session_state.phase1_complete = True
+                st.session_state.draft_pending = False
+                _update_phase_status("P1", "completed")
+                st.balloons()
+                st.success(f"✅ **Phase 1 Complete!** ({elapsed:.1f}s)")
+                if result.get("outputs"):
+                    with st.expander("📁 Generated Files", expanded=True):
+                        for fname in result["outputs"]:
+                            st.markdown(f"- 📄 `{fname}`")
+                st.rerun()
+
+        except ImportError as e:
+            status_placeholder.empty()
+            st.error(f"Module missing: {e}")
+        except Exception as e:
+            status_placeholder.empty()
+            logger.exception("Chat error")
+            st.error(f"Error: {e}")
+
+
+# ─── Pipeline Execution (P2→P8c) ─────────────────────────────────────────────
+
+def render_pipeline():
+    """Execute remaining phases automatically after Phase 1 approval."""
+    st.markdown("## 🔄 Pipeline Execution")
+
+    if "project_id" not in st.session_state:
+        st.info("Create a project first.")
+        return
+
+    proj = st.session_state.current_project
+    st.caption(f"Project: **{proj.get('name')}** · Type: `{proj.get('design_type', 'general')}`")
+
+    # Show progress bar
+    statuses = proj.get("phase_statuses", {})
+    steps_html = '<div class="pipeline-bar">'
+    for pid, num, name, _ in PHASE_META:
+        status = _phase_status(statuses, pid)
+        css = "done" if status == "completed" else ("active" if status == "in_progress" else "")
+        steps_html += f'<div class="pipe-step {css}">P{num}<br>{name}</div>'
+    steps_html += "</div>"
+    st.markdown(steps_html, unsafe_allow_html=True)
+    st.markdown("")
+
+    # Check if Phase 1 is done
+    if _phase_status(statuses, "P1") != "completed":
+        st.warning("Complete Phase 1 (Design Chat) first before running the pipeline.")
+        if st.button("💬 Go to Design Chat", type="primary"):
+            st.query_params["tab"] = "chat"
+            st.rerun()
+        return
+
+    # Determine which phases still need to run
+    remaining_phases = [p for p in AUTO_PHASES if p != "P1" and _phase_status(statuses, p) != "completed"]
+
+    if not remaining_phases:
+        st.success("✅ **All phases complete!** Your design package is ready.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("📄 View Documents", type="primary", use_container_width=True):
+                st.query_params["tab"] = "docs"
+                st.rerun()
+        with c2:
+            if st.button("🔍 View Code Review", use_container_width=True):
+                st.query_params["tab"] = "code"
+                st.rerun()
+        return
+
+    # Run pipeline button or auto-run
+    if st.session_state.get("pipeline_running"):
+        _execute_remaining_phases(remaining_phases)
+    else:
+        st.markdown(f"**{len(remaining_phases)} phases remaining:** {', '.join(remaining_phases)}")
+        if st.button("🚀 Run Remaining Phases", type="primary", use_container_width=True):
+            st.session_state.pipeline_running = True
+            st.rerun()
+
+
+def _execute_remaining_phases(phases_to_run: list):
+    """Execute phases sequentially with live progress updates."""
+    proj = st.session_state.current_project
+    output_dir = proj.get("output_dir", "output")
+
+    # Read Phase 1 outputs for context
+    p1_outputs = _read_phase1_outputs(output_dir)
+
+    phase_names = {pid: name for pid, _, name, _ in PHASE_META}
+    total = len(phases_to_run)
+    progress_bar = st.progress(0, text="Starting pipeline…")
+
+    for i, phase_id in enumerate(phases_to_run):
+        phase_name = phase_names.get(phase_id, phase_id)
+        progress_bar.progress((i) / total, text=f"Running {phase_id}: {phase_name}…")
+
+        # Show phase card
+        card_placeholder = st.empty()
+        card_placeholder.markdown(
+            f'<div class="phase-exec-card running">'
+            f'<strong>🔄 {phase_id}: {phase_name}</strong> — Processing…'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        _update_phase_status(phase_id, "in_progress")
+
+        start_time = time.time()
+        try:
+            result = _execute_single_phase(phase_id, proj, p1_outputs)
+            elapsed = time.time() - start_time
+
+            _update_phase_status(phase_id, "completed")
+            card_placeholder.markdown(
+                f'<div class="phase-exec-card done">'
+                f'<strong>✅ {phase_id}: {phase_name}</strong> — Completed in {elapsed:.1f}s'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # Store outputs for next phases
+            if result and result.get("outputs"):
+                p1_outputs[phase_id] = result["outputs"]
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            _update_phase_status(phase_id, "failed")
+            card_placeholder.markdown(
+                f'<div class="phase-exec-card failed">'
+                f'<strong>❌ {phase_id}: {phase_name}</strong> — Failed after {elapsed:.1f}s: {str(e)[:100]}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            logger.exception(f"Phase {phase_id} failed")
+            # Continue to next phase instead of stopping
+            continue
+
+    progress_bar.progress(1.0, text="Pipeline complete!")
+    st.session_state.pipeline_running = False
+    st.success("✅ **Pipeline complete!** All automated phases have been executed.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("📄 View Documents", type="primary", use_container_width=True, key="pipe_docs"):
+            st.query_params["tab"] = "docs"
+            st.rerun()
+    with c2:
+        if st.button("🔌 View Netlist", use_container_width=True, key="pipe_netlist"):
+            st.query_params["tab"] = "netlist"
+            st.rerun()
+    with c3:
+        if st.button("🔍 Code Review", use_container_width=True, key="pipe_code"):
+            st.query_params["tab"] = "code"
+            st.rerun()
+
+
+def _read_phase1_outputs(output_dir: str) -> dict:
+    """Read Phase 1 output files to provide context for later phases."""
+    outputs = {}
+    output_path = Path(output_dir)
+    if output_path.exists():
+        for md_file in output_path.glob("*.md"):
             try:
-                from agents.requirements_agent import RequirementsAgent
+                outputs[md_file.stem] = md_file.read_text(encoding="utf-8")
+            except Exception:
+                pass
+    return {"P1": outputs}
 
-                agent = RequirementsAgent()
-                proj = st.session_state.current_project
 
-                result = asyncio.run(agent.execute(
-                    project_context={
-                        "project_id": proj.get("id"),
-                        "name": proj.get("name", ""),
-                        "design_type": proj.get("design_type", "general"),
-                        "conversation_history": st.session_state.chat_messages,
-                        "output_dir": proj.get("output_dir", "output"),
-                    },
-                    user_input=user_input,
-                ))
+def _execute_single_phase(phase_id: str, proj: dict, prior_outputs: dict) -> dict:
+    """Execute a single phase using its agent."""
+    from config import settings
 
-                response = result.get("response", "Processing…")
-                st.markdown(response)
-                st.session_state.chat_messages.append(
-                    {"role": "assistant", "content": response}
-                )
+    # Build project context
+    project_context = {
+        "project_id": proj.get("id"),
+        "name": proj.get("name", ""),
+        "design_type": proj.get("design_type", "general"),
+        "output_dir": proj.get("output_dir", "output"),
+        "conversation_history": [],
+        "design_parameters": {},
+        "prior_phase_outputs": prior_outputs,
+    }
 
-                # Update draft state
-                if result.get("draft_pending"):
-                    st.session_state.draft_pending = True
-                    st.session_state.current_draft = result.get("draft", {})
+    # Import and instantiate the phase agent
+    agent_module_map = {
+        "P2": ("agents.document_agent", "DocumentAgent"),
+        "P3": ("agents.compliance_agent", "ComplianceAgent"),
+        "P4": ("agents.netlist_agent", "NetlistAgent"),
+        "P6": ("agents.glr_agent", "GLRAgent"),
+        "P8a": ("agents.srs_agent", "SRSAgent"),
+        "P8b": ("agents.sdd_agent", "SDDAgent"),
+        "P8c": ("agents.code_agent", "CodeAgent"),
+    }
 
-                # Phase complete
-                if result.get("phase_complete"):
-                    st.session_state.phase1_complete = True
-                    st.session_state.draft_pending = False
-                    st.balloons()
-                    st.success("✅ **Phase 1 Complete!**")
-                    if result.get("outputs"):
-                        with st.expander("📁 Generated Files", expanded=True):
-                            for fname in result["outputs"]:
-                                st.markdown(f"- 📄 `{fname}`")
-                    st.rerun()
+    if phase_id not in agent_module_map:
+        raise ValueError(f"No agent for phase {phase_id}")
 
-            except ImportError as e:
-                st.error(f"Module missing: {e}")
-            except Exception as e:
-                logger.exception("Chat error")
-                st.error(f"Error: {e}")
+    module_path, class_name = agent_module_map[phase_id]
+    import importlib
+    module = importlib.import_module(module_path)
+    agent_class = getattr(module, class_name)
+    agent = agent_class()
+
+    # Execute
+    result = asyncio.run(agent.execute(project_context, ""))
+    return result
 
 
 # ─── Documents ───────────────────────────────────────────────────────────────
@@ -485,7 +727,7 @@ def render_documents():
         return
 
     # Summary metrics row
-    cols = st.columns(len(md_files) if len(md_files) <= 4 else 4)
+    cols = st.columns(min(len(md_files), 4))
     for i, f in enumerate(md_files[:4]):
         with cols[i]:
             size_kb = f.stat().st_size / 1024
@@ -498,7 +740,6 @@ def render_documents():
             )
     st.markdown("")
 
-    # Document viewer
     for md_file in md_files:
         with st.expander(f"📄 {md_file.stem.replace('_', ' ').title()}", expanded=False):
             content = md_file.read_text(encoding="utf-8")
@@ -535,14 +776,14 @@ def render_netlist():
         st.download_button("⬇️ Download Netlist", data=content,
                            file_name="netlist_visual.md", mime="text/markdown")
     else:
-        st.info("Netlist not generated yet — complete Phases 1–4 first.")
+        st.info("Netlist not generated yet — run the pipeline through Phase 4.")
         st.markdown("""
 **Phase 4 will generate:**
 - `netlist.json` — machine-readable netlist
 - `netlist_visual.md` — Mermaid connectivity diagram
 - `block_diagram.svg` — exportable diagram
 
-Complete Phase 1 (Design Chat) to begin.
+Complete Phase 1 (Design Chat) then run the pipeline.
 """)
 
 
@@ -565,7 +806,7 @@ def render_code_review():
         st.download_button("⬇️ Download Review Report", data=content,
                            file_name="code_review_report.md", mime="text/markdown")
     else:
-        st.info("Code not generated yet — complete all phases first.")
+        st.info("Code not generated yet — run the full pipeline first.")
         st.markdown("""
 **Phase 8c will generate:**
 - `drivers/` — C/C++ device driver source files
@@ -589,7 +830,6 @@ def render_dashboard():
             session.close()
             return
 
-        # Summary metrics
         total = len(projects)
         completed = sum(1 for p in projects if p.current_phase == "DONE")
         in_progress = total - completed
@@ -615,13 +855,12 @@ def render_dashboard():
 
         st.markdown("")
 
-        # Project list
         for p in projects:
             phase_statuses = p.phase_statuses or {}
             completed_phases = sum(
                 1 for v in phase_statuses.values() if v.get("status") == "completed"
             )
-            total_phases = 8  # automated phases
+            total_phases = 8
 
             with st.expander(
                 f"📁 {p.name}  ·  `{p.design_type}`  ·  "
@@ -634,7 +873,6 @@ def render_dashboard():
                     st.caption(f"**Created:** {p.created_at.strftime('%Y-%m-%d %H:%M') if p.created_at else '—'}")
                     st.caption(f"**Output:** `{p.output_dir}`")
                 with col2:
-                    # Mini phase progress
                     for pid, num, name, _ in PHASE_META:
                         status = _phase_status(phase_statuses, pid)
                         icon = {"completed": "✅", "in_progress": "🔄",
@@ -681,6 +919,8 @@ def main():
         render_new_project()
     elif current_tab == "chat":
         render_design_chat()
+    elif current_tab == "pipeline":
+        render_pipeline()
     elif current_tab == "docs":
         render_documents()
     elif current_tab == "netlist":
