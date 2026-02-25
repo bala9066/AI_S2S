@@ -141,16 +141,126 @@ class CodeAgent(BaseAgent):
         }
 
     async def _extract_components(self, glr: str) -> List[Dict]:
-        """Extract component information from GLR."""
-        return [
-            {"name": "MCU", "type": "Microcontroller", "description": "Main controller"}
-        ]
+        """Extract component information from GLR/netlist content."""
+        import re
+        components = []
+
+        if not glr:
+            return self._default_components()
+
+        # Look for component definitions with types
+        # Pattern: Component Type: Name or Component: Name (Type)
+        comp_pattern = r'(?:component|device|ic|chip|module)[\s:]+([A-Za-z0-9_\-]+)[\s]*(?:\(([^)]+)\))?'
+        matches = re.findall(comp_pattern, glr, re.IGNORECASE)
+
+        for comp_name, comp_type in matches:
+            if comp_name:
+                components.append({
+                    "name": comp_name.strip(),
+                    "type": comp_type.strip() if comp_type else "Device",
+                    "description": f"{comp_name} component"
+                })
+
+        # Look for common IC/chip names
+        ic_pattern = r'\b(STM32|ARM|ATMEL|PIC|NXP|TI|Cortex|FPGA|ASIC|MCU|CPU|GPIO|UART|SPI|I2C|ADC|DAC|Sensor)\b'
+        ics = set(re.findall(ic_pattern, glr, re.IGNORECASE))
+
+        for ic in ics:
+            if not any(c["name"].lower() == ic.lower() for c in components):
+                components.append({
+                    "name": ic,
+                    "type": "IC" if ic in ["STM32", "ARM", "ATMEL", "PIC", "NXP"] else "Peripheral",
+                    "description": f"{ic} device"
+                })
+
+        # Look for netlist entry patterns
+        netlist_pattern = r'U\d+\s+([A-Za-z0-9_\-]+)'
+        netlists = re.findall(netlist_pattern, glr)
+
+        for comp_ref in netlists:
+            if not any(c["name"].lower() == comp_ref.lower() for c in components):
+                components.append({
+                    "name": comp_ref,
+                    "type": "Component",
+                    "description": f"{comp_ref} component"
+                })
+
+        return components if components else self._default_components()
 
     async def _extract_registers(self, glr: str, srs: str) -> List[Dict]:
-        """Extract register map from GLR/SRS."""
+        """Extract register definitions from GLR/SRS content."""
+        import re
+        registers = []
+
+        content = (glr or "") + "\n" + (srs or "")
+        if not content:
+            return self._default_registers()
+
+        # Pattern 1: Register definitions with addresses (0xAA, 0x00AA, etc.)
+        reg_pattern = r'(?:register|reg|address|addr)[:\s]+([A-Za-z0-9_]+)[:\s]*(0x[0-9A-Fa-f]+)'
+        matches = re.findall(reg_pattern, content, re.IGNORECASE)
+
+        for reg_name, reg_addr in matches:
+            registers.append({
+                "name": reg_name.strip(),
+                "address": reg_addr.lower(),
+                "width": 32,  # Default width
+                "access": "RW"
+            })
+
+        # Pattern 2: Hex addresses without explicit register names
+        addr_pattern = r'(0x[0-9A-Fa-f]{2,8})[:\s]*([A-Za-z0-9_]*)'
+        addr_matches = re.findall(addr_pattern, content)
+
+        addr_count = {}
+        for addr, name in addr_matches:
+            if addr not in [r["address"] for r in registers]:
+                reg_name = name.strip() if name else f"REG_{addr}"
+                if not reg_name:
+                    reg_name = f"REG_{addr}"
+                    # Track multiple registers at same address
+                    if addr in addr_count:
+                        addr_count[addr] += 1
+                        reg_name += f"_{addr_count[addr]}"
+                    else:
+                        addr_count[addr] = 0
+
+                registers.append({
+                    "name": reg_name,
+                    "address": addr.lower(),
+                    "width": 8,
+                    "access": "RW"
+                })
+
+        # Pattern 3: Bit field definitions (for access type detection)
+        bitfield_pattern = r'(?:read|write|readonly|readwrite|ro|rw|wo)\s*(?:only|able)?[:\s]*([A-Za-z0-9_]+)'
+        bitfield_matches = re.findall(bitfield_pattern, content, re.IGNORECASE)
+
+        # Update access types if we find read/write patterns
+        for i, reg in enumerate(registers):
+            if 'read' in content.lower() and 'write' in content.lower():
+                reg["access"] = "RW"
+            elif 'readonly' in content.lower() or 'read' in content.lower():
+                reg["access"] = "RO"
+            elif 'writeonly' in content.lower() or ('write' in content.lower() and 'read' not in content.lower()):
+                reg["access"] = "WO"
+
+        return registers if registers else self._default_registers()
+
+    def _default_components(self) -> List[Dict]:
+        """Default components."""
+        return [
+            {"name": "MCU", "type": "Microcontroller", "description": "Main microcontroller unit"},
+            {"name": "Sensor", "type": "Peripheral", "description": "Sensor interface"},
+            {"name": "Actuator", "type": "Peripheral", "description": "Actuator control"},
+        ]
+
+    def _default_registers(self) -> List[Dict]:
+        """Default registers."""
         return [
             {"name": "CTRL_REG", "address": "0x00", "width": 8, "access": "RW"},
             {"name": "STATUS_REG", "address": "0x01", "width": 8, "access": "RO"},
+            {"name": "DATA_REG", "address": "0x02", "width": 8, "access": "RW"},
         ]
 
     async def _generate_review_report(self, generated_files: Dict[str, str], project_name: str) -> str:

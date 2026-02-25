@@ -9,8 +9,16 @@ import logging
 from typing import Optional, List
 from pathlib import Path
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+# Optional chromadb import - may not be available due to dependency issues
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    CHROMADB_AVAILABLE = True
+except (ImportError, Exception) as e:
+    CHROMADB_AVAILABLE = False
+    chromadb = None  # type: ignore
+    ChromaSettings = None  # type: ignore
+    logging.warning(f"ChromaDB not available: {e}")
 
 from config import settings
 from schemas.component import Component, ComponentSearchResult
@@ -34,6 +42,12 @@ class ComponentSearchTool:
 
     def _initialize(self):
         """Initialize ChromaDB client and collection."""
+        if not CHROMADB_AVAILABLE:
+            logger.warning("ChromaDB not available, component search disabled")
+            self._client = None
+            self._collection = None
+            return
+
         try:
             # Create persist directory if needed
             persist_dir = Path(settings.chroma_persist_dir)

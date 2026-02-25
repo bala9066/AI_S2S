@@ -116,22 +116,94 @@ class SRSAgent(BaseAgent):
         }
 
     async def _extract_hw_requirements(self, requirements: str, hrs: str) -> list:
-        """Extract hardware requirements from documents."""
+        """Extract hardware requirements from documents using REQ-HW-xxx patterns."""
+        import re
         reqs = []
-        if requirements:
-            for line in requirements.split('\n')[:20]:
-                if line.strip() and not line.startswith('#'):
-                    reqs.append({"text": line.strip()})
-        return reqs
+
+        # Search in HRS first, then requirements
+        content = hrs if hrs else requirements
+        if not content:
+            return []
+
+        # Pattern: REQ-HW-nnn with optional title and description
+        pattern = r'REQ-HW-(\d+)[:\s]+([^\n]+?)(?:\n|$)'
+        matches = re.findall(pattern, content, re.MULTILINE)
+
+        for req_id, title in matches:
+            reqs.append({
+                "req_id": f"REQ-HW-{req_id}",
+                "title": title.strip(),
+                "description": title.strip()
+            })
+
+        # Fallback: extract from header sections mentioning hardware
+        if not reqs:
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if any(keyword in line.lower() for keyword in ['hardware', 'interface', 'pin', 'power', 'voltage', 'frequency']):
+                    if line.strip() and not line.startswith('#'):
+                        reqs.append({
+                            "req_id": f"REQ-HW-{len(reqs)+1:03d}",
+                            "title": line.strip(),
+                            "description": line.strip()
+                        })
+
+        return reqs if reqs else [
+            {"req_id": "REQ-HW-001", "title": "System Power", "description": "System must operate from 3.3V or 5V supply"},
+            {"req_id": "REQ-HW-002", "title": "Communication", "description": "System must support UART/SPI/I2C interfaces"},
+        ]
 
     async def _extract_sw_features(self, glr: str, hrs: str) -> list:
-        """Extract software features from GLR/HRS."""
-        features = [
-            {"id": "F-01", "text": "System initialization and boot"},
-            {"id": "F-02", "text": "Device control and configuration"},
-            {"id": "F-03", "text": "Data acquisition and processing"},
+        """Extract software features from GLR/HRS content."""
+        import re
+        features = []
+
+        # Search for interface protocols and control algorithms
+        content = (glr + "\n" + hrs) if (glr or hrs) else ""
+        if not content:
+            return self._default_sw_features()
+
+        # Look for protocol mentions
+        protocol_pattern = r'\b(SPI|I2C|UART|CAN|USB|GPIO|ADC|PWM|DMA|RTC)\b'
+        protocols = set(re.findall(protocol_pattern, content, re.IGNORECASE))
+
+        for i, protocol in enumerate(sorted(protocols), 1):
+            features.append({
+                "id": f"F-{i:02d}",
+                "name": f"{protocol.upper()} Interface Driver",
+                "text": f"Support for {protocol} protocol communication"
+            })
+
+        # Look for control/algorithm keywords
+        algo_keywords = [
+            (r'control\s+loop|controller|servo', 'Control Loop'),
+            (r'filter|filtering|calibration', 'Signal Filtering'),
+            (r'interrupt|timer|timing', 'Interrupt Handler'),
+            (r'initialization|boot|startup', 'System Initialization'),
+            (r'error\s+handling|fault|exception', 'Error Handling'),
+            (r'state\s+machine|transition', 'State Machine'),
+            (r'data\s+acquisition|sampling|conversion', 'Data Acquisition'),
         ]
-        return features
+
+        for pattern, feature_name in algo_keywords:
+            if re.search(pattern, content, re.IGNORECASE):
+                idx = len(features) + 1
+                features.append({
+                    "id": f"F-{idx:02d}",
+                    "name": feature_name,
+                    "text": f"{feature_name} and processing"
+                })
+
+        # Return defaults if no patterns matched
+        return features if features else self._default_sw_features()
+
+    def _default_sw_features(self) -> list:
+        """Default software features."""
+        return [
+            {"id": "F-01", "name": "System Initialization", "text": "System initialization and boot"},
+            {"id": "F-02", "name": "Device Control", "text": "Device control and configuration"},
+            {"id": "F-03", "name": "Data Acquisition", "text": "Data acquisition and processing"},
+        ]
 
     def _load_file(self, path: Path) -> str:
         if path.exists():

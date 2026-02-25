@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     output_dir = settings.base_dir / "output"
     output_dir.mkdir(exist_ok=True)
     logger.info(f"Database initialized. Output dir: {output_dir}")
+
+    # Seed ChromaDB with sample components if empty
+    from tools.seed_components import seed_if_empty
+    seed_if_empty()
+
     yield
     # Shutdown
     logger.info("Shutting down Hardware Pipeline.")

@@ -48,15 +48,17 @@ class BaseAgent(ABC):
         self.tools = tools or []
         self.max_tokens = max_tokens
 
-        # Initialize Anthropic client
+        # Initialize Anthropic client (Claude API)
         self._anthropic_client: Optional[anthropic.Anthropic] = None
         if settings.anthropic_api_key:
             self._anthropic_client = anthropic.Anthropic(
                 api_key=settings.anthropic_api_key
             )
 
-        # Fallback chain
+        # Fallback chain — auto-promote GLM to primary if no Anthropic key
         self.fallback_chain = settings.fallback_chain
+        if not settings.anthropic_api_key and settings.glm_api_key:
+            logger.info("No Anthropic key — using GLM via Z.AI as primary LLM")
 
     @abstractmethod
     async def execute(self, project_context: dict, user_input: str) -> dict:
@@ -140,7 +142,8 @@ class BaseAgent(ABC):
         elif model.startswith("ollama"):
             return await self._call_ollama(model, messages, system, max_tokens)
         elif model.startswith("glm"):
-            return await self._call_glm(model, messages, system, max_tokens)
+            # GLM via Z.AI uses Anthropic-compatible API — full tool_use support
+            return await self._call_glm_anthropic(model, messages, system, tools, max_tokens)
         else:
             logger.warning(f"Unknown model type: {model}")
             return None
@@ -231,6 +234,62 @@ class BaseAgent(ABC):
             },
         }
 
+    async def _call_glm_anthropic(
+        self,
+        model: str,
+        messages: list[dict],
+        system: str,
+        tools: list[dict],
+        max_tokens: int,
+    ) -> dict:
+        """
+        Call GLM via Z.AI using the Anthropic-compatible endpoint.
+        Z.AI exposes https://api.z.ai/api/anthropic which speaks the Anthropic SDK
+        protocol — so we get native tool_use, streaming, and the same response format.
+        """
+        if not settings.glm_api_key:
+            raise RuntimeError("GLM API key not configured")
+
+        # Create a one-off Anthropic client pointed at Z.AI
+        glm_client = anthropic.Anthropic(
+            api_key=settings.glm_api_key,
+            base_url=settings.glm_base_url,
+        )
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = tools
+
+        response = glm_client.messages.create(**kwargs)
+
+        content_text = ""
+        tool_calls = []
+        for block in response.content:
+            if block.type == "text":
+                content_text += block.text
+            elif block.type == "tool_use":
+                tool_calls.append({
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+
+        return {
+            "content": content_text,
+            "tool_calls": tool_calls,
+            "stop_reason": response.stop_reason,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            },
+        }
+
     async def _call_glm(
         self,
         model: str,
@@ -238,28 +297,30 @@ class BaseAgent(ABC):
         system: str,
         max_tokens: int,
     ) -> dict:
-        """Call GLM-4 API as last resort fallback."""
-        # GLM-4 uses OpenAI-compatible API format
+        """
+        Call GLM via OpenAI-compatible API (legacy fallback, no tool_use).
+        Used only if Z.AI endpoint is unavailable.
+        """
+        if not settings.glm_api_key:
+            raise RuntimeError("GLM API key not configured")
+
         glm_messages = []
         if system:
             glm_messages.append({"role": "system", "content": system})
         glm_messages.extend(messages)
-
-        if not settings.glm_api_key:
-            raise RuntimeError("GLM API key not configured")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"{settings.glm_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.glm_api_key}"},
                 json={
-                    "model": settings.glm_model,
+                    "model": model,
                     "messages": glm_messages,
                     "max_tokens": max_tokens,
                 },
             )
             response.raise_for_status()
-            data = await response.json()
+            data = response.json() if not hasattr(response.json, "__await__") else await response.json()
 
         choice = data.get("choices", [{}])[0]
         return {
