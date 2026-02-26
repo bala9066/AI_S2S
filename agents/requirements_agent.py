@@ -644,23 +644,32 @@ class RequirementsAgent(BaseAgent):
         Detect if the response contains a complete requirements document.
         This is a fallback for models that don't support tool calling (e.g., GLM-4).
         """
+        content_lower = response_content.lower()
+
+        # Strong signal: long response (>2000 chars) with multiple REQ-HW IDs = almost certainly complete
+        req_count = len(re.findall(r'REQ-HW-\d+', response_content, re.IGNORECASE))
+        if len(response_content) > 2000 and req_count >= 3:
+            return True
+
         # Look for key indicators of a complete requirements document
         indicators = [
             # Requirement IDs present
-            bool(re.search(r'REQ-HW-\d+', response_content, re.IGNORECASE)),
+            req_count >= 1,
             # Hardware requirements header
-            'hardware requirements' in response_content.lower(),
-            'requirements document' in response_content.lower(),
+            'hardware requirements' in content_lower,
+            'requirements document' in content_lower,
             # Project summary section
-            'project summary' in response_content.lower(),
+            'project summary' in content_lower,
             # Design parameters table
-            'design parameters' in response_content.lower() or 'parameter' in response_content.lower(),
+            'design parameters' in content_lower or 'parameter' in content_lower,
             # Component recommendations
-            'component recommendations' in response_content.lower() or 'component' in response_content.lower(),
-            # Next steps or conclusion phrases
-            any(phrase in response_content.lower() for phrase in [
+            'component recommendations' in content_lower or 'component' in content_lower,
+            # Next steps or conclusion phrases (broader set)
+            any(phrase in content_lower for phrase in [
                 'next steps', 'phase complete', 'requirements captured',
-                'would you like me to', 'shall i proceed'
+                'would you like me to', 'shall i proceed',
+                'work on next', 'let me know what', 'phase 1 deliverable',
+                'deliverable', 'generated your', 'complete requirements',
             ]),
         ]
 
