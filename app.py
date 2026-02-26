@@ -548,6 +548,7 @@ def _handle_chat_input(user_input: str):
             if result.get("draft_pending"):
                 st.session_state.draft_pending = True
                 st.session_state.current_draft = result.get("draft", {})
+                st.rerun()  # Re-render so approve buttons appear above chat input
 
             if result.get("phase_complete"):
                 st.session_state.phase1_complete = True
