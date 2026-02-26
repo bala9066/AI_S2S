@@ -481,6 +481,45 @@ After successful testing:
 
 ---
 
+---
+
+## UI Testing with Playwright
+
+The `tests/test_ui_playwright.py` file provides end-to-end browser tests for the Streamlit UI.
+
+### Setup (run once)
+```bash
+pip install playwright pytest-playwright
+playwright install chromium
+```
+
+### Run UI Tests
+```bash
+# Start the app first (in a separate terminal):
+streamlit run app.py &
+python -m uvicorn main:app --port 8000 &
+
+# Run all UI tests (headless):
+pytest tests/test_ui_playwright.py -v
+
+# Run with browser visible (for debugging):
+pytest tests/test_ui_playwright.py -v --headed
+
+# Or run the standalone smoke test (opens browser interactively):
+python tests/test_ui_playwright.py
+```
+
+### What's tested
+- All 8 tab navigation (Overview, New Project, Design Chat, Pipeline, Documents, Netlist, Code Review, Dashboard)
+- New project form validation (empty name error)
+- Project creation success flow
+- Design chat welcome message and chat input
+- Sidebar API key status and mode indicator
+- Dashboard metric cards
+- Screenshots of all tabs saved to `test_screenshots/`
+
+---
+
 **For more details, see:**
 - [API_KEY_SETUP.md](API_KEY_SETUP.md) - API key configuration guide
 - [KNOWN_ISSUES_RESOLVED.md](KNOWN_ISSUES_RESOLVED.md) - Issue resolutions
