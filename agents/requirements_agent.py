@@ -20,6 +20,12 @@ from typing import Optional
 from agents.base_agent import BaseAgent
 from config import settings
 
+_APPROVAL_KEYWORDS = {"approve", "approved", "yes", "ok", "okay", "looks good",
+                      "good", "correct", "proceed", "go ahead", "lgtm", "perfect", "great"}
+
+def _is_approval(text: str) -> bool:
+    return any(kw in text.lower() for kw in _APPROVAL_KEYWORDS)
+
 # Optional import for ComponentSearchTool (ChromaDB has Python 3.14+ compatibility issues)
 try:
     from tools.component_search import ComponentSearchTool
@@ -341,8 +347,22 @@ class RequirementsAgent(BaseAgent):
                         "parameters": tc["input"].get("design_parameters", {}),
                     }
 
+        # Fallback: detect draft response in plain text (GLM-4 / no tool use)
+        # Draft = model generated a design summary but is asking for approval, not yet complete
+        if self._detect_draft_response(response_content) and not _is_approval(user_input):
+            self.log("Detected draft response in plain text (fallback parser)", "info")
+            return {
+                "response": response_content,
+                "phase_complete": False,
+                "draft_pending": True,
+                "draft": {},
+                "outputs": {},
+                "parameters": {},
+            }
+
         # Fallback: detect complete requirements in plain text (GLM-4 / no tool use)
-        if self._detect_complete_requirements(response_content):
+        # Only treat as complete if user explicitly approved
+        if self._detect_complete_requirements(response_content) and _is_approval(user_input):
             self.log("Detected complete requirements in response (fallback parser)", "info")
             parsed_data = self._parse_requirements_response(response_content, project_context.get("name", "project"))
             if parsed_data:
@@ -591,6 +611,33 @@ class RequirementsAgent(BaseAgent):
                 lines.append("")
 
         return "\n".join(lines)
+
+    def _detect_draft_response(self, response_content: str) -> bool:
+        """
+        Detect if the response is a DRAFT (asking for approval) rather than a complete doc.
+        GLM models return formatted drafts as plain text without tool calls.
+        """
+        content_lower = response_content.lower()
+        # Must have draft-like content (summary/requirements/components)
+        has_content = sum([
+            bool(re.search(r'REQ-HW-\d+', response_content, re.IGNORECASE)),
+            'project summary' in content_lower,
+            'key requirements' in content_lower or 'requirements' in content_lower,
+            'component' in content_lower,
+            'block diagram' in content_lower or 'architecture' in content_lower,
+        ]) >= 3
+        # AND must be asking for approval (not yet done)
+        asking_approval = any(phrase in content_lower for phrase in [
+            'does this draft look right',
+            'does this look right',
+            'approve to proceed',
+            'tell me what to change',
+            'look right?',
+            'looks good?',
+            'shall i proceed',
+            'would you like to',
+        ])
+        return has_content and asking_approval
 
     def _detect_complete_requirements(self, response_content: str) -> bool:
         """
