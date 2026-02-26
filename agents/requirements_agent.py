@@ -20,6 +20,12 @@ from typing import Optional
 from agents.base_agent import BaseAgent
 from config import settings
 
+_APPROVAL_KEYWORDS = {"approve", "approved", "yes", "ok", "okay", "looks good",
+                      "good", "correct", "proceed", "go ahead", "lgtm", "perfect", "great"}
+
+def _is_approval(text: str) -> bool:
+    return any(kw in text.lower() for kw in _APPROVAL_KEYWORDS)
+
 # Optional import for ComponentSearchTool (ChromaDB has Python 3.14+ compatibility issues)
 try:
     from tools.component_search import ComponentSearchTool
@@ -267,39 +273,34 @@ class RequirementsAgent(BaseAgent):
         """
         Execute Phase 1 — Draft-First approach.
 
-        States:
-          - No draft yet          → generate_draft immediately
-          - Draft pending approval → check if user approved or wants changes
-          - Approved              → generate_requirements (full outputs)
+        Phase completion is AUTHORITATIVE via tool_use only:
+          - generate_draft tool      → draft_pending=True (show approve buttons)
+          - generate_requirements    → phase_complete=True (write output files)
 
-        Returns:
-            dict with keys:
-              'response'       - text to display in chat
-              'phase_complete' - bool
-              'draft'          - draft data dict (if draft generated)
-              'draft_pending'  - bool (True = waiting for user approval)
-              'outputs'        - final file dict (if phase complete)
-              'parameters'     - extracted design parameters
+        Plain-text fallback is used ONLY for draft detection (draft_pending),
+        never for phase_complete. This eliminates heuristic state transitions.
+
+        For models that ignore tool_use on approval (e.g. GLM-4), we synthesise
+        a generate_requirements call by parsing the response and writing outputs
+        immediately — phase_complete is still set explicitly, not via heuristics.
         """
         system = self.get_system_prompt(project_context)
 
-        # Build messages from conversation history (exclude system welcome)
+        # Build message list from conversation history
         history = project_context.get("conversation_history", [])
         messages = []
         for msg in history:
-            if msg["role"] in ("user", "assistant"):
+            if msg.get("role") in ("user", "assistant") and msg.get("content"):
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Append current user input if not already last message
         if not messages or messages[-1]["role"] != "user":
             messages.append({"role": "user", "content": user_input})
 
-        # Tool handlers
+        # Tool handlers (optional component search)
         tool_handlers = {}
         if COMPONENT_SEARCH_AVAILABLE and self.component_search:
             tool_handlers["search_components"] = self._handle_search_components
 
-        # Call LLM
         response = await self.call_llm_with_tools(
             messages=messages,
             system=system,
@@ -308,16 +309,17 @@ class RequirementsAgent(BaseAgent):
 
         response_content = response.get("content", "")
 
-        # Handle tool calls
+        # ── Tool-use path (authoritative) ─────────────────────────────────
         if response.get("tool_calls"):
             for tc in response["tool_calls"]:
 
-                # ── Draft generated ──────────────────────────────────────────
                 if tc["name"] == "generate_draft":
                     draft_data = tc["input"]
                     draft_response = self._format_draft_response(draft_data)
+                    self.log("generate_draft tool called — draft_pending=True", "info")
                     return {
-                        "response": response_content + "\n\n" + draft_response if response_content else draft_response,
+                        "response": (response_content + "\n\n" + draft_response
+                                     if response_content else draft_response),
                         "phase_complete": False,
                         "draft_pending": True,
                         "draft": draft_data,
@@ -325,15 +327,16 @@ class RequirementsAgent(BaseAgent):
                         "parameters": {},
                     }
 
-                # ── Full requirements generated (after approval) ───────────
                 if tc["name"] == "generate_requirements":
+                    self.log("generate_requirements tool called — phase_complete=True", "info")
                     outputs = self._generate_output_files(
                         tc["input"],
                         project_context.get("output_dir", "output"),
                         project_context.get("name", "project"),
                     )
                     return {
-                        "response": response_content + "\n\n✅ **Phase 1 Complete!** All documents have been generated.",
+                        "response": (response_content
+                                     + "\n\n✅ **Phase 1 Complete!** All documents have been generated."),
                         "phase_complete": True,
                         "draft_pending": False,
                         "draft": {},
@@ -341,26 +344,56 @@ class RequirementsAgent(BaseAgent):
                         "parameters": tc["input"].get("design_parameters", {}),
                     }
 
-        # Fallback: detect complete requirements in plain text (GLM-4 / no tool use)
-        if self._detect_complete_requirements(response_content):
-            self.log("Detected complete requirements in response (fallback parser)", "info")
-            parsed_data = self._parse_requirements_response(response_content, project_context.get("name", "project"))
-            if parsed_data:
+        # ── Plain-text fallback: draft detection only ──────────────────────
+        # Used when model (e.g. GLM-4) returns a draft without calling generate_draft.
+        # NEVER sets phase_complete via text detection.
+        if self._detect_draft_response(response_content) and not _is_approval(user_input):
+            self.log("Plain-text draft detected — draft_pending=True (no tool call)", "info")
+            return {
+                "response": response_content,
+                "phase_complete": False,
+                "draft_pending": True,
+                "draft": {},
+                "outputs": {},
+                "parameters": {},
+            }
+
+        # ── Plain-text fallback: synthesised completion on approval ────────
+        # When user approves but LLM returns full requirements as plain text
+        # (no generate_requirements tool call), we parse and write outputs here.
+        # phase_complete is set explicitly — no heuristic text-matching.
+        if _is_approval(user_input) and self._detect_complete_requirements(response_content):
+            self.log("Approval + complete response detected — synthesising completion", "info")
+            parsed = self._parse_requirements_response(
+                response_content, project_context.get("name", "project")
+            )
+            if parsed:
                 outputs = self._generate_output_files(
-                    parsed_data,
+                    parsed,
                     project_context.get("output_dir", "output"),
                     project_context.get("name", "project"),
                 )
+                self.log("Synthesised outputs written — phase_complete=True", "info")
                 return {
                     "response": response_content + "\n\n✅ **Phase 1 Complete!** All documents generated.",
                     "phase_complete": True,
                     "draft_pending": False,
                     "draft": {},
                     "outputs": outputs,
-                    "parameters": parsed_data.get("design_parameters", {}),
+                    "parameters": parsed.get("design_parameters", {}),
                 }
+            # Parser returned None (rare) — stay in draft_pending, prompt user to retry
+            self.log("Synthesised completion: parser returned None, keeping draft_pending", "warning")
+            return {
+                "response": response_content,
+                "phase_complete": False,
+                "draft_pending": True,
+                "draft": {},
+                "outputs": {},
+                "parameters": {},
+            }
 
-        # Normal conversational response
+        # ── Normal conversational exchange ─────────────────────────────────
         return {
             "response": response_content,
             "phase_complete": False,
@@ -592,28 +625,64 @@ class RequirementsAgent(BaseAgent):
 
         return "\n".join(lines)
 
+    def _detect_draft_response(self, response_content: str) -> bool:
+        """
+        Detect if the response is a DRAFT (asking for approval) rather than a complete doc.
+        GLM models return formatted drafts as plain text without tool calls.
+        """
+        content_lower = response_content.lower()
+        # Must have draft-like content (summary/requirements/components)
+        has_content = sum([
+            bool(re.search(r'REQ-HW-\d+', response_content, re.IGNORECASE)),
+            'project summary' in content_lower,
+            'key requirements' in content_lower or 'requirements' in content_lower,
+            'component' in content_lower,
+            'block diagram' in content_lower or 'architecture' in content_lower,
+        ]) >= 3
+        # AND must be asking for approval (not yet done)
+        asking_approval = any(phrase in content_lower for phrase in [
+            'does this draft look right',
+            'does this look right',
+            'approve to proceed',
+            'tell me what to change',
+            'look right?',
+            'looks good?',
+            'shall i proceed',
+            'would you like to',
+        ])
+        return has_content and asking_approval
+
     def _detect_complete_requirements(self, response_content: str) -> bool:
         """
         Detect if the response contains a complete requirements document.
         This is a fallback for models that don't support tool calling (e.g., GLM-4).
         """
+        content_lower = response_content.lower()
+
+        # Strong signal: long response (>2000 chars) with multiple REQ-HW IDs = almost certainly complete
+        req_count = len(re.findall(r'REQ-HW-\d+', response_content, re.IGNORECASE))
+        if len(response_content) > 2000 and req_count >= 3:
+            return True
+
         # Look for key indicators of a complete requirements document
         indicators = [
             # Requirement IDs present
-            bool(re.search(r'REQ-HW-\d+', response_content, re.IGNORECASE)),
+            req_count >= 1,
             # Hardware requirements header
-            'hardware requirements' in response_content.lower(),
-            'requirements document' in response_content.lower(),
+            'hardware requirements' in content_lower,
+            'requirements document' in content_lower,
             # Project summary section
-            'project summary' in response_content.lower(),
+            'project summary' in content_lower,
             # Design parameters table
-            'design parameters' in response_content.lower() or 'parameter' in response_content.lower(),
+            'design parameters' in content_lower or 'parameter' in content_lower,
             # Component recommendations
-            'component recommendations' in response_content.lower() or 'component' in response_content.lower(),
-            # Next steps or conclusion phrases
-            any(phrase in response_content.lower() for phrase in [
+            'component recommendations' in content_lower or 'component' in content_lower,
+            # Next steps or conclusion phrases (broader set)
+            any(phrase in content_lower for phrase in [
                 'next steps', 'phase complete', 'requirements captured',
-                'would you like me to', 'shall i proceed'
+                'would you like me to', 'shall i proceed',
+                'work on next', 'let me know what', 'phase 1 deliverable',
+                'deliverable', 'generated your', 'complete requirements',
             ]),
         ]
 

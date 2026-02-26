@@ -1,10 +1,18 @@
 """
 SQLAlchemy database models for Hardware Pipeline.
 Supports PostgreSQL (production) and SQLite (development/demo).
+
+Session strategy:
+- Sync  (get_session):       used by FastAPI route handlers and Streamlit
+- Async (get_async_session): used by PipelineService / ChatService background tasks
+  so they never block the FastAPI event loop.
+
+For SQLite the async URL is derived by inserting "+aiosqlite" into the scheme.
+For Postgres the async URL uses "+asyncpg".
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, JSON, Boolean, Float,
@@ -13,8 +21,22 @@ from sqlalchemy import (
 from sqlalchemy.orm import (
     DeclarativeBase, relationship, sessionmaker, Session,
 )
+from sqlalchemy.ext.asyncio import (
+    create_async_engine, AsyncSession, async_sessionmaker,
+)
 
 from config import settings
+
+
+def _async_url(sync_url: str) -> str:
+    """Derive an async-compatible database URL from the sync one."""
+    if sync_url.startswith("sqlite:///"):
+        return sync_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+    if sync_url.startswith("postgresql://"):
+        return sync_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if sync_url.startswith("postgresql+psycopg2://"):
+        return sync_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    return sync_url
 
 
 class Base(DeclarativeBase):
@@ -118,7 +140,7 @@ class ComplianceRecordDB(Base):
     checked_at = Column(DateTime, default=datetime.now)
 
 
-# --- Engine & Session ---
+# --- Sync Engine & Session (used by Streamlit / simple route reads) ---
 
 _engine = None
 _SessionLocal = None
@@ -127,12 +149,14 @@ _SessionLocal = None
 def get_engine():
     global _engine
     if _engine is None:
+        is_sqlite = settings.database_url.startswith("sqlite")
         _engine = create_engine(
             settings.database_url,
             echo=settings.debug,
             future=True,
+            # SQLite: allow multiple threads to share the same connection
+            connect_args={"check_same_thread": False} if is_sqlite else {},
         )
-        # Create tables
         Base.metadata.create_all(_engine)
     return _engine
 
@@ -142,3 +166,48 @@ def get_session() -> Session:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
     return _SessionLocal()
+
+
+# --- Async Engine & Session (used by PipelineService / ChatService) ---
+# Background tasks run inside the FastAPI async event loop — using the sync
+# session would block it.  AsyncSession + aiosqlite keeps everything non-blocking.
+
+_async_engine = None
+_AsyncSessionLocal: async_sessionmaker | None = None
+
+
+def get_async_engine():
+    global _async_engine
+    if _async_engine is None:
+        url = _async_url(settings.database_url)
+        _async_engine = create_async_engine(
+            url,
+            echo=settings.debug,
+            # SQLite: serialised writes are fine; WAL set on sync engine
+        )
+    return _async_engine
+
+
+def get_async_session_factory() -> async_sessionmaker:
+    """Return (and lazily create) the async session factory."""
+    global _AsyncSessionLocal
+    if _AsyncSessionLocal is None:
+        _AsyncSessionLocal = async_sessionmaker(
+            bind=get_async_engine(),
+            expire_on_commit=False,
+            class_=AsyncSession,
+        )
+    return _AsyncSessionLocal
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Async context manager / FastAPI dependency that yields an AsyncSession.
+
+    Usage in services:
+        async with get_async_session_factory()() as session:
+            ...
+    """
+    factory = get_async_session_factory()
+    async with factory() as session:
+        yield session

@@ -1,239 +1,242 @@
 """
-Hardware Pipeline - FastAPI Server
-Serves the backend API for the Streamlit UI and agent orchestration.
+Hardware Pipeline — FastAPI backend.
+
+Design principles applied here:
+- Thin route handlers: parse request → call service → return response.
+- No business logic in this file (lives in services/).
+- CORS restricted to known origins only.
+- Secrets validated at startup — missing keys cause an early, clear error.
+- Pipeline runs as BackgroundTask (non-blocking, UI polls for status).
+- Structured logging via Python logging throughout.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from database.models import get_engine, get_session, ProjectDB, PhaseOutputDB
-from schemas.project import ProjectCreate, Project
+from logging_config import configure_logging
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
+configure_logging()
+log = logging.getLogger("hardware_pipeline.api")
 
+
+# ── Startup / shutdown ────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
-    # Startup
-    logger.info(f"Starting {settings.app_name}...")
-    get_engine()  # Initialize DB
-    output_dir = settings.base_dir / "output"
-    output_dir.mkdir(exist_ok=True)
-    logger.info(f"Database initialized. Output dir: {output_dir}")
+    log.info("startup.begin", extra={"env": settings.app_env})
 
-    # Seed ChromaDB with sample components if empty
-    from tools.seed_components import seed_if_empty
-    seed_if_empty()
+    # 1. Validate secrets — fail fast with a clear message
+    _validate_secrets()
 
+    # 2. Initialise DB (creates tables if they don't exist)
+    from database.models import get_engine
+    get_engine()
+    log.info("startup.db_ready")
+
+    # 3. Ensure output directory exists
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 4. Seed ChromaDB component index (idempotent)
+    try:
+        from tools.seed_components import seed_if_empty
+        seed_if_empty()
+        log.info("startup.chroma_ready")
+    except Exception as exc:
+        log.warning("startup.chroma_seed_failed: %s", exc)
+
+    log.info("startup.complete", extra={"air_gapped": settings.is_air_gapped})
     yield
-    # Shutdown
-    logger.info("Shutting down Hardware Pipeline.")
+    log.info("shutdown.complete")
 
+
+def _validate_secrets() -> None:
+    """
+    Fail fast if required secrets are missing.
+    Logs a clear warning for optional keys so operators know what's degraded.
+    """
+    if not settings.has_any_llm_key:
+        if settings.app_env == "production":
+            raise RuntimeError(
+                "No LLM API key configured (ANTHROPIC_API_KEY or GLM_API_KEY). "
+                "Set at least one before starting in production."
+            )
+        log.warning("startup.no_llm_key — running in air-gap/Ollama mode")
+
+    optional_keys = {
+        "DIGIKEY_CLIENT_ID": settings.digikey_client_id,
+        "MOUSER_API_KEY": settings.mouser_api_key,
+        "OPENAI_API_KEY": settings.openai_api_key,
+    }
+    for name, val in optional_keys.items():
+        if not val:
+            log.info("startup.optional_key_missing: %s (degraded mode)", name)
+
+
+# ── App factory ────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title=settings.app_name,
     description="AI-powered hardware design automation pipeline",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,   # hide Swagger in prod
+    redoc_url=None,
 )
 
-# CORS for Streamlit
+# CORS: restrict to known origins only (never wildcard in any real deploy)
+_ALLOWED_ORIGINS = [
+    f"http://localhost:{settings.streamlit_port}",
+    f"http://127.0.0.1:{settings.streamlit_port}",
+    # Production domain added via CORS_ORIGIN env var
+    *([os.environ["CORS_ORIGIN"]] if "CORS_ORIGIN" in os.environ else []),
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
-# --- Health Check ---
+# ── Service singletons (created once per process) ─────────────────────────────
 
-@app.get("/health")
+def _project_svc():
+    from services.project_service import ProjectService
+    return ProjectService()
+
+def _chat_svc():
+    from services.chat_service import ChatService
+    return ChatService()
+
+def _pipeline_svc():
+    from services.pipeline_service import PipelineService
+    return PipelineService()
+
+
+# ── Health ─────────────────────────────────────────────────────────────────────
+
+@app.get("/health", tags=["ops"])
 async def health_check():
     return {
         "status": "healthy",
         "app": settings.app_name,
         "environment": settings.app_env,
         "air_gapped": settings.is_air_gapped,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
 
-# --- Project CRUD ---
+# ── Projects ───────────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/projects", response_model=dict)
-async def create_project(project: ProjectCreate):
-    """Create a new hardware design project."""
-    session = get_session()
+@app.post("/api/v1/projects", status_code=201, tags=["projects"])
+async def create_project(body: dict):
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
     try:
-        # Create output directory
-        project_dir = settings.base_dir / "output" / project.name.replace(" ", "_").lower()
-        project_dir.mkdir(parents=True, exist_ok=True)
-
-        db_project = ProjectDB(
-            name=project.name,
-            description=project.description,
-            design_type=project.design_type,
-            output_dir=str(project_dir),
+        return _project_svc().create(
+            name=name,
+            description=body.get("description", ""),
+            design_type=body.get("design_type", "general"),
         )
-        session.add(db_project)
-        session.commit()
-        session.refresh(db_project)
-
-        return {
-            "id": db_project.id,
-            "name": db_project.name,
-            "output_dir": db_project.output_dir,
-            "message": f"Project '{db_project.name}' created successfully.",
-        }
-    except Exception as e:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
+    except Exception as exc:
+        log.exception("api.create_project_failed")
+        raise HTTPException(500, str(exc))
 
 
-@app.get("/api/v1/projects")
+@app.get("/api/v1/projects", tags=["projects"])
 async def list_projects():
-    """List all projects."""
-    session = get_session()
-    try:
-        projects = session.query(ProjectDB).order_by(ProjectDB.created_at.desc()).all()
-        return [
-            {
-                "id": p.id,
-                "name": p.name,
-                "design_type": p.design_type,
-                "current_phase": p.current_phase,
-                "created_at": p.created_at.isoformat() if p.created_at else None,
-            }
-            for p in projects
-        ]
-    finally:
-        session.close()
+    return _project_svc().list_all()
 
 
-@app.get("/api/v1/projects/{project_id}")
+@app.get("/api/v1/projects/{project_id}", tags=["projects"])
 async def get_project(project_id: int):
-    """Get project details."""
-    session = get_session()
-    try:
-        project = session.query(ProjectDB).filter(ProjectDB.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return {
-            "id": project.id,
-            "name": project.name,
-            "description": project.description,
-            "design_type": project.design_type,
-            "current_phase": project.current_phase,
-            "phase_statuses": project.phase_statuses or {},
-            "conversation_history": project.conversation_history or [],
-            "design_parameters": project.design_parameters or {},
-            "output_dir": project.output_dir,
-            "created_at": project.created_at.isoformat() if project.created_at else None,
-        }
-    finally:
-        session.close()
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    return proj
 
 
-# --- Phase Execution ---
+# ── Chat (Phase 1) ─────────────────────────────────────────────────────────────
 
-@app.post("/api/v1/projects/{project_id}/phases/{phase_number}/execute")
-async def execute_phase(project_id: int, phase_number: str, body: dict = {}):
-    """Execute a specific phase for a project."""
-    session = get_session()
-    try:
-        project = session.query(ProjectDB).filter(ProjectDB.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        user_input = body.get("user_input", "")
-
-        # Import orchestrator lazily to avoid circular imports
-        from agents.orchestrator import OrchestratorAgent
-        orchestrator = OrchestratorAgent()
-
-        result = await orchestrator.execute_phase(
-            project_id=project_id,
-            phase_number=phase_number,
-            user_input=user_input,
-            session=session,
-        )
-
-        return result
-    except Exception as e:
-        logger.error(f"Phase {phase_number} execution failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
-
-
-# --- Chat (Phase 1 Conversational) ---
-
-@app.post("/api/v1/projects/{project_id}/chat")
+@app.post("/api/v1/projects/{project_id}/chat", tags=["chat"])
 async def chat(project_id: int, body: dict):
-    """Send a message to the Phase 1 Requirements Agent."""
-    session = get_session()
+    """Send a message to the Phase 1 requirements agent."""
+    message = (body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+
     try:
-        project = session.query(ProjectDB).filter(ProjectDB.id == project_id).first()
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
-
-        user_message = body.get("message", "")
-        if not user_message:
-            raise HTTPException(status_code=400, detail="Message is required")
-
-        from agents.requirements_agent import RequirementsAgent
-        agent = RequirementsAgent()
-
-        # Load conversation history
-        history = project.conversation_history or []
-        history.append({"role": "user", "content": user_message})
-
-        result = await agent.execute(
-            project_context={
-                "project_id": project.id,
-                "name": project.name,
-                "design_type": project.design_type,
-                "conversation_history": history,
-                "output_dir": project.output_dir,
-            },
-            user_input=user_message,
-        )
-
-        # Save updated conversation history
-        history.append({"role": "assistant", "content": result.get("response", "")})
-        project.conversation_history = history
-        project.design_parameters = result.get("parameters", project.design_parameters)
-        session.commit()
-
-        return {
-            "response": result.get("response", ""),
-            "phase_complete": result.get("phase_complete", False),
-            "outputs": result.get("outputs", {}),
-        }
-    except Exception as e:
-        logger.error(f"Chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
+        result = await _chat_svc().send_message(project_id, message)
+        log.info("api.chat_ok",
+                 extra={"project_id": project_id, "phase_complete": result.get("phase_complete")})
+        return result
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        log.exception("api.chat_failed", extra={"project_id": project_id})
+        raise HTTPException(500, str(exc))
 
 
-# --- Run ---
+# ── Pipeline (P2→P8c background execution) ────────────────────────────────────
+
+@app.post("/api/v1/projects/{project_id}/pipeline/run", tags=["pipeline"])
+async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
+    """
+    Start the full P2→P8c pipeline as a background task.
+    Returns immediately; UI should poll GET /projects/{id} for status.
+    """
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    if _project_svc().get_phase_status(project_id, "P1") != "completed":
+        raise HTTPException(400, "Phase 1 must be completed before running the pipeline")
+
+    svc = _pipeline_svc()
+    background_tasks.add_task(svc.run_pipeline, project_id)
+    log.info("api.pipeline_started", extra={"project_id": project_id})
+    return {"status": "pipeline_started", "project_id": project_id}
+
+
+@app.post("/api/v1/projects/{project_id}/phases/{phase_id}/execute", tags=["pipeline"])
+async def execute_single_phase(project_id: int, phase_id: str, background_tasks: BackgroundTasks):
+    """Execute one specific phase as a background task."""
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    try:
+        svc = _pipeline_svc()
+        background_tasks.add_task(svc.run_single_phase, project_id, phase_id)
+        return {"status": "phase_started", "phase_id": phase_id, "project_id": project_id}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# ── Phase status (polling endpoint for UI) ─────────────────────────────────────
+
+@app.get("/api/v1/projects/{project_id}/status", tags=["pipeline"])
+async def get_project_status(project_id: int):
+    """Lightweight status poll — returns phase_statuses without full conversation."""
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    return {
+        "project_id": project_id,
+        "current_phase": proj.get("current_phase"),
+        "phase_statuses": proj.get("phase_statuses", {}),
+    }
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
@@ -242,4 +245,5 @@ if __name__ == "__main__":
         host=settings.fastapi_host,
         port=settings.fastapi_port,
         reload=settings.debug,
+        log_level=settings.log_level.lower(),
     )

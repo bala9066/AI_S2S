@@ -109,18 +109,37 @@ class BaseAgent(ABC):
                 )
                 if result:
                     result["model_used"] = fallback_model
+                    usage = result.get("usage", {})
+                    logger.info(
+                        "llm.call_ok phase=%s model=%s in=%s out=%s",
+                        self.phase_number, fallback_model,
+                        usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+                        extra={"phase": self.phase_number, "model": fallback_model},
+                    )
                     return result
             except anthropic.RateLimitError as e:
-                logger.warning(f"Rate limit on {fallback_model}: {e}. Trying next fallback.")
+                logger.warning(
+                    "llm.rate_limit phase=%s model=%s — trying next",
+                    self.phase_number, fallback_model,
+                    extra={"phase": self.phase_number},
+                )
                 last_error = e
             except anthropic.APIStatusError as e:
                 if "token" in str(e).lower() or "limit" in str(e).lower():
-                    logger.warning(f"Token limit on {fallback_model}: {e}. Trying next fallback.")
+                    logger.warning(
+                        "llm.token_limit phase=%s model=%s — trying next",
+                        self.phase_number, fallback_model,
+                        extra={"phase": self.phase_number},
+                    )
                     last_error = e
                 else:
                     raise
             except Exception as e:
-                logger.warning(f"Error with {fallback_model}: {e}. Trying next fallback.")
+                logger.warning(
+                    "llm.error phase=%s model=%s: %s — trying next",
+                    self.phase_number, fallback_model, e,
+                    extra={"phase": self.phase_number},
+                )
                 last_error = e
 
         raise RuntimeError(
@@ -415,7 +434,15 @@ class BaseAgent(ABC):
         response["content"] = accumulated_content
         return response
 
-    def log(self, message: str, level: str = "info"):
-        """Log with phase context."""
-        prefix = f"[{self.phase_number}:{self.phase_name}]"
-        getattr(logger, level)(f"{prefix} {message}")
+    def log(self, message: str, level: str = "info", **extra):
+        """
+        Structured log with phase context.
+        Extra kwargs are included as structured fields (project_id, model, etc.).
+        """
+        extra["phase"] = self.phase_number
+        # Use the logging extra dict so formatters can pick up structured fields
+        getattr(logger, level)(
+            "[%s:%s] %s", self.phase_number, self.phase_name, message,
+            extra=extra,
+            stacklevel=2,
+        )
