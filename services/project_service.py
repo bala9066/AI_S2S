@@ -85,11 +85,11 @@ class ProjectService:
             session.add(db)
             session.commit()
             session.refresh(db)
-            log.info("project.created", extra={"project_id": db.id, "name": name})
+            log.info("project.created", extra={"project_id": db.id, "project_name": name})
             return _project_to_dict(db)
         except Exception:
             session.rollback()
-            log.exception("project.create_failed", extra={"name": name})
+            log.exception("project.create_failed", extra={"project_name": name})
             raise
         finally:
             session.close()

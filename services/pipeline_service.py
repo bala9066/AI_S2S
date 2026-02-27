@@ -60,7 +60,7 @@ class PipelineService:
             log.error("pipeline.project_not_found", extra={"project_id": project_id})
             return
 
-        log.info("pipeline.started", extra={"project_id": project_id, "name": proj["name"]})
+        log.info("pipeline.started", extra={"project_id": project_id, "project_name": proj["name"]})
         prior_outputs: dict[str, str] = self._load_prior_outputs(proj)
 
         for phase_id, module_path, class_name, phase_name in AUTO_PHASES:
