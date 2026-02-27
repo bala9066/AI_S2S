@@ -98,6 +98,8 @@ class ProjectService:
         """Load project from DB — always fresh, never from session state."""
         session = get_session()
         try:
+            # Force fresh read — expire all cached objects and flush any pending state
+            session.expire_all()
             p = session.query(ProjectDB).filter(ProjectDB.id == project_id).first()
             return _project_to_dict(p) if p else None
         finally:

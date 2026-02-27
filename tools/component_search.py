@@ -18,7 +18,7 @@ except (ImportError, Exception) as e:
     CHROMADB_AVAILABLE = False
     chromadb = None  # type: ignore
     ChromaSettings = None  # type: ignore
-    logging.warning(f"ChromaDB not available: {e}")
+    logging.info("ChromaDB not available (optional): %s", e)
 
 from config import settings
 from schemas.component import Component, ComponentSearchResult
@@ -140,6 +140,27 @@ class ComponentSearchTool:
             logger.error(f"Component search failed: {e}")
             return []
 
+    @staticmethod
+    def _flatten_metadata(component: "Component") -> dict:
+        """Build ChromaDB-safe metadata (only str/int/float/bool/None)."""
+        import json
+        meta = {
+            "part_number": component.part_number,
+            "manufacturer": component.manufacturer,
+            "description": component.description,
+            "category": component.category,
+            "datasheet_url": component.datasheet_url,
+            "lifecycle_status": component.lifecycle_status,
+            "estimated_cost_usd": component.estimated_cost_usd,
+        }
+        # Flatten key_specs dict → individual "spec_<key>" entries
+        if isinstance(component.key_specs, dict):
+            meta["key_specs_json"] = json.dumps(component.key_specs)
+            for k, v in component.key_specs.items():
+                safe_key = f"spec_{k.replace(' ', '_').lower()}"
+                meta[safe_key] = str(v) if not isinstance(v, (str, int, float, bool)) else v
+        return meta
+
     def add_component(
         self,
         component: Component,
@@ -159,40 +180,22 @@ class ComponentSearchTool:
             return False
 
         try:
+            metadata = self._flatten_metadata(component)
+
             # Check if already exists
             existing = self._collection.get(ids=[component.part_number])
             if existing["ids"]:
-                # Update existing
                 self._collection.update(
                     ids=[component.part_number],
                     documents=[description_text],
-                    metadatas=[{
-                        "part_number": component.part_number,
-                        "manufacturer": component.manufacturer,
-                        "description": component.description,
-                        "category": component.category,
-                        "key_specs": component.key_specs,
-                        "datasheet_url": component.datasheet_url,
-                        "lifecycle_status": component.lifecycle_status,
-                        "estimated_cost_usd": component.estimated_cost_usd,
-                    }],
+                    metadatas=[metadata],
                 )
                 logger.debug(f"Updated component: {component.part_number}")
             else:
-                # Add new
                 self._collection.add(
                     ids=[component.part_number],
                     documents=[description_text],
-                    metadatas=[{
-                        "part_number": component.part_number,
-                        "manufacturer": component.manufacturer,
-                        "description": component.description,
-                        "category": component.category,
-                        "key_specs": component.key_specs,
-                        "datasheet_url": component.datasheet_url,
-                        "lifecycle_status": component.lifecycle_status,
-                        "estimated_cost_usd": component.estimated_cost_usd,
-                    }],
+                    metadatas=[metadata],
                 )
                 logger.debug(f"Added component: {component.part_number}")
 
@@ -208,15 +211,25 @@ class ComponentSearchTool:
             return None
 
         try:
+            import json
             results = self._collection.get(ids=[part_number], include=["metadatas"])
             if results["metadatas"] and results["metadatas"][0]:
                 metadata = results["metadatas"][0]
+                # Reconstruct key_specs from JSON if stored that way
+                key_specs = {}
+                if "key_specs_json" in metadata:
+                    try:
+                        key_specs = json.loads(metadata["key_specs_json"])
+                    except (json.JSONDecodeError, TypeError):
+                        key_specs = {}
+                elif "key_specs" in metadata and isinstance(metadata["key_specs"], dict):
+                    key_specs = metadata["key_specs"]
                 return Component(
                     part_number=metadata.get("part_number", part_number),
                     manufacturer=metadata.get("manufacturer", ""),
                     description=metadata.get("description", ""),
                     category=metadata.get("category", "Unknown"),
-                    key_specs=metadata.get("key_specs", {}),
+                    key_specs=key_specs,
                     datasheet_url=metadata.get("datasheet_url", ""),
                     lifecycle_status=metadata.get("lifecycle_status", "unknown"),
                     estimated_cost_usd=metadata.get("estimated_cost_usd"),

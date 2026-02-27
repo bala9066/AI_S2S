@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
         seed_if_empty()
         log.info("startup.chroma_ready")
     except Exception as exc:
-        log.warning("startup.chroma_seed_failed: %s", exc)
+        log.debug("startup.chroma_seed_skipped: %s (optional)", exc)
 
     log.info("startup.complete", extra={"air_gapped": settings.is_air_gapped})
     yield
@@ -208,7 +208,7 @@ async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
     return {"status": "pipeline_started", "project_id": project_id}
 
 
-VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6"}
+VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6", "P8a", "P8b", "P8c"}
 
 @app.post("/api/v1/projects/{project_id}/phases/{phase_id}/execute", tags=["pipeline"])
 async def execute_single_phase(project_id: int, phase_id: str, background_tasks: BackgroundTasks):

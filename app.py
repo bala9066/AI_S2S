@@ -39,461 +39,40 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Professional CSS Design System ────────────────────────────────────────────
-st.markdown("""
-<style>
-/* ── Google Fonts ── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+# ── Project ID persistence (survives page refresh via URL params) ─────────────
+if "project_id" not in st.session_state:
+    _qp = st.query_params.get("project_id")
+    if _qp:
+        try:
+            st.session_state.project_id = int(_qp)
+        except (ValueError, TypeError):
+            pass
 
-/* ── Root tokens ── */
-:root {
-  --bg-primary:    #0F172A;
-  --bg-secondary:  #1E293B;
-  --bg-card:       #1E293B;
-  --bg-main:       #F8FAFC;
-  --accent:        #3B82F6;
-  --accent-light:  #60A5FA;
-  --accent-glow:   rgba(59,130,246,0.15);
-  --success:       #10B981;
-  --warning:       #F59E0B;
-  --danger:        #EF4444;
-  --text-primary:  #1E293B;
-  --text-muted:    #64748B;
-  --text-light:    #94A3B8;
-  --border:        #E2E8F0;
-  --radius-sm:     6px;
-  --radius-md:     10px;
-  --radius-lg:     16px;
-  --shadow-sm:     0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.05);
-  --shadow-md:     0 4px 6px -1px rgba(0,0,0,.08), 0 2px 4px -1px rgba(0,0,0,.04);
-  --shadow-lg:     0 10px 15px -3px rgba(0,0,0,.08), 0 4px 6px -2px rgba(0,0,0,.04);
-}
+# ── CSS (loaded from file, cached per session) ────────────────────────────────
+@st.cache_resource
+def _load_css():
+    css_file = Path(__file__).parent / "static" / "style.css"
+    if css_file.exists():
+        return f"<style>{css_file.read_text(encoding='utf-8')}</style>"
+    return ""
 
-/* ── Global font ── */
-html, body, [class*="css"] {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
-}
-
-/* ── Hide Streamlit chrome ── */
-#MainMenu, footer, header { visibility: hidden; }
-.stDeployButton { display: none; }
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-  background: var(--bg-primary) !important;
-  border-right: 1px solid rgba(255,255,255,0.06);
-}
-[data-testid="stSidebar"] * { color: #CBD5E1 !important; }
-[data-testid="stSidebar"] .sidebar-logo {
-  padding: 8px 0 20px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  margin-bottom: 20px;
-}
-[data-testid="stSidebar"] .sidebar-logo h1 {
-  font-size: 22px !important;
-  font-weight: 700 !important;
-  color: #F1F5F9 !important;
-  margin: 0 !important;
-}
-[data-testid="stSidebar"] .sidebar-logo p {
-  font-size: 11px !important;
-  color: #64748B !important;
-  margin: 2px 0 0 0 !important;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-/* ── Main content area ── */
-.main .block-container {
-  padding: 1.5rem 2.5rem 2rem 2.5rem;
-  max-width: 1200px;
-}
-
-/* ── Page header ── */
-.page-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 20px 0 16px 0;
-  border-bottom: 2px solid var(--border);
-  margin-bottom: 24px;
-}
-.page-header .ph-icon {
-  width: 40px; height: 40px;
-  background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
-  border-radius: var(--radius-md);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px;
-  box-shadow: 0 4px 12px rgba(59,130,246,0.3);
-}
-.page-header .ph-title { font-size: 26px; font-weight: 700; color: var(--text-primary); }
-.page-header .ph-sub   { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
-
-/* ── Tab navigation ── */
-.tab-nav {
-  display: flex;
-  gap: 4px;
-  background: #F1F5F9;
-  border-radius: var(--radius-md);
-  padding: 4px;
-  margin-bottom: 24px;
-}
-.tab-nav-btn {
-  flex: 1;
-  padding: 8px 4px;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: center;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  color: var(--text-muted);
-  border: none;
-  background: transparent;
-}
-.tab-nav-btn.active {
-  background: white;
-  color: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-
-/* ── Cards ── */
-.card {
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  box-shadow: var(--shadow-sm);
-  margin-bottom: 16px;
-}
-.card-sm {
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 16px;
-  box-shadow: var(--shadow-sm);
-}
-
-/* ── Chat bubbles ── */
-.chat-container {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 8px 0;
-}
-.chat-msg {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  max-width: 90%;
-}
-.chat-msg.user {
-  align-self: flex-end;
-  flex-direction: row-reverse;
-}
-.chat-avatar {
-  width: 32px; height: 32px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; flex-shrink: 0;
-}
-.chat-avatar.user-av { background: var(--accent); color: white; }
-.chat-avatar.bot-av  { background: #EFF6FF; border: 1px solid #BFDBFE; }
-.chat-bubble {
-  padding: 12px 16px;
-  border-radius: 14px;
-  font-size: 14px;
-  line-height: 1.6;
-  box-shadow: var(--shadow-sm);
-}
-.chat-bubble.user {
-  background: var(--accent);
-  color: white;
-  border-bottom-right-radius: 4px;
-}
-.chat-bubble.bot {
-  background: white;
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  border-bottom-left-radius: 4px;
-}
-
-/* ── Phase badges ── */
-.phase-badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 12px; border-radius: 20px;
-  font-size: 12px; font-weight: 600; margin: 3px 2px;
-  border: 1px solid transparent;
-}
-.phase-badge.pending    { background: #F8FAFC; border-color: #E2E8F0; color: #94A3B8; }
-.phase-badge.active     { background: #EFF6FF; border-color: #BFDBFE; color: #2563EB; }
-.phase-badge.done       { background: #ECFDF5; border-color: #A7F3D0; color: #059669; }
-.phase-badge.failed     { background: #FEF2F2; border-color: #FECACA; color: #DC2626; }
-.phase-badge.draft      { background: #FFFBEB; border-color: #FDE68A; color: #D97706; }
-
-/* ── Phase stepper (Pipeline tab) ── */
-.stepper { display: flex; flex-direction: column; gap: 0; }
-.step-row {
-  display: flex; align-items: stretch; gap: 0;
-  position: relative;
-}
-.step-connector {
-  width: 2px; background: #E2E8F0;
-  margin: 0 19px;
-  min-height: 20px;
-}
-.step-connector.done { background: var(--success); }
-.step-node {
-  width: 40px; height: 40px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 700; flex-shrink: 0;
-  border: 2px solid #E2E8F0;
-  background: white; color: var(--text-muted);
-  z-index: 1;
-}
-.step-node.done    { background: var(--success); border-color: var(--success); color: white; }
-.step-node.active  { background: var(--accent);  border-color: var(--accent);  color: white;
-                     box-shadow: 0 0 0 4px var(--accent-glow); }
-.step-node.failed  { background: var(--danger);  border-color: var(--danger);  color: white; }
-.step-card {
-  flex: 1;
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
-  margin: 0 0 8px 12px;
-  box-shadow: var(--shadow-sm);
-  display: flex; align-items: center; justify-content: space-between;
-}
-.step-card.active { border-color: var(--accent); border-left: 3px solid var(--accent); }
-.step-card.done   { border-color: #A7F3D0; border-left: 3px solid var(--success); }
-.step-card.failed { border-color: #FECACA; border-left: 3px solid var(--danger); }
-.step-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
-.step-sub  { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-.step-dur  { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
-
-/* ── Pipeline bar (mini, overview) ── */
-.pipeline-bar { display: flex; gap: 3px; margin: 16px 0; }
-.pb-seg {
-  flex: 1; height: 8px; border-radius: 4px;
-  background: #E2E8F0; position: relative;
-}
-.pb-seg.done   { background: var(--success); }
-.pb-seg.active { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
-.pb-seg.failed { background: var(--danger); }
-@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
-
-/* ── Metric cards ── */
-.metric-grid { display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
-.metric-card-pro {
-  flex: 1; min-width: 140px;
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 16px 20px;
-  box-shadow: var(--shadow-sm);
-  text-align: center;
-}
-.metric-card-pro .mv { font-size: 32px; font-weight: 700; color: var(--accent); line-height: 1; }
-.metric-card-pro .ml { font-size: 12px; color: var(--text-muted); margin-top: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
-.metric-card-pro .mi { font-size: 22px; margin-bottom: 4px; }
-
-/* ── Feature cards (overview) ── */
-.feature-grid { display: flex; gap: 12px; margin: 20px 0; }
-.feature-card {
-  flex: 1;
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 20px;
-  box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.2s ease;
-}
-.feature-card:hover { box-shadow: var(--shadow-md); }
-.feature-card .fc-icon { font-size: 28px; margin-bottom: 10px; }
-.feature-card .fc-title { font-weight: 700; font-size: 15px; color: var(--text-primary); margin-bottom: 6px; }
-.feature-card .fc-desc  { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
-
-/* ── Status indicator ── */
-.status-dot {
-  display: inline-block; width: 8px; height: 8px;
-  border-radius: 50%; margin-right: 6px;
-}
-.status-dot.online  { background: var(--success); box-shadow: 0 0 0 2px rgba(16,185,129,0.2); }
-.status-dot.offline { background: #94A3B8; }
-
-/* ── Processing indicator ── */
-.proc-indicator {
-  display: flex; align-items: center; gap: 12px;
-  padding: 14px 20px;
-  background: #EFF6FF;
-  border: 1px solid #BFDBFE;
-  border-radius: var(--radius-md);
-  margin: 10px 0;
-  font-weight: 500; color: #1D4ED8; font-size: 14px;
-}
-.proc-spinner {
-  width: 20px; height: 20px;
-  border: 3px solid #BFDBFE;
-  border-top-color: #2563EB;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ── Approve / action buttons ── */
-.approve-btn-wrap { margin: 16px 0; }
-.approve-btn-wrap [data-testid="baseButton-primary"] {
-  background: linear-gradient(135deg, #10B981, #059669) !important;
-  border: none !important;
-  font-weight: 600 !important;
-  font-size: 15px !important;
-  padding: 12px 24px !important;
-  border-radius: var(--radius-md) !important;
-  box-shadow: 0 4px 12px rgba(16,185,129,0.3) !important;
-}
-
-/* ── Document cards ── */
-.doc-card {
-  background: white;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 14px 18px;
-  margin-bottom: 8px;
-  display: flex; align-items: center; justify-content: space-between;
-  box-shadow: var(--shadow-sm);
-}
-.doc-card .doc-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
-.doc-card .doc-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-.doc-card .doc-badge {
-  font-size: 11px; font-weight: 600;
-  padding: 3px 10px; border-radius: 12px;
-  background: var(--accent-glow); color: var(--accent);
-}
-
-/* ── Section headers ── */
-.section-header {
-  font-size: 20px; font-weight: 700; color: var(--text-primary);
-  margin: 0 0 4px 0;
-}
-.section-sub {
-  font-size: 13px; color: var(--text-muted);
-  margin-bottom: 20px;
-}
-
-/* ── Alert banners ── */
-.alert-success {
-  background: #ECFDF5; border: 1px solid #A7F3D0;
-  border-left: 4px solid var(--success);
-  border-radius: var(--radius-md);
-  padding: 14px 18px; color: #065F46; font-size: 14px;
-  margin: 12px 0;
-}
-.alert-info {
-  background: #EFF6FF; border: 1px solid #BFDBFE;
-  border-left: 4px solid var(--accent);
-  border-radius: var(--radius-md);
-  padding: 14px 18px; color: #1E40AF; font-size: 14px;
-  margin: 12px 0;
-}
-.alert-warn {
-  background: #FFFBEB; border: 1px solid #FDE68A;
-  border-left: 4px solid var(--warning);
-  border-radius: var(--radius-md);
-  padding: 14px 18px; color: #92400E; font-size: 14px;
-  margin: 12px 0;
-}
-
-/* ── Sidebar project card ── */
-.proj-info-card {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-  margin: 12px 0;
-}
-.proj-info-card .pn { font-size: 15px; font-weight: 700; color: #F1F5F9 !important; }
-.proj-info-card .pt { font-size: 11px; color: #64748B !important; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
-
-/* ── API key badges ── */
-.key-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 8px; border-radius: 10px;
-  font-size: 11px; font-weight: 600; margin: 2px 0;
-}
-.key-badge.ok  { background: rgba(16,185,129,0.15); color: #10B981; }
-.key-badge.off { background: rgba(148,163,184,0.15); color: #94A3B8; }
-
-/* ── Progress bar ── */
-.prog-bar-wrap { margin: 8px 0 16px 0; }
-.prog-bar-track { height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; }
-.prog-bar-fill  { height: 6px; background: linear-gradient(90deg, #3B82F6, #60A5FA); border-radius: 3px; transition: width 0.4s ease; }
-.prog-label { font-size: 11px; color: #64748B !important; margin-top: 4px; text-align: right; }
-
-/* ── Sticker tags ── */
-.tag {
-  display: inline-block; padding: 2px 8px;
-  background: #EFF6FF; color: var(--accent);
-  border-radius: 4px; font-size: 11px; font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-/* ── Form styling ── */
-.stTextInput > div > div > input,
-.stTextArea > div > div > textarea,
-.stSelectbox > div > div {
-  border-radius: var(--radius-md) !important;
-  border: 1.5px solid var(--border) !important;
-  font-family: 'Inter', sans-serif !important;
-}
-.stTextInput > div > div > input:focus,
-.stTextArea > div > div > textarea:focus {
-  border-color: var(--accent) !important;
-  box-shadow: 0 0 0 3px var(--accent-glow) !important;
-}
-
-/* ── Primary button ── */
-.stButton > button[kind="primary"] {
-  background: linear-gradient(135deg, #3B82F6, #2563EB) !important;
-  border: none !important;
-  border-radius: var(--radius-md) !important;
-  font-weight: 600 !important;
-  box-shadow: 0 4px 12px rgba(59,130,246,0.3) !important;
-  transition: all 0.15s ease !important;
-}
-.stButton > button[kind="primary"]:hover {
-  box-shadow: 0 6px 16px rgba(59,130,246,0.4) !important;
-  transform: translateY(-1px) !important;
-}
-.stButton > button[kind="secondary"] {
-  border-radius: var(--radius-md) !important;
-  font-weight: 500 !important;
-}
-
-/* ── Expander ── */
-.streamlit-expanderHeader {
-  background: #F8FAFC !important;
-  border-radius: var(--radius-md) !important;
-  font-weight: 600 !important;
-  font-size: 14px !important;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown(_load_css(), unsafe_allow_html=True)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+# Phase metadata: (id, display_num, short_name, description, auto_run)
 PHASE_META = [
-    ("P1",  "1",  "Requirements",  True),
-    ("P2",  "2",  "HRS Document",  True),
-    ("P3",  "3",  "Compliance",    True),
-    ("P4",  "4",  "Netlist",       True),
-    ("P5",  "5",  "PCB (Manual)",  False),
-    ("P6",  "6",  "GLR",           True),
-    ("P7",  "7",  "FPGA (Manual)", False),
-    ("P8a", "8a", "SRS",           True),
-    ("P8b", "8b", "SDD",           True),
-    ("P8c", "8c", "Code + Review", True),
+    ("P1",  "1",   "Design & Requirements",    "AI-powered design chat — block diagram + requirements capture",   True),
+    ("P2",  "2",   "HRS Document",             "IEEE 29148 Hardware Requirements Specification",                   True),
+    ("P3",  "3",   "Compliance Check",          "RoHS / REACH / FCC / MIL-STD rules engine",                       True),
+    ("P4",  "4",   "Netlist Generation",        "Visual connectivity graph with DRC checks",                       True),
+    ("P5",  "5",   "PCB Layout",               "Manual — Gerber/ODB++ export ready",                               False),
+    ("P6",  "6",   "GLR Specification",         "Glue Logic Requirements for FPGA/CPLD",                           True),
+    ("P7",  "7",   "FPGA Design",              "Manual — RTL/synthesis ready",                                     False),
+    ("P8a", "8a",  "SRS Document",              "IEEE 830 Software Requirements Specification",                    True),
+    ("P8b", "8b",  "SDD Document",              "IEEE 1016 Software Design Description",                           True),
+    ("P8c", "8c",  "Code + Review",             "C/C++ drivers, test suites, AST review",                          True),
 ]
 
 TABS = {
@@ -509,15 +88,19 @@ TABS = {
 
 _API = settings.api_base_url
 
+# ── Shared httpx client (connection pooling — avoids socket churn) ────────────
+@st.cache_resource
+def _get_http_client():
+    return httpx.Client(timeout=10.0, base_url=_API)
 
-# ── API helpers (UI → FastAPI backend) ───────────────────────────────────────
 
-def _api_get(path: str, timeout: float = 10.0) -> dict | list | None:
+# ── API helpers ───────────────────────────────────────────────────────────────
+
+def _api_get(path: str, timeout: float = 10.0):
     try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.get(f"{_API}{path}")
-            r.raise_for_status()
-            return r.json()
+        r = _get_http_client().get(path, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
     except httpx.ConnectError:
         return None
     except Exception as exc:
@@ -525,12 +108,11 @@ def _api_get(path: str, timeout: float = 10.0) -> dict | list | None:
         return None
 
 
-def _api_post(path: str, body: dict, timeout: float = 180.0) -> dict | None:
+def _api_post(path: str, body: dict, timeout: float = 180.0):
     try:
-        with httpx.Client(timeout=timeout) as c:
-            r = c.post(f"{_API}{path}", json=body)
-            r.raise_for_status()
-            return r.json()
+        r = _get_http_client().post(path, json=body, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
     except httpx.ConnectError:
         return None
     except Exception as exc:
@@ -538,11 +120,12 @@ def _api_post(path: str, body: dict, timeout: float = 180.0) -> dict | None:
         return None
 
 
-def _load_project_from_api(project_id: int) -> dict | None:
+def _load_project(project_id: int):
     return _api_get(f"/api/v1/projects/{project_id}")
 
 
-def _load_project_status(project_id: int) -> dict:
+def _load_status(project_id: int) -> dict:
+    """Load phase statuses — always fresh from DB via API."""
     data = _api_get(f"/api/v1/projects/{project_id}/status") or {}
     return data.get("phase_statuses", {})
 
@@ -601,9 +184,8 @@ def _render_markdown_with_mermaid(content: str, key_prefix: str = "md"):
 
 def render_sidebar():
     with st.sidebar:
-        # Brand header
         st.markdown("""
-        <div class="sidebar-logo">
+        <div class="sidebar-brand">
           <h1>⚡ Hardware Pipeline</h1>
           <p>AI-Powered EE Design Automation</p>
         </div>
@@ -611,73 +193,57 @@ def render_sidebar():
 
         if "project_id" in st.session_state:
             proj_id = st.session_state.project_id
-            proj = _load_project_from_api(proj_id) or st.session_state.get("current_project", {})
+            proj = _load_project(proj_id) or st.session_state.get("current_project", {})
             statuses = proj.get("phase_statuses", {})
 
-            # Project info card
             st.markdown(f"""
-            <div class="proj-info-card">
+            <div class="proj-card">
               <div class="pn">📁 {proj.get('name', '—')}</div>
               <div class="pt">{proj.get('design_type', '—')} design</div>
             </div>
             """, unsafe_allow_html=True)
 
-            # Progress bar
-            done_count = sum(1 for pid, _, _, auto in PHASE_META if auto
-                             and _phase_status(statuses, pid) == "completed")
-            total_auto = sum(1 for _, _, _, auto in PHASE_META if auto)
-            pct = int(done_count / total_auto * 100) if total_auto else 0
+            done = sum(1 for pid, _, _, _, auto in PHASE_META if auto
+                       and _phase_status(statuses, pid) == "completed")
+            total = sum(1 for _, _, _, _, auto in PHASE_META if auto)
+            pct = int(done / total * 100) if total else 0
             st.markdown(f"""
-            <div class="prog-bar-wrap">
-              <div class="prog-bar-track">
-                <div class="prog-bar-fill" style="width:{pct}%"></div>
-              </div>
-              <div class="prog-label">{done_count}/{total_auto} phases · {pct}%</div>
-            </div>
+            <div class="prog-track"><div class="prog-fill" style="width:{pct}%"></div></div>
+            <div class="prog-label">{done}/{total} phases · {pct}%</div>
             """, unsafe_allow_html=True)
 
-            # Phase status pills
             st.markdown("**Pipeline Status**")
-            for pid, num, name, _ in PHASE_META:
+            for pid, num, name, _, _ in PHASE_META:
                 status = _phase_status(statuses, pid)
-                icon = {"pending":"○","in_progress":"◉","completed":"●",
-                        "failed":"✕","draft_pending":"◑"}.get(status, "○")
-                css = {"pending":"pending","in_progress":"active","completed":"done",
-                       "failed":"failed","draft_pending":"draft"}.get(status, "pending")
-                st.markdown(
-                    f'<div class="phase-badge {css}">'
-                    f'<span>{icon}</span> P{num} {name}</div>',
-                    unsafe_allow_html=True
-                )
+                icon = {"pending": "○", "in_progress": "◉", "completed": "●",
+                        "failed": "✕", "draft_pending": "◑"}.get(status, "○")
+                css = {"completed": "done", "in_progress": "active", "failed": "failed"}.get(status, "")
+                st.markdown(f'<div class="phase-pill {css}">{icon} P{num} {name}</div>',
+                            unsafe_allow_html=True)
         else:
             st.markdown("""
-            <div class="alert-info" style="background:rgba(59,130,246,0.08);border-color:rgba(59,130,246,0.2);color:#93C5FD;">
-              No project loaded.<br>Create one to begin.
-            </div>
+            <div class="alert-info">No project loaded.<br>Create one to begin.</div>
             """, unsafe_allow_html=True)
 
-        # System section
+        # System info
         st.markdown("---")
         online = not settings.is_air_gapped
-        dot_cls = "online" if online else "offline"
-        mode_txt = "Online" if online else "Air-Gapped"
+        mode = "Online" if online else "Air-Gapped"
+        dot = "🟢" if online else "🔴"
         st.markdown(f"""
-        <div style="font-size:12px;color:#94A3B8;margin-bottom:8px;">
-          <span class="status-dot {dot_cls}"></span><strong style="color:#CBD5E1">{mode_txt}</strong>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">
+          {dot} <strong style="color:var(--text-secondary)">{mode}</strong>
           &nbsp;·&nbsp;<span class="tag">{settings.primary_model}</span>
         </div>
         """, unsafe_allow_html=True)
 
-        # API key badges
-        st.markdown('<div style="font-size:11px;color:#475569;margin-bottom:4px;">API KEYS</div>',
+        st.markdown('<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">API KEYS</div>',
                     unsafe_allow_html=True)
         for provider, (ok, _) in settings.get_api_key_status().items():
             cls = "ok" if ok else "off"
             icon = "✓" if ok else "—"
-            st.markdown(
-                f'<span class="key-badge {cls}">{icon} {provider}</span>',
-                unsafe_allow_html=True
-            )
+            st.markdown(f'<span class="key-badge {cls}">{icon} {provider}</span>',
+                        unsafe_allow_html=True)
 
 
 # ── Tab nav ────────────────────────────────────────────────────────────────────
@@ -710,38 +276,29 @@ def render_overview():
 
     statuses = {}
     if "project_id" in st.session_state:
-        statuses = _load_project_status(st.session_state.project_id)
+        statuses = _load_status(st.session_state.project_id)
 
-    # Mini pipeline progress bar
-    segs = ""
-    for pid, _, _, _ in PHASE_META:
-        status = _phase_status(statuses, pid)
-        cls = "done" if status == "completed" else ("active" if status == "in_progress" else "")
-        segs += f'<div class="pb-seg {cls}" title="{pid}"></div>'
-    st.markdown(f'<div class="pipeline-bar">{segs}</div>', unsafe_allow_html=True)
-
-    # Feature cards
     st.markdown("""
     <div class="feature-grid">
       <div class="feature-card">
         <div class="fc-icon">📋</div>
         <div class="fc-title">IEEE Standards</div>
-        <div class="fc-desc">HRS (29148), SRS (830), SDD (1016) — audit-ready, fully traceable requirements</div>
+        <div class="fc-desc">HRS (29148), SRS (830), SDD (1016) — audit-ready, fully traceable</div>
       </div>
       <div class="feature-card">
         <div class="fc-icon">🔌</div>
         <div class="fc-title">Smart Netlist</div>
-        <div class="fc-desc">Visual connectivity graph before PCB layout with DRC checks via NetworkX</div>
+        <div class="fc-desc">Visual connectivity graph before PCB layout with DRC checks</div>
       </div>
       <div class="feature-card">
         <div class="fc-icon">✅</div>
         <div class="fc-title">Compliance</div>
-        <div class="fc-desc">RoHS / REACH / FCC rules engine — PASS / FAIL / REVIEW status per component</div>
+        <div class="fc-desc">RoHS / REACH / FCC rules engine — PASS / FAIL / REVIEW</div>
       </div>
       <div class="feature-card">
         <div class="fc-icon">💻</div>
         <div class="fc-title">Code Generation</div>
-        <div class="fc-desc">C/C++ drivers + test suites, reviewed with tree-sitter AST analysis</div>
+        <div class="fc-desc">C/C++ drivers + test suites, reviewed with AST analysis</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -766,44 +323,47 @@ def render_new_project():
       <div class="ph-icon">➕</div>
       <div>
         <div class="ph-title">New Project</div>
-        <div class="ph-sub">Create a project and jump straight into the AI design chat</div>
+        <div class="ph-sub">Create a project and jump into the AI design chat</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    with st.container():
-        with st.form("new_project_form", clear_on_submit=False):
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                name = st.text_input(
-                    "Project Name *",
-                    placeholder="e.g., BLDC Motor Controller 10kW"
-                )
-                description = st.text_area(
-                    "Description",
-                    placeholder="Brief description of the hardware design…",
-                    height=110
-                )
-            with col2:
-                design_type = st.selectbox(
-                    "Design Type *",
-                    ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
-                    format_func=lambda x: {
-                        "general": "⚙️ General",
-                        "rf": "📡 RF / Wireless",
-                        "motor_control": "⚡ Motor Control",
-                        "power": "🔋 Power Electronics",
-                        "digital": "💻 Digital Logic",
-                        "sensor": "📊 Sensor / IoT",
-                        "industrial": "🏭 Industrial",
-                    }.get(x, x)
-                )
-                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-                submitted = st.form_submit_button(
-                    "🚀 Create & Start",
-                    type="primary",
-                    use_container_width=True
-                )
+    # Load existing projects
+    existing = _api_get("/api/v1/projects") or []
+    if existing:
+        st.markdown("##### 📂 Load Existing Project")
+        proj_names = {p["id"]: f"{p['name']} ({p['design_type']})" for p in existing}
+        selected = st.selectbox("Select a project", options=list(proj_names.keys()),
+                                format_func=lambda x: proj_names[x], key="load_existing")
+        if st.button("📂 Load Project", use_container_width=True):
+            st.session_state.project_id = selected
+            st.session_state.current_project = next(p for p in existing if p["id"] == selected)
+            st.query_params["project_id"] = str(selected)
+            st.query_params["tab"] = "chat"
+            _reset_chat()
+            st.rerun()
+        st.markdown("---")
+
+    st.markdown("##### ✨ Create New Project")
+    with st.form("new_project_form", clear_on_submit=False):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            name = st.text_input("Project Name *", placeholder="e.g., BLDC Motor Controller 10kW")
+            description = st.text_area("Description",
+                                       placeholder="Brief description of the hardware design…",
+                                       height=110)
+        with col2:
+            design_type = st.selectbox("Design Type *",
+                ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
+                format_func=lambda x: {
+                    "general": "⚙️ General", "rf": "📡 RF / Wireless",
+                    "motor_control": "⚡ Motor Control", "power": "🔋 Power Electronics",
+                    "digital": "💻 Digital Logic", "sensor": "📊 Sensor / IoT",
+                    "industrial": "🏭 Industrial",
+                }.get(x, x))
+            st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+            submitted = st.form_submit_button("🚀 Create & Start", type="primary",
+                                              use_container_width=True)
 
     if submitted:
         if not name.strip():
@@ -824,11 +384,12 @@ def render_new_project():
 
             st.session_state.current_project = result
             st.session_state.project_id = result["id"]
+            st.query_params["project_id"] = str(result["id"])
             _reset_chat()
-            st.markdown(f'<div class="alert-success">✅ Project <strong>{name}</strong> created! Redirecting to chat…</div>',
+            st.markdown(f'<div class="alert-success">✅ Project <strong>{name}</strong> created!</div>',
                         unsafe_allow_html=True)
             log.info("ui.new_project", extra={"project_id": result["id"]})
-            time.sleep(0.6)
+            time.sleep(0.5)
             st.query_params["tab"] = "chat"
             st.rerun()
 
@@ -872,24 +433,23 @@ def render_design_chat():
         return
 
     proj_id = st.session_state.project_id
-    statuses = _load_project_status(proj_id)
+    statuses = _load_status(proj_id)
     phase1_status = _phase_status(statuses, "P1")
-    proj = _load_project_from_api(proj_id) or st.session_state.get("current_project", {})
+    proj = _load_project(proj_id) or st.session_state.get("current_project", {})
 
-    # Project tag line
-    dt_icons = {"motor_control":"⚡","rf":"📡","power":"🔋","digital":"💻",
-                 "sensor":"📊","industrial":"🏭","general":"⚙️"}
-    dt = proj.get("design_type","general")
+    dt_icons = {"motor_control": "⚡", "rf": "📡", "power": "🔋", "digital": "💻",
+                "sensor": "📊", "industrial": "🏭", "general": "⚙️"}
+    dt = proj.get("design_type", "general")
     st.markdown(
         f'<div style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">'
-        f'{dt_icons.get(dt,"⚙️")} <strong>{proj.get("name","")}</strong>'
+        f'{dt_icons.get(dt, "⚙️")} <strong>{proj.get("name", "")}</strong>'
         f' &nbsp;·&nbsp; <span class="tag">{dt}</span></div>',
-        unsafe_allow_html=True
-    )
+        unsafe_allow_html=True)
 
     # Phase 1 complete banner
     if phase1_status == "completed":
-        st.markdown('<div class="alert-success">✅ <strong>Phase 1 Complete!</strong> Requirements and block diagrams generated. Ready to run the full pipeline.</div>',
+        st.markdown('<div class="alert-success">✅ <strong>Phase 1 Complete!</strong> '
+                    'Requirements and block diagrams generated. Ready to run the pipeline.</div>',
                     unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -907,34 +467,24 @@ def render_design_chat():
     if "chat_messages" not in st.session_state:
         _reset_chat()
 
-    # Render chat history using st.chat_message (native Streamlit, most reliable)
     for idx, msg in enumerate(st.session_state.chat_messages):
         with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🤖"):
             _render_markdown_with_mermaid(msg["content"], key_prefix=f"chat_{idx}")
 
-    # Approval / input area
     if phase1_status != "completed":
         if st.session_state.get("draft_pending"):
-            st.markdown("")
             st.markdown("""
-            <div class="alert-info">
-              📋 <strong>Draft ready for review.</strong> Approve to generate full IEEE documentation, or request changes below.
-            </div>
+            <div class="alert-info">📋 <strong>Draft ready for review.</strong>
+            Approve to generate full IEEE documentation, or request changes below.</div>
             """, unsafe_allow_html=True)
-
             col_a, col_b = st.columns([1, 2])
             with col_a:
-                st.markdown('<div class="approve-btn-wrap">', unsafe_allow_html=True)
                 if st.button("✅ Approve — Generate Full Docs", type="primary",
                              use_container_width=True, key="btn_approve"):
                     _send_chat("Approved. Please generate the full requirements documents.")
-                st.markdown('</div>', unsafe_allow_html=True)
             with col_b:
-                change_text = st.text_input(
-                    "Request changes…",
-                    key="change_input",
-                    placeholder="e.g., change voltage to 24V, add CAN bus interface"
-                )
+                change_text = st.text_input("Request changes…", key="change_input",
+                                            placeholder="e.g., change voltage to 24V, add CAN bus")
                 if st.button("🔄 Apply Changes", use_container_width=True, key="btn_changes"):
                     if change_text.strip():
                         _send_chat(change_text.strip())
@@ -958,8 +508,7 @@ def _send_chat(user_input: str):
                  else "Generating draft block diagram…"
         placeholder.markdown(
             f'<div class="proc-indicator"><div class="proc-spinner"></div>{action}</div>',
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True)
 
         t0 = time.time()
         result = _api_post(f"/api/v1/projects/{proj_id}/chat",
@@ -993,8 +542,7 @@ def _send_chat(user_input: str):
             st.markdown(
                 f'<div class="alert-success">🎉 <strong>Phase 1 Complete!</strong> '
                 f'Generated in {elapsed:.1f}s. Full documentation ready.</div>',
-                unsafe_allow_html=True
-            )
+                unsafe_allow_html=True)
             if result.get("outputs"):
                 with st.expander("📁 Generated Files", expanded=True):
                     for fname in result["outputs"]:
@@ -1002,7 +550,7 @@ def _send_chat(user_input: str):
             st.rerun()
 
 
-# ── Pipeline ───────────────────────────────────────────────────────────────────
+# ── Pipeline (Split into Individual Phase Cards) ─────────────────────────────
 
 def _start_pipeline(project_id: int):
     result = _api_post(f"/api/v1/projects/{project_id}/pipeline/run", {})
@@ -1013,43 +561,54 @@ def _start_pipeline(project_id: int):
         st.error("Could not start pipeline — is the API server running?")
 
 
-def _phase_step_html(pid: str, num: str, name: str, status: str, statuses: dict,
-                     is_last: bool = False) -> str:
-    """Render a single pipeline stepper step."""
-    icon_map = {
-        "pending":      ("○", ""),
-        "in_progress":  ("◉", "active"),
-        "completed":    ("✓", "done"),
-        "failed":       ("✕", "failed"),
-        "draft_pending":("◑", "active"),
+def _phase_card_html(pid, num, name, desc, status, statuses, auto):
+    """Render a single phase as a glassmorphism card with rich status info."""
+    status_cls = {"completed": "completed", "in_progress": "running",
+                  "failed": "failed", "draft_pending": "running"}.get(status, "")
+    badge_cls = {"completed": "badge-completed", "in_progress": "badge-running",
+                 "failed": "badge-failed", "draft_pending": "badge-running"}.get(status, "badge-pending")
+    status_label = {"pending": "Pending", "in_progress": "Running…",
+                    "completed": "✓ Complete", "failed": "✕ Failed",
+                    "draft_pending": "Draft Ready"}.get(status, status.title())
+
+    # Phase icons for each specific phase
+    phase_icons = {
+        "P1": "🎨", "P2": "📋", "P3": "✅", "P4": "🔌",
+        "P5": "📐", "P6": "⚙️", "P7": "💎", "P8a": "📄",
+        "P8b": "📘", "P8c": "💻",
     }
-    icon, node_cls = icon_map.get(status, ("○", ""))
-    card_cls = node_cls
+    icon_display = phase_icons.get(pid, "📦")
+
+    # Status icon for the node
+    status_icon = {"completed": "✓", "in_progress": "⟳", "failed": "✕",
+                   "draft_pending": "◑"}.get(status, num)
 
     dur = statuses.get(pid, {}).get("duration_seconds", "")
-    dur_html = f'<div class="step-dur">{dur:.1f}s</div>' if isinstance(dur, (int, float)) and dur else ""
+    dur_html = (f'<span class="pc-badge badge-completed" style="margin-left:auto;">'
+                f'⏱ {dur:.1f}s</span>') \
+               if isinstance(dur, (int, float)) and dur else ""
 
-    status_label = {
-        "pending": "Pending",
-        "in_progress": "Processing…",
-        "completed": "Complete",
-        "failed": "Failed",
-        "draft_pending": "Draft Ready",
-    }.get(status, status.title())
+    manual = "" if auto else \
+        '<span class="pc-badge badge-pending" style="margin-left:8px;">MANUAL</span>'
+
+    # Error detail for failed phases
+    err = statuses.get(pid, {}).get("error", "")
+    err_html = f'<div class="pc-error">⚠️ {err}</div>' if err and status == "failed" else ""
 
     return f"""
-    <div style="display:flex;align-items:flex-start;gap:0;margin-bottom:8px;">
-      <div style="display:flex;flex-direction:column;align-items:center;margin-right:12px;">
-        <div class="step-node {node_cls}">{icon}</div>
-        {'<div style="width:2px;flex:1;background:' + ('#10B981' if status=='completed' else '#E2E8F0') + ';min-height:16px;margin:2px 0"></div>' if not is_last else ''}
-      </div>
-      <div class="step-card {card_cls}" style="margin-bottom:8px;">
+    <div class="phase-card {status_cls}">
+      <div class="pc-header">
+        <div class="pc-num">{status_icon}</div>
         <div>
-          <div class="step-name">P{num} · {name}</div>
-          <div class="step-sub">{status_label}</div>
+          <div class="pc-title">{icon_display} P{num} · {name}</div>
+          <div class="pc-desc">{desc}</div>
         </div>
-        {dur_html}
       </div>
+      <div class="pc-meta">
+        <span class="pc-badge {badge_cls}">{status_label}</span>
+        {manual}{dur_html}
+      </div>
+      {err_html}
     </div>
     """
 
@@ -1059,62 +618,49 @@ def render_pipeline():
     <div class="page-header">
       <div class="ph-icon">🔄</div>
       <div>
-        <div class="ph-title">Pipeline Execution</div>
-        <div class="ph-sub">Automated phase-by-phase design generation</div>
+        <div class="ph-title">Pipeline</div>
+        <div class="ph-sub">Phase-by-phase automated design generation</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
     if "project_id" not in st.session_state:
-        st.markdown('<div class="alert-info">Create a project first.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="alert-info">Create a project first.</div>', unsafe_allow_html=True)
         return
 
     proj_id = st.session_state.project_id
-    statuses = _load_project_status(proj_id)
-    proj = _load_project_from_api(proj_id) or st.session_state.get("current_project", {})
+    statuses = _load_status(proj_id)
+    proj = _load_project(proj_id) or st.session_state.get("current_project", {})
 
     dt = proj.get("design_type", "general")
     st.markdown(
         f'<div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">'
-        f'📁 <strong>{proj.get("name","")}</strong> &nbsp;·&nbsp; <span class="tag">{dt}</span></div>',
-        unsafe_allow_html=True
-    )
+        f'📁 <strong>{proj.get("name", "")}</strong> &nbsp;·&nbsp; <span class="tag">{dt}</span></div>',
+        unsafe_allow_html=True)
 
     # Summary metrics
-    auto_ids = ["P1","P2","P3","P4","P6","P8a","P8b","P8c"]
+    auto_ids = [pid for pid, _, _, _, auto in PHASE_META if auto]
     done = sum(1 for p in auto_ids if _phase_status(statuses, p) == "completed")
     total = len(auto_ids)
     pct = int(done / total * 100) if total else 0
+    in_prog = [p for p in auto_ids if _phase_status(statuses, p) == "in_progress"]
+    fail_list = [p for p in auto_ids if _phase_status(statuses, p) == "failed"]
 
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Phases Complete", f"{done}/{total}")
-    with c2:
-        st.metric("Progress", f"{pct}%")
-    with c3:
-        in_prog_list = [p for p in auto_ids if _phase_status(statuses, p) == "in_progress"]
-        st.metric("Running", len(in_prog_list))
-    with c4:
-        fail_list = [p for p in auto_ids if _phase_status(statuses, p) == "failed"]
-        st.metric("Failed", len(fail_list))
+    with c1: st.metric("Completed", f"{done}/{total}")
+    with c2: st.metric("Progress", f"{pct}%")
+    with c3: st.metric("Running", len(in_prog))
+    with c4: st.metric("Failed", len(fail_list))
 
     st.progress(pct / 100)
-    st.markdown("")
 
-    if _phase_status(statuses, "P1") != "completed":
-        st.markdown('<div class="alert-warn">⚠️ <strong>Complete Phase 1</strong> (Design Chat) first before running the pipeline.</div>',
-                    unsafe_allow_html=True)
-        if st.button("💬 Go to Design Chat", type="primary"):
-            st.query_params["tab"] = "chat"; st.rerun()
-        return
+    # ── Action banner based on pipeline state ──────────────────────────────
+    p1_status = _phase_status(statuses, "P1")
+    remaining = [p for p in auto_ids if p != "P1" and _phase_status(statuses, p) != "completed"]
 
-    remaining = [p for p in auto_ids if _phase_status(statuses, p) != "completed"]
-    in_progress = [p for p in auto_ids if _phase_status(statuses, p) == "in_progress"]
-
-    if not remaining:
-        st.markdown('<div class="alert-success">🎉 <strong>All phases complete!</strong> Your full design package is ready.</div>',
-                    unsafe_allow_html=True)
+    if not remaining and p1_status == "completed":
+        st.markdown('<div class="alert-success">🎉 <strong>All phases complete!</strong> '
+                    'Full design package ready.</div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
             if st.button("📄 View Documents", type="primary", use_container_width=True):
@@ -1126,36 +672,121 @@ def render_pipeline():
             if st.button("🔍 Code Review", use_container_width=True):
                 st.query_params["tab"] = "code"; st.rerun()
 
-    elif in_progress:
+    elif p1_status not in ("completed", "draft_pending"):
         st.markdown(
-            f'<div class="alert-info">🔄 Pipeline running… current: <strong>{", ".join(in_progress)}</strong></div>',
-            unsafe_allow_html=True
-        )
+            '<div class="alert-warn">⚠️ <strong>Complete Phase 1</strong> (Design Chat) '
+            'first before running the pipeline.</div>', unsafe_allow_html=True)
+        if st.button("💬 Go to Design Chat", type="primary"):
+            st.query_params["tab"] = "chat"; st.rerun()
 
+    elif p1_status == "draft_pending":
+        st.markdown(
+            '<div class="alert-info">📋 <strong>Draft Ready</strong> — approve your design '
+            'in the Design Chat to unlock the pipeline.</div>', unsafe_allow_html=True)
+        if st.button("💬 Go to Design Chat", type="primary"):
+            st.query_params["tab"] = "chat"; st.rerun()
+
+    elif in_prog:
+        st.markdown(f'<div class="alert-info">🔄 Pipeline running… '
+                    f'current: <strong>{", ".join(in_prog)}</strong></div>',
+                    unsafe_allow_html=True)
     else:
         col_l, col_r = st.columns([3, 1])
         with col_l:
             st.markdown(f'<div style="font-size:13px;color:var(--text-muted);">'
-                        f'{len(remaining)} phases remaining: {", ".join(remaining)}</div>',
-                        unsafe_allow_html=True)
+                        f'{len(remaining)} phases remaining</div>', unsafe_allow_html=True)
         with col_r:
             if st.button("🚀 Run Pipeline", type="primary", use_container_width=True):
                 _start_pipeline(proj_id)
 
-    # Stepper
-    st.markdown("#### Phase Details")
-    stepper_html = ""
-    visible = [(pid, num, name) for pid, num, name, auto in PHASE_META
-               if pid not in ("P5", "P7")]
-    for i, (pid, num, name) in enumerate(visible):
-        status = _phase_status(statuses, pid)
-        is_last = (i == len(visible) - 1)
-        stepper_html += _phase_step_html(pid, num, name, status, statuses, is_last)
-    st.markdown(stepper_html, unsafe_allow_html=True)
+    # ── Phase cards (each phase as its own card) ──────────────────────────
+    st.markdown("#### 📋 Phase Details")
 
-    # Auto-refresh while pipeline is running
-    if in_progress:
-        time.sleep(5)
+    # Group: Phase 1 (Design)
+    st.markdown('<div class="phase-group-label">🎨 Design & Requirements</div>',
+                unsafe_allow_html=True)
+    pid, num, name, desc, auto = PHASE_META[0]
+    status = _phase_status(statuses, pid)
+    st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
+                unsafe_allow_html=True)
+
+    # Group: Documentation (P2-P3)
+    st.markdown('<div class="phase-group-label">📋 Documentation & Compliance</div>',
+                unsafe_allow_html=True)
+    for pid, num, name, desc, auto in PHASE_META[1:3]:
+        status = _phase_status(statuses, pid)
+        st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
+                    unsafe_allow_html=True)
+        # Per-phase run button
+        if auto and pid != "P1" and p1_status == "completed":
+            if status in ("pending", "failed"):
+                if st.button(f"▶ Run P{num}", key=f"run_{pid}", use_container_width=False):
+                    result = _api_post(f"/api/v1/projects/{proj_id}/phases/{pid}/execute", {})
+                    if result:
+                        st.rerun()
+            elif status == "completed":
+                if st.button(f"📄 View P{num} Output", key=f"view_{pid}", use_container_width=False):
+                    st.query_params["tab"] = "docs"; st.rerun()
+
+    # Group: Hardware Design (P4-P5)
+    st.markdown('<div class="phase-group-label">🔌 Hardware Design</div>',
+                unsafe_allow_html=True)
+    for pid, num, name, desc, auto in PHASE_META[3:5]:
+        status = _phase_status(statuses, pid)
+        st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
+                    unsafe_allow_html=True)
+        if auto and pid != "P1" and p1_status == "completed":
+            if status in ("pending", "failed"):
+                if st.button(f"▶ Run P{num}", key=f"run_{pid}", use_container_width=False):
+                    result = _api_post(f"/api/v1/projects/{proj_id}/phases/{pid}/execute", {})
+                    if result:
+                        st.rerun()
+            elif status == "completed":
+                if st.button(f"📄 View P{num} Output", key=f"view_{pid}", use_container_width=False):
+                    st.query_params["tab"] = "docs"; st.rerun()
+
+    # Group: Logic & FPGA (P6-P7)
+    st.markdown('<div class="phase-group-label">⚙️ Logic & FPGA</div>',
+                unsafe_allow_html=True)
+    for pid, num, name, desc, auto in PHASE_META[5:7]:
+        status = _phase_status(statuses, pid)
+        st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
+                    unsafe_allow_html=True)
+        if auto and pid != "P1" and p1_status == "completed":
+            if status in ("pending", "failed"):
+                if st.button(f"▶ Run P{num}", key=f"run_{pid}", use_container_width=False):
+                    result = _api_post(f"/api/v1/projects/{proj_id}/phases/{pid}/execute", {})
+                    if result:
+                        st.rerun()
+            elif status == "completed":
+                if st.button(f"📄 View P{num} Output", key=f"view_{pid}", use_container_width=False):
+                    st.query_params["tab"] = "docs"; st.rerun()
+
+    # Group: Software (P8a-P8c)
+    st.markdown('<div class="phase-group-label">💻 Software & Code</div>',
+                unsafe_allow_html=True)
+    for pid, num, name, desc, auto in PHASE_META[7:10]:
+        status = _phase_status(statuses, pid)
+        st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
+                    unsafe_allow_html=True)
+        if auto and pid != "P1" and p1_status == "completed":
+            if status in ("pending", "failed"):
+                if st.button(f"▶ Run P{num}", key=f"run_{pid}", use_container_width=False):
+                    result = _api_post(f"/api/v1/projects/{proj_id}/phases/{pid}/execute", {})
+                    if result:
+                        st.rerun()
+            elif status == "completed":
+                if st.button(f"📄 View P{num} Output", key=f"view_{pid}", use_container_width=False):
+                    st.query_params["tab"] = "docs"; st.rerun()
+
+    # Auto-refresh while pipeline is running (non-blocking via fragment)
+    if in_prog:
+        _auto_refresh_placeholder = st.empty()
+        _auto_refresh_placeholder.markdown(
+            '<div class="proc-indicator" style="margin-top:12px;">'
+            '<div class="proc-spinner"></div>Pipeline running… auto-refreshing in 3s</div>',
+            unsafe_allow_html=True)
+        time.sleep(3)
         st.rerun()
 
 
@@ -1176,7 +807,7 @@ def render_documents():
         st.markdown('<div class="alert-info">No project loaded.</div>', unsafe_allow_html=True)
         return
 
-    proj = _load_project_from_api(st.session_state.project_id) \
+    proj = _load_project(st.session_state.project_id) \
            or st.session_state.get("current_project", {})
     output_dir = Path(proj.get("output_dir", ""))
 
@@ -1187,65 +818,41 @@ def render_documents():
 
     proj_name = proj.get("name", "project").replace(" ", "_").lower()
     doc_map = {
-        "requirements.md":              ("P1",  "Hardware Requirements"),
-        "block_diagram.md":             ("P1",  "Block Diagram"),
-        "architecture.md":              ("P1",  "System Architecture"),
-        "component_recommendations.md": ("P1",  "Component Recommendations"),
-        f"HRS_{proj_name}.md":          ("P2",  "HRS — Hardware Requirements Spec"),
-        "compliance_report.md":         ("P3",  "Compliance Report"),
-        "netlist_visual.md":            ("P4",  "Netlist Visualization"),
-        "glr_specification.md":         ("P6",  "GLR — Glue Logic Requirements"),
-        f"SRS_{proj_name}.md":          ("P8a", "SRS — Software Requirements Spec"),
-        f"SDD_{proj_name}.md":          ("P8b", "SDD — Software Design Document"),
-        "code_review_report.md":        ("P8c", "Code Review Report"),
+        "requirements.md":              ("P1",  "🎨 Hardware Requirements"),
+        "block_diagram.md":             ("P1",  "🎨 Block Diagram"),
+        "architecture.md":              ("P1",  "🎨 System Architecture"),
+        "component_recommendations.md": ("P1",  "🎨 Component Recommendations"),
+        f"HRS_{proj_name}.md":          ("P2",  "📋 HRS — Hardware Requirements Spec"),
+        "compliance_report.md":         ("P3",  "✅ Compliance Report"),
+        "netlist_visual.md":            ("P4",  "🔌 Netlist Visualization"),
+        "glr_specification.md":         ("P6",  "⚙️ GLR — Glue Logic Requirements"),
+        f"SRS_{proj_name}.md":          ("P8a", "📄 SRS — Software Requirements Spec"),
+        f"SDD_{proj_name}.md":          ("P8b", "📘 SDD — Software Design Description"),
+        "driver_code.md":               ("P8c", "💻 Driver Code"),
+        "code_review.md":               ("P8c", "💻 Code Review"),
     }
 
-    doc_files = []
+    found_any = False
     for fname, (phase, label) in doc_map.items():
         fpath = output_dir / fname
         if fpath.exists():
-            doc_files.append((fpath, phase, label))
-    for fpath in sorted(output_dir.glob("*.md")):
-        if fpath.name not in doc_map:
-            doc_files.append((fpath, "—", fpath.stem.replace("_", " ").title()))
+            found_any = True
+            st.markdown(f"""
+            <div class="doc-card">
+              <div>
+                <div class="dc-name">{label}</div>
+                <div class="dc-phase">{phase} · {fname}</div>
+              </div>
+              <span class="tag">{phase}</span>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.expander(f"View {label}"):
+                content = fpath.read_text(encoding="utf-8")
+                _render_markdown_with_mermaid(content, key_prefix=f"doc_{fname}")
 
-    if not doc_files:
-        st.markdown('<div class="alert-info">No documents generated yet. Complete Phase 1 in Design Chat.</div>',
+    if not found_any:
+        st.markdown('<div class="alert-info">No documents generated yet.</div>',
                     unsafe_allow_html=True)
-        return
-
-    # Summary metrics row
-    total_size = sum(f.stat().st_size for f, _, _ in doc_files) / 1024
-    st.markdown(f"""
-    <div class="metric-grid">
-      <div class="metric-card-pro">
-        <div class="mi">📄</div>
-        <div class="mv">{len(doc_files)}</div>
-        <div class="ml">Documents</div>
-      </div>
-      <div class="metric-card-pro">
-        <div class="mi">💾</div>
-        <div class="mv">{total_size:.0f}</div>
-        <div class="ml">Total KB</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Document list
-    for fpath, phase, label in doc_files:
-        size_kb = fpath.stat().st_size / 1024
-        with st.expander(f"📄 [{phase}] {label}  ·  {size_kb:.1f} KB", expanded=False):
-            content = fpath.read_text(encoding="utf-8")
-            tab_view, tab_raw = st.tabs(["📖 Rendered", "🗒️ Raw Markdown"])
-            with tab_view:
-                _render_markdown_with_mermaid(content, key_prefix=f"doc_{fpath.name}")
-            with tab_raw:
-                st.code(content, language="markdown")
-            st.download_button(
-                f"⬇️ Download {fpath.name}", data=content,
-                file_name=fpath.name, mime="text/markdown",
-                key=f"dl_{fpath.name}"
-            )
 
 
 # ── Netlist ────────────────────────────────────────────────────────────────────
@@ -1255,7 +862,7 @@ def render_netlist():
     <div class="page-header">
       <div class="ph-icon">🔌</div>
       <div>
-        <div class="ph-title">Netlist Viewer</div>
+        <div class="ph-title">Netlist Visualization</div>
         <div class="ph-sub">Phase 4 · Component connectivity graph</div>
       </div>
     </div>
@@ -1265,57 +872,26 @@ def render_netlist():
         st.markdown('<div class="alert-info">No project loaded.</div>', unsafe_allow_html=True)
         return
 
-    proj = _load_project_from_api(st.session_state.project_id) \
-           or st.session_state.get("current_project", {})
+    proj = _load_project(st.session_state.project_id) or {}
     output_dir = Path(proj.get("output_dir", ""))
-    netlist_visual = output_dir / "netlist_visual.md"
-    netlist_json = output_dir / "netlist.json"
+    netlist_file = output_dir / "netlist_visual.md"
 
-    if not netlist_visual.exists() and not netlist_json.exists():
-        st.markdown('<div class="alert-info">Netlist not generated yet — run the pipeline through Phase 4.</div>',
-                    unsafe_allow_html=True)
-        return
-
-    if netlist_visual.exists():
-        content = netlist_visual.read_text(encoding="utf-8")
-        st.markdown("### Visual Netlist")
+    if netlist_file.exists():
+        content = netlist_file.read_text(encoding="utf-8")
         _render_markdown_with_mermaid(content, key_prefix="netlist")
-        st.download_button("⬇️ Download Netlist Visual", data=content,
-                           file_name="netlist_visual.md", mime="text/markdown",
-                           key="dl_netlist_visual")
-
-    if netlist_json.exists():
-        st.markdown("---")
-        st.markdown("### Netlist Data")
-        json_content = netlist_json.read_text(encoding="utf-8")
-        try:
-            netlist_data = json.loads(json_content)
-            nodes = netlist_data.get("nodes", [])
-            edges = netlist_data.get("edges", [])
-            power_nets = netlist_data.get("power_nets", [])
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Components", len(nodes))
-            c2.metric("Connections", len(edges))
-            c3.metric("Power Nets", len(power_nets))
-            if nodes:
-                st.markdown("#### Component Instances")
-                st.dataframe(
-                    [{"Instance": n.get("instance_id"), "Part": n.get("part_number"),
-                      "Component": n.get("component_name")} for n in nodes],
-                    use_container_width=True
-                )
-            if edges:
-                st.markdown("#### Connections")
-                st.dataframe(
-                    [{"From": e.get("from"), "To": e.get("to"),
-                      "Net": e.get("net_name")} for e in edges],
-                    use_container_width=True
-                )
-        except json.JSONDecodeError:
-            st.code(json_content, language="json")
-        st.download_button("⬇️ Download netlist.json", data=json_content,
-                           file_name="netlist.json", mime="application/json",
-                           key="dl_netlist_json")
+    else:
+        statuses = _load_status(st.session_state.project_id)
+        p4_status = _phase_status(statuses, "P4")
+        if p4_status == "in_progress":
+            st.markdown('<div class="alert-info">🔄 Netlist generation in progress…</div>',
+                        unsafe_allow_html=True)
+        elif p4_status == "failed":
+            err = statuses.get("P4", {}).get("error", "Unknown error")
+            st.markdown(f'<div class="alert-warn">⚠️ Netlist generation failed: {err}</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="alert-info">Run the pipeline to generate netlist (Phase 4).</div>',
+                        unsafe_allow_html=True)
 
 
 # ── Code Review ────────────────────────────────────────────────────────────────
@@ -1326,7 +902,7 @@ def render_code_review():
       <div class="ph-icon">🔍</div>
       <div>
         <div class="ph-title">Code Review</div>
-        <div class="ph-sub">Phase 8c · Generated source + AST analysis</div>
+        <div class="ph-sub">Phase 8c · Generated drivers and test suites</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -1335,37 +911,19 @@ def render_code_review():
         st.markdown('<div class="alert-info">No project loaded.</div>', unsafe_allow_html=True)
         return
 
-    proj = _load_project_from_api(st.session_state.project_id) \
-           or st.session_state.get("current_project", {})
+    proj = _load_project(st.session_state.project_id) or {}
     output_dir = Path(proj.get("output_dir", ""))
-    review_file = output_dir / "code_review_report.md"
-    src_dir = output_dir / "src"
-    src_files = list(src_dir.rglob("*.*")) if src_dir.exists() else []
 
-    if not review_file.exists() and not src_files:
-        st.markdown('<div class="alert-info">Code not generated yet — run the full pipeline first.</div>',
+    for fname, label in [("driver_code.md", "Driver Code"), ("code_review.md", "Review Report")]:
+        fpath = output_dir / fname
+        if fpath.exists():
+            with st.expander(f"📄 {label}", expanded=True):
+                content = fpath.read_text(encoding="utf-8")
+                _render_markdown_with_mermaid(content, key_prefix=f"code_{fname}")
+
+    if not any((output_dir / f).exists() for f in ["driver_code.md", "code_review.md"]):
+        st.markdown('<div class="alert-info">Run the pipeline to generate code (Phase 8c).</div>',
                     unsafe_allow_html=True)
-        return
-
-    if src_files:
-        st.markdown(f"### Generated Source Files ({len(src_files)} files)")
-        for src_file in sorted(src_files):
-            rel_path = src_file.relative_to(output_dir)
-            lang = "c" if src_file.suffix in (".c", ".h") else "cpp"
-            with st.expander(f"💻 {rel_path}", expanded=False):
-                content = src_file.read_text(encoding="utf-8")
-                st.code(content, language=lang)
-                st.download_button(f"⬇️ Download {src_file.name}", data=content,
-                                   file_name=src_file.name, key=f"dl_src_{src_file.name}")
-        st.markdown("---")
-
-    if review_file.exists():
-        st.markdown("### Code Review Report")
-        content = review_file.read_text(encoding="utf-8")
-        _render_markdown_with_mermaid(content, key_prefix="review")
-        st.download_button("⬇️ Download Review Report", data=content,
-                           file_name="code_review_report.md", mime="text/markdown",
-                           key="dl_review")
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────────────
@@ -1375,88 +933,62 @@ def render_dashboard():
     <div class="page-header">
       <div class="ph-icon">📊</div>
       <div>
-        <div class="ph-title">Projects Dashboard</div>
-        <div class="ph-sub">All projects at a glance</div>
+        <div class="ph-title">Project Dashboard</div>
+        <div class="ph-sub">Overview of all projects and pipeline status</div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    projects = _api_get("/api/v1/projects")
-    if projects is None:
-        try:
-            from services.project_service import ProjectService
-            projects = ProjectService().list_all()
-        except Exception as exc:
-            st.error(f"Could not load projects: {exc}")
-            return
-
+    projects = _api_get("/api/v1/projects") or []
     if not projects:
-        st.markdown('<div class="alert-info">No projects yet — create one in <strong>New Project</strong>.</div>',
+        st.markdown('<div class="alert-info">No projects yet. Create one in New Project.</div>',
                     unsafe_allow_html=True)
         return
 
-    completed = sum(1 for p in projects if p.get("current_phase") == "DONE")
-    in_prog = len(projects) - completed
-    total_phases_done = sum(
-        sum(1 for v in (p.get("phase_statuses") or {}).values()
-            if isinstance(v, dict) and v.get("status") == "completed")
-        for p in projects
-    )
-
-    st.markdown(f"""
-    <div class="metric-grid">
-      <div class="metric-card-pro">
-        <div class="mi">📁</div>
-        <div class="mv">{len(projects)}</div>
-        <div class="ml">Total Projects</div>
-      </div>
-      <div class="metric-card-pro">
-        <div class="mi">🔄</div>
-        <div class="mv">{in_prog}</div>
-        <div class="ml">In Progress</div>
-      </div>
-      <div class="metric-card-pro">
-        <div class="mi">✅</div>
-        <div class="mv">{completed}</div>
-        <div class="ml">Completed</div>
-      </div>
-      <div class="metric-card-pro">
-        <div class="mi">⚡</div>
-        <div class="mv">{total_phases_done}</div>
-        <div class="ml">Total Phases Run</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
+    st.metric("Total Projects", len(projects))
 
     for p in projects:
         phase_statuses = p.get("phase_statuses") or {}
         done_count = sum(1 for v in phase_statuses.values()
-                         if isinstance(v, dict) and v.get("status") == "completed")
-        with st.expander(
-            f"📁 {p['name']}  ·  {p.get('design_type','')}  ·  "
-            f"Phase {p.get('current_phase','P1')}  ·  {done_count}/8 phases done",
-            expanded=False,
-        ):
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                ca = p.get("created_at", "")
-                st.caption(f"**Created:** {ca[:10] if ca else '—'}")
-                st.caption(f"**Output:** `{p.get('output_dir','—')}`")
-            with col2:
-                for pid, num, name, _ in PHASE_META:
-                    status = _phase_status(phase_statuses, pid)
-                    icon = {"completed":"✅","in_progress":"🔄","failed":"❌"}.get(status,"⬜")
-                    st.caption(f"{icon} P{num} {name}")
-            with col3:
-                if st.button("Load →", key=f"load_{p['id']}", type="primary",
-                             use_container_width=True):
-                    st.session_state.current_project = p
-                    st.session_state.project_id = p["id"]
-                    _reset_chat()
-                    st.query_params["tab"] = "chat"
-                    st.rerun()
+                         if v.get("status") == "completed")
+        auto_total = sum(1 for _, _, _, _, auto in PHASE_META if auto)
+        pct = int(done_count / auto_total * 100) if auto_total else 0
+
+        st.markdown(f"""
+        <div class="glass-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-weight:700;font-size:16px;color:var(--text-primary);">
+                📁 {p.get('name', '—')}
+              </div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
+                <span class="tag">{p.get('design_type', 'general')}</span>
+                &nbsp;·&nbsp;{done_count}/{auto_total} phases · {pct}%
+              </div>
+            </div>
+          </div>
+          <div class="prog-track" style="margin-top:12px;">
+            <div class="prog-fill" style="width:{pct}%"></div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            if st.button("Open", key=f"open_{p['id']}", use_container_width=True):
+                st.session_state.project_id = p["id"]
+                st.session_state.current_project = p
+                st.query_params["project_id"] = str(p["id"])
+                st.query_params["tab"] = "pipeline"
+                st.rerun()
+
+        # Phase status row
+        for pid, num, name, _, _ in PHASE_META:
+            status = _phase_status(phase_statuses, pid)
+            if status != "pending":
+                icon = {"completed": "●", "in_progress": "◉", "failed": "✕"}.get(status, "○")
+                st.markdown(f'<span style="font-size:11px;color:var(--text-muted);margin-right:8px;">'
+                            f'{icon} P{num}</span>', unsafe_allow_html=True)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -1464,17 +996,15 @@ def render_dashboard():
 def main():
     render_sidebar()
     tab = render_tab_nav()
-    dispatch = {
-        "overview":  render_overview,
-        "new":       render_new_project,
-        "chat":      render_design_chat,
-        "pipeline":  render_pipeline,
-        "docs":      render_documents,
-        "netlist":   render_netlist,
-        "code":      render_code_review,
-        "dashboard": render_dashboard,
-    }
-    dispatch.get(tab, render_overview)()
+
+    if tab == "overview":    render_overview()
+    elif tab == "new":       render_new_project()
+    elif tab == "chat":      render_design_chat()
+    elif tab == "pipeline":  render_pipeline()
+    elif tab == "docs":      render_documents()
+    elif tab == "netlist":   render_netlist()
+    elif tab == "code":      render_code_review()
+    elif tab == "dashboard": render_dashboard()
 
 
 if __name__ == "__main__":

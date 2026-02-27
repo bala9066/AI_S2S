@@ -16,7 +16,7 @@ from typing import Optional, AsyncGenerator
 
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, JSON, Boolean, Float,
-    ForeignKey, create_engine, Enum as SQLEnum,
+    ForeignKey, create_engine, event, Enum as SQLEnum,
 )
 from sqlalchemy.orm import (
     DeclarativeBase, relationship, sessionmaker, Session,
@@ -145,18 +145,85 @@ class ComplianceRecordDB(Base):
 _engine = None
 _SessionLocal = None
 
+import logging as _logging
+_db_log = _logging.getLogger(__name__)
+
+
+def _resolve_sqlite_url(url: str) -> str:
+    """Ensure the SQLite DB is on a filesystem that supports proper locking.
+
+    Mounted/network filesystems (VirtioFS, CIFS, NFS) can leave stale WAL
+    files that make the DB unopenable.  If we detect that, copy the DB to
+    /tmp and use it from there.
+    """
+    import os, shutil, tempfile, sqlite3
+
+    # Extract file path from sqlite:///path
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return url
+    db_path = url[len(prefix):]
+    if db_path.startswith("./"):
+        db_path = os.path.join(os.getcwd(), db_path[2:])
+
+    # Quick health check — can we open the DB at all?
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("SELECT 1")
+        conn.close()
+        return url  # Works fine, use original path
+    except Exception as e:
+        _db_log.warning("SQLite at %s failed (%s) — relocating to /tmp", db_path, e)
+
+    # Relocate: copy the main .db (skip .wal/.shm) to /tmp
+    tmp_db = os.path.join(tempfile.gettempdir(), os.path.basename(db_path))
+    if os.path.exists(db_path):
+        shutil.copy2(db_path, tmp_db)
+        _db_log.info("Copied DB from %s to %s", db_path, tmp_db)
+    # Remove any stale WAL/SHM in /tmp too
+    for ext in ("-wal", "-shm"):
+        p = tmp_db + ext
+        if os.path.exists(p):
+            os.remove(p)
+
+    # Verify the copy works
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("SELECT 1")
+    conn.close()
+    _db_log.info("SQLite relocated DB working at %s", tmp_db)
+    return f"sqlite:///{tmp_db}"
+
+
+_resolved_db_url: str | None = None   # cached after first resolution
+
 
 def get_engine():
-    global _engine
+    global _engine, _resolved_db_url
     if _engine is None:
-        is_sqlite = settings.database_url.startswith("sqlite")
+        db_url = settings.database_url
+        is_sqlite = db_url.startswith("sqlite")
+        if is_sqlite:
+            db_url = _resolve_sqlite_url(db_url)
+        _resolved_db_url = db_url
         _engine = create_engine(
-            settings.database_url,
+            db_url,
             echo=settings.debug,
             future=True,
+            pool_pre_ping=True,
             # SQLite: allow multiple threads to share the same connection
             connect_args={"check_same_thread": False} if is_sqlite else {},
         )
+        # SQLite pragmas for performance
+        if is_sqlite:
+            @event.listens_for(_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=DELETE")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
         Base.metadata.create_all(_engine)
     return _engine
 
@@ -179,11 +246,17 @@ _AsyncSessionLocal: async_sessionmaker | None = None
 def get_async_engine():
     global _async_engine
     if _async_engine is None:
-        url = _async_url(settings.database_url)
+        # Use the same resolved URL as the sync engine (avoids WAL issues)
+        if _resolved_db_url:
+            sync_url = _resolved_db_url
+        elif settings.database_url.startswith("sqlite"):
+            sync_url = _resolve_sqlite_url(settings.database_url)
+        else:
+            sync_url = settings.database_url
+        url = _async_url(sync_url)
         _async_engine = create_async_engine(
             url,
             echo=settings.debug,
-            # SQLite: serialised writes are fine; WAL set on sync engine
         )
     return _async_engine
 
