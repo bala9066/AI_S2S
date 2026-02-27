@@ -18,6 +18,7 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from config import settings
 from logging_config import configure_logging
@@ -207,9 +208,13 @@ async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
     return {"status": "pipeline_started", "project_id": project_id}
 
 
+VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6"}
+
 @app.post("/api/v1/projects/{project_id}/phases/{phase_id}/execute", tags=["pipeline"])
 async def execute_single_phase(project_id: int, phase_id: str, background_tasks: BackgroundTasks):
     """Execute one specific phase as a background task."""
+    if phase_id not in VALID_PHASES:
+        raise HTTPException(400, f"Invalid phase '{phase_id}'. Must be one of: {sorted(VALID_PHASES)}")
     proj = _project_svc().get(project_id)
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
@@ -234,6 +239,18 @@ async def get_project_status(project_id: int):
         "current_phase": proj.get("current_phase"),
         "phase_statuses": proj.get("phase_statuses", {}),
     }
+
+
+# ── Test UI (standalone HTML workflow tester) ──────────────────────────────────
+
+@app.get("/testui", response_class=HTMLResponse, tags=["ops"])
+async def test_ui():
+    """Serve standalone HTML workflow test page (no Streamlit needed)."""
+    import pathlib
+    p = pathlib.Path(__file__).parent / "test_ui.html"
+    if p.exists():
+        return HTMLResponse(content=p.read_text(), status_code=200)
+    return HTMLResponse(content="<h1>test_ui.html not found</h1>", status_code=404)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
