@@ -354,12 +354,10 @@ def render_new_project():
                                        height=110)
         with col2:
             design_type = st.selectbox("Design Type *",
-                ["general", "rf", "motor_control", "power", "digital", "sensor", "industrial"],
+                ["rf", "digital"],
                 format_func=lambda x: {
-                    "general": "⚙️ General", "rf": "📡 RF / Wireless",
-                    "motor_control": "⚡ Motor Control", "power": "🔋 Power Electronics",
-                    "digital": "💻 Digital Logic", "sensor": "📊 Sensor / IoT",
-                    "industrial": "🏭 Industrial",
+                    "rf": "📡 RF / Wireless",
+                    "digital": "💻 Digital Logic",
                 }.get(x, x))
             st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
             submitted = st.form_submit_button("🚀 Create & Start", type="primary",
@@ -437,8 +435,7 @@ def render_design_chat():
     phase1_status = _phase_status(statuses, "P1")
     proj = _load_project(proj_id) or st.session_state.get("current_project", {})
 
-    dt_icons = {"motor_control": "⚡", "rf": "📡", "power": "🔋", "digital": "💻",
-                "sensor": "📊", "industrial": "🏭", "general": "⚙️"}
+    dt_icons = {"rf": "📡", "digital": "💻"}
     dt = proj.get("design_type", "general")
     st.markdown(
         f'<div style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">'

@@ -146,7 +146,7 @@ async def create_project(body: dict):
         return _project_svc().create(
             name=name,
             description=body.get("description", ""),
-            design_type=body.get("design_type", "general"),
+            design_type=body.get("design_type", "rf"),
         )
     except Exception as exc:
         log.exception("api.create_project_failed")

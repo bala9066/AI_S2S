@@ -68,7 +68,7 @@ class ProjectService:
 
     # ── CRUD ────────────────────────────────────────────────────────────────
 
-    def create(self, name: str, description: str = "", design_type: str = "general") -> dict:
+    def create(self, name: str, description: str = "", design_type: str = "rf") -> dict:
         """Create a project in the DB and its output directory."""
         session = get_session()
         try:

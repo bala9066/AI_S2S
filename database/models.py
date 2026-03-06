@@ -50,7 +50,7 @@ class ProjectDB(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False)
     description = Column(Text, default="")
-    design_type = Column(String(50), default="general")
+    design_type = Column(String(50), default="rf")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -169,7 +169,7 @@ def _resolve_sqlite_url(url: str) -> str:
     # Quick health check — can we open the DB at all?
     try:
         conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("SELECT 1")
         conn.close()
         return url  # Works fine, use original path
@@ -189,7 +189,7 @@ def _resolve_sqlite_url(url: str) -> str:
 
     # Verify the copy works
     conn = sqlite3.connect(tmp_db)
-    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("SELECT 1")
     conn.close()
     _db_log.info("SQLite relocated DB working at %s", tmp_db)
@@ -220,7 +220,7 @@ def get_engine():
             @event.listens_for(_engine, "connect")
             def _set_sqlite_pragma(dbapi_conn, connection_record):
                 cursor = dbapi_conn.cursor()
-                cursor.execute("PRAGMA journal_mode=DELETE")
+                cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA busy_timeout=5000")
                 cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()

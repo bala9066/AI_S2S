@@ -30,8 +30,8 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: str = Field(default="")
     design_type: str = Field(
-        default="general",
-        description="Type: rf, motor_control, power, digital, sensor, general"
+        default="rf",
+        description="Type: rf, digital"
     )
 
 
@@ -40,7 +40,7 @@ class Project(BaseModel):
     id: Optional[int] = None
     name: str
     description: str = ""
-    design_type: str = "general"
+    design_type: str = "rf"
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
