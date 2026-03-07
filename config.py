@@ -110,7 +110,9 @@ class Settings:
 
     @property
     def api_base_url(self) -> str:
-        return f"http://{self.fastapi_host}:{self.fastapi_port}"
+        # Use 127.0.0.1 for client connections — 0.0.0.0 is a bind address only
+        host = self.fastapi_host if self.fastapi_host not in ("0.0.0.0", "") else "127.0.0.1"
+        return f"http://{host}:{self.fastapi_port}"
 
     def get_api_key_status(self) -> dict:
         return {
