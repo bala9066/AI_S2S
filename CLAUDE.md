@@ -1,0 +1,464 @@
+# Hardware Pipeline V2 — Project Memory
+
+## Current Status
+- **FastAPI backend** running on `localhost:8000` — serves API + React frontend
+- **React v5 frontend** built and deployed at `http://localhost:8000/app`
+- **Streamlit** (`app.py`) kept as legacy fallback — not used actively
+- Gold theme (Streamlit) tagged as `theme-gold`
+- All 8 pipeline phases functional in backend
+
+---
+
+## Completed Work
+
+### React Frontend Rebuild (v5 Design) — DONE (v1)
+- First pass built at `hardware-pipeline-v5-react/`, deployed as `frontend/bundle.html`
+- **Now being rebuilt** to match the layout described below
+
+---
+
+## Target Layout (v2 rebuild)
+
+### Overall Structure
+
+Two modes:
+
+**1. Landing page** (no project loaded)
+- Full-screen, v5 style: dark grid/checkerboard background, glowing teal orb
+- Centered: Hardware Pipeline logo + tagline
+- Two buttons: `+ Create New Project` | `Load Existing`
+- Subline: `DATA PATTERNS INDIA · GREAT AI HACK-A-THON 2026`
+
+**2. Pipeline view** (project loaded)
+Three-column layout, full viewport height:
+
+```
++------------------+---------------------------+----------------------+
+|  LEFT PANEL      |  CENTER CONTENT           |  RIGHT PANEL         |
+|  248px fixed     |  flex-1 scrollable        |  340px fixed         |
+|  sticky          |                           |  sticky              |
+|                  |  Sticky mini-topbar:      |                      |
+|  Logo / branding |  project name + prod ID   |  Step-by-Step        |
+|                  |  phase progress dots      |  Execution Flow      |
+|  Phase list:     |                           |                      |
+|  P1 [teal]       |  Phase header:            |  Sub-steps for       |
+|  P2 [blue]       |  icon + code + title      |  selected phase,     |
+|  P3 [amber]      |  badge + tagline          |  animated on run,    |
+|  P4 [purple]     |                           |  each with label,    |
+|  P5 [slate/lock] |  Sub-tabs:                |  time, detail,       |
+|  P6 [teal]       |  Chat | Details | Metrics |  progress bar        |
+|  P7 [slate/lock] |  Documents                |                      |
+|  P8 [teal]       |  (Chat only on P1)        |  Run button          |
+|                  |                           |  (phase color)       |
++------------------+---------------------------+----------------------+
+```
+
+---
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│  REACT FRONTEND — frontend/bundle.html                             │
+│  • Served by FastAPI at http://localhost:8000/app                  │
+│  • All JS/CSS inlined — single self-contained HTML file            │
+│  • Makes live HTTP calls to FastAPI at localhost:8000              │
+└──────────────────────────────┬─────────────────────────────────────┘
+                               │ HTTP fetch() calls (same-origin)
+                               ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  FASTAPI BACKEND — main.py on port 8000                            │
+│  • Runs AI agents, reads SQLite DB, generates output files         │
+│  • Swagger docs at http://localhost:8000/docs                      │
+│  • Serves React bundle at GET /app                                 │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Design System (v5)
+
+| Token            | Value                          |
+|------------------|--------------------------------|
+| Background       | `#070b14` (deep navy)          |
+| Panel BG         | `#1a2235`                      |
+| Panel Alt        | `#2a3a50`                      |
+| Accent (primary) | `#00c6a7` (teal)               |
+| Accent glow      | `rgba(0,198,167,0.25)`         |
+| Text primary     | `#e2e8f0`                      |
+| Text muted       | `#94a3b8`                      |
+| Text dim         | `#64748b`                      |
+| Border           | `rgba(42,58,80,0.8)`           |
+| Error            | `#dc2626`                      |
+| Warning          | `#f59e0b`                      |
+| Blue accent      | `#3b82f6`                      |
+| Display font     | **Syne** (Google Fonts)        |
+| UI labels font   | **DM Mono** (Google Fonts)     |
+| Code font        | **JetBrains Mono**             |
+| Border radius    | 6px cards / 4px inputs         |
+| Teal glow shadow | `0 0 28px rgba(0,198,167,0.25)`|
+
+### Per-Phase Colors
+Each phase has its own accent color used for icons, borders, progress, sub-step highlights:
+
+| Phase | Color   | Hex       |
+|-------|---------|-----------|
+| P1    | Teal    | `#00c6a7` |
+| P2    | Blue    | `#3b82f6` |
+| P3    | Amber   | `#f59e0b` |
+| P4    | Purple  | `#8b5cf6` |
+| P5    | Slate   | `#475569` |
+| P6    | Teal    | `#00c6a7` |
+| P7    | Slate   | `#475569` |
+| P8a   | Teal    | `#00c6a7` |
+| P8b   | Blue    | `#3b82f6` |
+| P8c   | Purple  | `#8b5cf6` |
+
+CSS variables in `src/index.css`: `--navy`, `--panel`, `--panel2`, `--panel3`, `--teal`, `--teal-border`, `--teal-glow`, `--text`, `--text2`, `--text3`, `--text4`, `--border`, `--border2`, `--danger`, `--warning`, `--blue`, `--green`
+
+---
+
+## Views / Pages
+
+### Left Panel (248px, sticky)
+- Top: "DATA PATTERNS · CODE KNIGHTS" label (teal, small caps) + "Hardware Pipeline" logo
+- Phase list: one button per phase, full width, with:
+  - Circle icon (phase number, or ✓ if complete, or lock if manual/locked)
+  - Phase title + `⚡ AUTO` or `MANUAL` tag
+  - Active phase highlighted with that phase's color border + tinted bg
+  - Locked phases (P5, P7, and phases after current) shown at 32% opacity
+  - Clicking a locked manual phase shows a toast: "Completed externally in Altium/Vivado"
+  - Clicking a locked AI phase shows a toast: "Complete P{n-1} first"
+
+### Center Content (flex-1)
+
+**Sticky mini-topbar** (inside pipeline view, ~40px):
+- Project name (left)
+- Product ID chip in teal (if set)
+- Phase progress dots right-aligned: one dot per phase, colored when complete
+
+**Phase header** (below topbar):
+- Large circle icon (phase color, number or ✓)
+- Phase code (e.g. P01), AUTO/MANUAL badge, time estimate
+- Phase title (Syne font, bold)
+- Tagline (muted)
+- Manual phase lock note if applicable
+
+**Sub-tabs** (below header, tab bar):
+- `⬡ Flow` — NOT here (moved to right panel)
+- `⚡ Chat` — only for P1; same functionality as gold theme Streamlit chat, colors adapted to v5
+- `◈ Details` — inputs list, outputs list, tools list
+- `◎ Metrics` — TIME SAVED, ERROR REDUCTION, CONFIDENCE %, ANNUAL COST IMPACT
+- `📄 Documents` — all generated outputs for this phase: .md/.docx inline renderer, Mermaid diagrams, JSON viewer, component table, netlist viewer, code review results (as applicable per phase)
+
+Default tab: `◈ Details` (since Flow moved to right panel)
+
+### Right Panel (340px, sticky)
+
+**Step-by-Step Execution Flow** for the currently selected phase:
+- Header: "Step-by-Step Execution Flow" (Syne bold) + sub-step count + total time
+- Run button (phase color): `▶ Run Simulation` / `Running…` / `↺ Replay`
+- Sub-steps list (vertical, connected by lines):
+  - Each sub-step: circle (phase color when active/complete, dim when pending)
+  - Connector line between steps
+  - Step label + time chip
+  - Detail text (12px, muted) shown when step is active/complete
+  - Animated progress bar per step (phase color glow when active)
+- Completed summary card: TOTAL TIME + SUB-STEPS count
+- Animation: steps complete sequentially, each with fill bar animation ~22ms interval
+
+This is **always visible** while you use the center sub-tabs.
+
+---
+
+## Phase Reference Data
+
+| ID  | Name                  | Type     | Color   | Time      | Description |
+|-----|-----------------------|----------|---------|-----------|-------------|
+| P1  | Design & Requirements | AI       | teal    | ~4 min    | Block diagram + requirements capture via chat |
+| P2  | HRS Document          | AI       | blue    | ~4 min    | IEEE 29148 Hardware Requirements Specification |
+| P3  | Compliance Check      | AI       | amber   | ~4 min    | RoHS/REACH/FCC/MIL-STD rules engine |
+| P4  | Netlist Generation    | AI       | purple  | ~4 min    | Component connectivity graph with DRC |
+| P5  | PCB Layout            | Manual   | slate   | Days-Wks  | Altium/KiCad/OrCAD — manual, external tool |
+| P6  | GLR Specification     | AI       | teal    | ~4 min    | Glue Logic Requirements for FPGA/CPLD |
+| P7  | FPGA Design           | Manual   | slate   | Days-Wks  | Vivado/Quartus — manual, external tool |
+| P8a | SRS Document          | AI       | teal    | ~4 min    | Software Requirements Specification |
+| P8b | SDD Document          | AI       | blue    | ~4 min    | Software Design Document |
+| P8c | Code Review           | AI       | purple  | ~4 min    | MISRA-C + Clang-Tidy static analysis |
+
+### Sub-Steps Per Phase (for Right Panel Flow)
+
+**P1 — Requirements & Component Selection** (~4 min)
+1. Parse natural language input — 12s
+2. Identify hardware domain — 5s
+3. Query component database — 48s
+4. Rank & select components — 20s
+5. Generate BOM with alternates — 15s
+6. Block diagram verification — 30s
+7. Requirement finalization loop — 50s
+
+**P2 — HRS Document Generation** (~4 min)
+1. Load requirements from P1 — 3s
+2. Select domain template — 5s
+3. Calculate power budget — 18s
+4. Generate interface tables — 22s
+5. Write specification sections — 120s
+6. Insert diagrams — 30s
+7. Export .docx / .pdf — 12s
+
+**P3 — Compliance Validation** (~4 min)
+1. Load HRS + BOM from P1/P2 — 4s
+2. RoHS / REACH substance check — 35s
+3. EMC pre-compliance check — 45s
+4. Safety standard mapping — 30s
+5. Generate compliance matrix — 20s
+6. Cost impact estimation — 15s
+7. Compliance report export — 10s
+
+**P4 — Logical Netlist Generation** (~4 min)
+1. Parse block diagram from P1 — 8s
+2. Map components to pinouts — 22s
+3. Build connectivity graph — 30s
+4. Assign net classes — 15s
+5. Run electrical rules check — 35s
+6. Export KiCad netlist (.net) — 8s
+7. Pre-PCB DRC report — 10s
+
+**P5 — PCB Layout** (Manual / External)
+1. Import validated netlist (P4) — 5 min
+2. Define layer stackup — 2 hrs
+3. Component placement — 1-2 days
+4. Route critical signals — 2-3 days
+5. DRC / ERC check — 2 hrs
+6. Gerber export — 30 min
+
+**P6 — GLR Specification** (~4 min)
+1. Load netlist from P4 — 5s
+2. Identify FPGA/CPLD boundaries — 20s
+3. Map glue logic requirements — 35s
+4. Generate RTL constraints — 40s
+5. Write GLR document — 80s
+6. Export specification — 10s
+
+**P7 — FPGA Design** (Manual / External)
+1. Import GLR specification — 30 min
+2. RTL coding (VHDL/Verilog) — 2-5 days
+3. Simulation & verification — 1-2 days
+4. Synthesis & place-and-route — 4 hrs
+5. Timing closure — 2-4 hrs
+6. Bitstream generation — 1 hr
+
+**P8a — SRS Document** (~4 min)
+1. Load hardware spec from P1-P4 — 5s
+2. Define software interfaces — 25s
+3. Write functional requirements — 90s
+4. Write non-functional requirements — 40s
+5. Generate traceability matrix — 20s
+6. Export SRS document — 10s
+
+**P8b — SDD Document** (~4 min)
+1. Load SRS from P8a — 5s
+2. Design software architecture — 60s
+3. Define module interfaces — 35s
+4. Write design descriptions — 80s
+5. Generate architecture diagrams — 25s
+6. Export SDD document — 10s
+
+**P8c — Code Review** (~4 min)
+1. Load firmware source files — 8s
+2. Run MISRA-C static analysis — 45s
+3. Run Clang-Tidy checks — 40s
+4. Classify issues by severity — 15s
+5. Generate fix suggestions — 50s
+6. Export review report — 10s
+
+---
+
+## API Integration
+
+**Base URL:** `http://localhost:8000`
+**API prefix:** `/api/v1/`
+**Swagger docs:** `http://localhost:8000/docs`
+**CORS:** Configured in FastAPI backend
+
+| Method | Endpoint | Used For |
+|--------|----------|----------|
+| GET | `/api/v1/projects` | List all projects |
+| POST | `/api/v1/projects` | Create new project |
+| GET | `/api/v1/projects/{id}` | Project detail |
+| GET | `/api/v1/projects/{id}/status` | All phase statuses — returns `{ phase_statuses: {...} }` |
+| POST | `/api/v1/projects/{id}/pipeline/run` | Start full pipeline |
+| POST | `/api/v1/projects/{id}/phases/{phase_id}/execute` | Run a single phase |
+| POST | `/api/v1/projects/{id}/chat` | P1 design chat — returns full JSON (not a stream) |
+
+**Create Project payload:** `{ name, description, design_type }` — do NOT include `product_id`, backend ignores/rejects it.
+
+**Chat response:** Backend returns `{ response: "..." }` as a complete JSON object, not a streaming response. Display the full text at once.
+
+**Status polling:** Phase status auto-refreshes every 3 seconds when a phase is running.
+
+**Phase status values:** `pending`, `in_progress`, `completed`, `failed`, `draft_pending`
+
+---
+
+## Interactive Components
+
+### Create Project Modal
+- Fields: PROJECT NAME, DESCRIPTION (textarea), Design Type (RF / Digital)
+- NO product_id field — backend rejects it
+- Actions: `Cancel` | `CREATE & START →`
+- On submit: POST `/api/v1/projects` → load into pipeline view, select P1
+
+### Load Project Modal
+- Lists existing projects from GET `/api/v1/projects`
+- On select: load project, auto-select first incomplete AI phase
+
+### Phase Actions (in Right Panel)
+- `▶ Run Simulation` — triggers `POST /api/v1/projects/{id}/phases/{phase_id}/execute`
+- Running state: `Running…` (disabled button, phase color dimmed)
+- `↺ Replay` — re-runs animation after completion
+- Sub-steps animate sequentially as phase executes
+
+### Chat (P1 — Center tab)
+- POST `/api/v1/projects/{id}/chat` with `{ message }`
+- Response is full JSON `{ response: "..." }` — display all at once
+- Animated typewriter effect on the response text (like v5 HTML chat)
+- Suggestion chips for common prompts
+- Message history preserved in session state
+- Colors: teal accent (P1 color), dark panel background
+
+---
+
+## Frontend Source Structure
+
+```
+hardware-pipeline-v5-react/
+├── index.html
+├── vite.config.ts
+├── tsconfig.app.json          # noUnusedLocals: false
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx                # mode switch: landing | pipeline
+│   ├── index.css              # CSS vars + font imports
+│   ├── api.ts                 # all fetch() calls
+│   ├── types.ts               # Project, PhaseStatus, etc.
+│   ├── data/
+│   │   └── phases.ts          # phase metadata + sub-steps (static data)
+│   ├── components/
+│   │   ├── LandingPage.tsx    # full-screen landing
+│   │   ├── LeftPanel.tsx      # phase list sidebar
+│   │   ├── MiniTopbar.tsx     # sticky project name + progress dots
+│   │   ├── PhaseHeader.tsx    # phase icon + title + badges
+│   │   ├── FlowPanel.tsx      # right panel: sub-steps execution flow
+│   │   ├── CreateProjectModal.tsx
+│   │   ├── LoadProjectModal.tsx
+│   │   └── Toast.tsx
+│   └── views/
+│       ├── ChatView.tsx       # P1 chat (functionality from gold theme)
+│       ├── DetailsView.tsx    # inputs / outputs / tools
+│       ├── MetricsView.tsx    # 4 metric cards
+│       └── DocumentsView.tsx  # all phase outputs consolidated
+```
+
+---
+
+## Build & Deploy
+
+**Build command:** `cd hardware-pipeline-v5-react && npx vite build`
+
+### Bundle Script (run after build)
+```python
+# bundle_and_escape.py
+import re, pathlib
+
+dist = pathlib.Path("hardware-pipeline-v5-react/dist")
+src_html = (dist / "index.html").read_text(encoding="utf-8")
+
+for css_file in dist.glob("assets/*.css"):
+    tag = f'<link rel="stylesheet" crossorigin href="/assets/{css_file.name}">'
+    src_html = src_html.replace(tag, f"<style>{css_file.read_text('utf-8')}</style>")
+
+for js_file in dist.glob("assets/*.js"):
+    tag = f'<script type="module" crossorigin src="/assets/{js_file.name}"></script>'
+    src_html = src_html.replace(tag, f'<script type="module">{js_file.read_text("utf-8")}</script>')
+
+def escape_script(m):
+    content = m.group(1)
+    escaped = re.sub(r'[^\x00-\x7F]', lambda c: f'\\u{ord(c.group()):04X}', content)
+    return f'<script type="module">{escaped}</script>'
+
+src_html = re.sub(r'<script type="module">([\s\S]*?)</script>', escape_script, src_html)
+
+out = pathlib.Path("frontend/bundle.html")
+out.parent.mkdir(exist_ok=True)
+out.write_text(src_html, encoding="ascii")
+print(f"Bundle written: {out} ({out.stat().st_size // 1024} KB)")
+```
+
+### FastAPI /app Route
+```python
+@app.get("/app", response_class=HTMLResponse, tags=["ops"])
+async def serve_frontend():
+    import pathlib
+    p = pathlib.Path(__file__).parent / "frontend" / "bundle.html"
+    if p.exists():
+        return HTMLResponse(content=p.read_text(encoding="utf-8", errors="replace"), status_code=200)
+    return HTMLResponse(content="<h1>Frontend not built yet.</h1>", status_code=404)
+```
+
+---
+
+## Branding
+
+- Logo: "Hardware Pipeline" — "Pipeline" in teal `#00c6a7` (Syne font)
+- Sub-brand: `DATA PATTERNS · CODE KNIGHTS` (teal, 10px, letter-spaced)
+- Hackathon line: `DATA PATTERNS INDIA · GREAT AI HACK-A-THON 2026`
+- Team credits: **NOT included**
+- Logo icon: use ASCII `[lightning]` in source code to avoid encoding issues
+
+---
+
+## Backend
+
+- **FastAPI**: `main.py` on `localhost:8000`
+- **Streamlit** (legacy/fallback): `app.py` on `localhost:8501`
+- **DB**: `hardware_pipeline.db` (SQLite)
+- **AI Engine**: `agents/orchestrator.py`
+
+---
+
+## Git Tags
+
+- `theme-gold` — Streamlit gold theme, all 8 phases working
+
+---
+
+## Known Issues
+
+- **P4 Netlist:** phase status shows "Pending" even when output files exist — backend tracking bug
+- **P4 orchestrator bug:** `data must be str, not dict` error on some P4 runs
+
+---
+
+## Critical Gotchas
+
+**1. Windows cp1252 encoding crash**
+bundle.html must have ALL non-ASCII chars escaped as `\uXXXX`. The bundle script handles this.
+
+**2. Do NOT open bundle.html as file://**
+`type="module"` inline scripts block via `file://`. Always access via `http://localhost:8000/app`.
+
+**3. FastAPI runs on port 8000, not 8001**
+API prefix is `/api/v1/` — check `http://localhost:8000/docs` for exact signatures.
+
+**4. Chat is not streaming**
+`/api/v1/projects/{id}/chat` returns complete JSON. Use typewriter animation client-side.
+
+**5. No product_id in create project**
+Backend `POST /api/v1/projects` only accepts `name`, `description`, `design_type`.
+
+**6. Default exports required**
+All component and view files must use `export default`. Named-only exports break bundling.
+
+**7. uvicorn requires manual restart**
+New routes in `main.py` need a manual server restart if not running with `--reload`.
