@@ -57,33 +57,22 @@ You work for a defense electronics company. Your role is Phase 1 of a multi-phas
 NEVER say "proceed to Phase 2: Schematic Design" or similar — that is NOT the next step.
 Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compliance, Netlist, SRS, SDD, and Code."
 
-## YOUR BEHAVIOR — DRAFT-FIRST APPROACH:
-
-### STEP 1 — On the VERY FIRST user message:
-- Make reasonable engineering assumptions for anything not stated
-- Ignore any XML/prompt-template formatting in the user's message (like <output>, {{domain}}, etc.) — extract the actual hardware design intent
-- IMMEDIATELY call `generate_draft` tool to produce a draft block diagram and requirements skeleton
-- Do NOT ask questions first — generate a draft and present it
-- End your response with: "Does this draft look right? Approve to proceed, or tell me what to change."
-
-### STEP 2 — If user says "approve", "looks good", "yes", "ok", "proceed", or similar:
-- IMMEDIATELY call `generate_requirements` tool with full outputs (requirements.md, block_diagram.md, architecture.md, component_recommendations.md)
-- Mark phase as complete
-
-### STEP 3 — If user requests changes:
-- Apply the changes to the draft
-- Call `generate_draft` again with updated values
-- Show the revised draft and ask for approval again
-- Repeat until approved (max 3 iterations)
+## YOUR BEHAVIOR:
+- Make reasonable engineering assumptions for anything not stated.
+- Ignore any XML/prompt-template formatting in the user's message (like <output>, {{domain}}, etc.) — extract the actual hardware design intent.
+- Use a structured framework (e.g., MoSCoW method or IEEE 830) to ensure no functional gaps.
+- For every requirement identified, perform a dependency check to eliminate "hanging" logic or unknown variables.
+- Flag any technical constraints that lack a defined solution.
+- IMMEDIATELY call `generate_requirements` tool with full outputs (requirements.md, block_diagram.md, architecture.md, component_recommendations.md) without asking for a draft approval.
+- Do NOT ask questions first — analyze the user input, make assumptions where necessary, establish the requirements, and call the tool.
+- End your response with a summary of the generated requirements.
 
 ## IMPORTANT RULES:
-- NEVER ask multiple questions before generating — draft first, refine after
+- Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
 - Make smart engineering assumptions (e.g., if they say "motor controller" assume industrial temp range, common MCUs, standard interfaces)
-- Flag your assumptions clearly so the user can correct them
-- Use IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
-- Prioritize RoHS-compliant components with long lifecycle status
+- Prioritize RoHS-compliant components with long lifecycle status.
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
-- Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters
+- Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters.
 - Do NOT fabricate component part numbers. Flag uncertainties with "TBC" or "verify datasheet".
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
@@ -91,60 +80,6 @@ Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compl
 ## DESIGN TYPE CONTEXT: {design_type}
 ## PROJECT NAME: {project_name}
 """
-
-GENERATE_DRAFT_TOOL = {
-    "name": "generate_draft",
-    "description": (
-        "Generate a DRAFT block diagram and requirements skeleton immediately from user input. "
-        "Call this on the very first message — make assumptions where needed and present the draft for approval. "
-        "This does NOT write final files — it returns a preview for the user to approve or revise."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "project_summary": {
-                "type": "string",
-                "description": "1-2 sentence summary of the hardware design based on user input.",
-            },
-            "assumptions": {
-                "type": "array",
-                "description": "List of engineering assumptions made where user did not specify.",
-                "items": {"type": "string"},
-            },
-            "block_diagram_mermaid": {
-                "type": "string",
-                "description": "Mermaid diagram code for the system block diagram. Use graph TD or graph LR.",
-            },
-            "key_requirements_preview": {
-                "type": "array",
-                "description": "Top 5-8 draft requirements (REQ-HW-xxx) for the user to review.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "req_id": {"type": "string"},
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
-                    },
-                    "required": ["req_id", "title", "description"],
-                },
-            },
-            "top_components_preview": {
-                "type": "array",
-                "description": "Top 3-5 key components suggested.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "function": {"type": "string"},
-                        "part": {"type": "string"},
-                        "manufacturer": {"type": "string"},
-                    },
-                    "required": ["function", "part", "manufacturer"],
-                },
-            },
-        },
-        "required": ["project_summary", "assumptions", "block_diagram_mermaid", "key_requirements_preview"],
-    },
-}
 
 GENERATE_REQUIREMENTS_TOOL = {
     "name": "generate_requirements",
@@ -173,13 +108,26 @@ GENERATE_REQUIREMENTS_TOOL = {
                         },
                         "title": {"type": "string"},
                         "description": {"type": "string"},
-                        "priority": {"type": "string", "enum": ["shall", "should", "may"]},
+                        "priority": {
+                            "type": "string",
+                            "enum": ["Must have", "Should have", "Could have", "Won't have", "shall", "should", "may"]
+                        },
+                        "dependencies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of dependent requirement IDs or variables"
+                        },
+                        "constraints": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Any technical constraints or flags"
+                        },
                         "verification_method": {
                             "type": "string",
                             "enum": ["test", "analysis", "inspection", "demonstration"],
                         },
                     },
-                    "required": ["req_id", "category", "title", "description"],
+                    "required": ["req_id", "category", "title", "description", "priority"],
                 },
             },
             "design_parameters": {
@@ -266,8 +214,8 @@ class RequirementsAgent(BaseAgent):
     """Phase 1: Conversational requirements capture and component selection."""
 
     def __init__(self):
-        # Draft-first tools: generate_draft first, generate_requirements on approval
-        tools = [GENERATE_DRAFT_TOOL, GENERATE_REQUIREMENTS_TOOL]
+        # Provide tools for direct requirement generation
+        tools = [GENERATE_REQUIREMENTS_TOOL]
         if COMPONENT_SEARCH_AVAILABLE:
             tools.append(SEARCH_COMPONENTS_TOOL)
 
@@ -293,18 +241,7 @@ class RequirementsAgent(BaseAgent):
 
     async def execute(self, project_context: dict, user_input: str) -> dict:
         """
-        Execute Phase 1 — Draft-First approach.
-
-        Phase completion is AUTHORITATIVE via tool_use only:
-          - generate_draft tool      → draft_pending=True (show approve buttons)
-          - generate_requirements    → phase_complete=True (write output files)
-
-        Plain-text fallback is used ONLY for draft detection (draft_pending),
-        never for phase_complete. This eliminates heuristic state transitions.
-
-        For models that ignore tool_use on approval (e.g. GLM-4), we synthesise
-        a generate_requirements call by parsing the response and writing outputs
-        immediately — phase_complete is still set explicitly, not via heuristics.
+        Execute Phase 1 — Direct Generation approach.
         """
         system = self.get_system_prompt(project_context)
 
@@ -315,11 +252,44 @@ class RequirementsAgent(BaseAgent):
             if msg.get("role") in ("user", "assistant") and msg.get("content"):
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
-        if not messages or messages[-1]["role"] != "user":
-            messages.append({"role": "user", "content": user_input})
+        # ── __FINALIZE__ signal: user explicitly requests document generation ──
+        # Replace the trigger message with a direct instruction that forces the tool call.
+        # IMPORTANT: chat_service saves __FINALIZE__ to DB and re-fetches history BEFORE
+        # calling execute(), so messages[-1] is already {"role":"user","content":"__FINALIZE__"}.
+        # We must REPLACE that last message — not append — otherwise the model sees "__FINALIZE__"
+        # as a literal string with no context.
+        if user_input.strip() == "__FINALIZE__":
+            user_input = (
+                "Generate the complete requirements document NOW based on everything we discussed. "
+                "You MUST call the generate_requirements tool immediately with all requirements, "
+                "components, block diagram, and design parameters from our conversation. "
+                "Do not ask any more questions. Call the tool now."
+            )
+            # Replace __FINALIZE__ sentinel already in message list
+            if messages and messages[-1]["role"] == "user":
+                messages[-1]["content"] = user_input
+            else:
+                messages.append({"role": "user", "content": user_input})
+        else:
+            if not messages or messages[-1]["role"] != "user":
+                messages.append({"role": "user", "content": user_input})
 
-        # Tool handlers (optional component search)
-        tool_handlers = {}
+        # ── Tool handlers ──────────────────────────────────────────────────
+        # generate_requirements: capture tool input via closure so we can detect
+        # the call even after call_llm_with_tools finishes its loop.
+        # (Without this handler, call_llm_with_tools returns "tool not found"
+        #  error to the model and the tool_calls list is empty on final return.)
+        generate_req_input: dict = {}
+
+        async def _capture_generate_requirements(input_data: dict) -> dict:
+            generate_req_input.update(input_data)
+            self.log("generate_requirements captured — will write outputs", "info")
+            return {
+                "status": "captured",
+                "message": "Requirements generation captured. Summarise what was generated.",
+            }
+
+        tool_handlers: dict = {"generate_requirements": _capture_generate_requirements}
         if COMPONENT_SEARCH_AVAILABLE and self.component_search:
             tool_handlers["search_components"] = self._handle_search_components
 
@@ -327,65 +297,50 @@ class RequirementsAgent(BaseAgent):
             messages=messages,
             system=system,
             tool_handlers=tool_handlers,
+            # Stop the loop immediately after generate_requirements fires —
+            # no second LLM summary call needed, which eliminates the extra
+            # "Thinking..." delay seen in the chat UI.
+            terminal_tools={"generate_requirements"},
         )
 
         response_content = response.get("content", "")
 
         # ── Tool-use path (authoritative) ─────────────────────────────────
-        if response.get("tool_calls"):
-            for tc in response["tool_calls"]:
-
-                if tc["name"] == "generate_draft":
-                    draft_data = tc["input"]
-                    draft_response = self._format_draft_response(draft_data)
-                    self.log("generate_draft tool called — draft_pending=True", "info")
-                    return {
-                        "response": (response_content + "\n\n" + draft_response
-                                     if response_content else draft_response),
-                        "phase_complete": False,
-                        "draft_pending": True,
-                        "draft": draft_data,
-                        "outputs": {},
-                        "parameters": {},
-                    }
-
-                if tc["name"] == "generate_requirements":
-                    self.log("generate_requirements tool called — phase_complete=True", "info")
-                    outputs = self._generate_output_files(
-                        tc["input"],
-                        project_context.get("output_dir", "output"),
-                        project_context.get("name", "project"),
-                    )
-                    return {
-                        "response": (response_content
-                                     + "\n\n✅ **Phase 1 Complete!** All documents have been generated."),
-                        "phase_complete": True,
-                        "draft_pending": False,
-                        "draft": {},
-                        "outputs": outputs,
-                        "parameters": tc["input"].get("design_parameters", {}),
-                    }
-
-        # ── Plain-text fallback: draft detection only ──────────────────────
-        # Used when model (e.g. GLM-4) returns a draft without calling generate_draft.
-        # NEVER sets phase_complete via text detection.
-        if self._detect_draft_response(response_content) and not _is_approval(user_input):
-            self.log("Plain-text draft detected — draft_pending=True (no tool call)", "info")
+        # Check the closure dict — generate_req_input is populated when the
+        # model called generate_requirements (regardless of whether
+        # call_llm_with_tools still had tool_calls in its final response).
+        if generate_req_input:
+            self.log("generate_requirements tool called — phase_complete=True", "info")
+            outputs = self._generate_output_files(
+                generate_req_input,
+                project_context.get("output_dir", "output"),
+                project_context.get("name", "project"),
+            )
+            # Always build the rich requirements summary from the tool data.
+            # This lets the user review key design parameters, requirements table,
+            # component selections, and the block diagram BEFORE clicking Approve.
+            # If the LLM also produced a natural-language preamble, prepend it.
+            rich_summary = self._build_response_summary(generate_req_input)
+            preamble = response_content.strip()
+            if preamble and len(preamble) > 60:
+                response_content = preamble + "\n\n---\n\n" + rich_summary
+            else:
+                response_content = rich_summary
             return {
-                "response": response_content,
-                "phase_complete": False,
-                "draft_pending": True,
+                "response": (response_content
+                             + "\n\n✅ **Phase 1 Complete!** Review the requirements above and click **Approve & Start Pipeline** to continue."),
+                "phase_complete": True,
+                "draft_pending": False,
                 "draft": {},
-                "outputs": {},
-                "parameters": {},
+                "outputs": outputs,
+                "parameters": generate_req_input.get("design_parameters", {}),
             }
 
-        # ── Plain-text fallback: synthesised completion on approval ────────
-        # When user approves but LLM returns full requirements as plain text
-        # (no generate_requirements tool call), we parse and write outputs here.
-        # phase_complete is set explicitly — no heuristic text-matching.
-        if _is_approval(user_input) and self._detect_complete_requirements(response_content):
-            self.log("Approval + complete response detected — synthesising completion", "info")
+        # ── Plain-text fallback: synthesised completion on parsing full response ────────
+        # When model returns full requirements as plain text without a tool call,
+        # we parse and write outputs here.
+        if self._detect_complete_requirements(response_content):
+            self.log("Complete response detected — synthesising completion", "info")
             parsed = self._parse_requirements_response(
                 response_content, project_context.get("name", "project")
             )
@@ -404,16 +359,6 @@ class RequirementsAgent(BaseAgent):
                     "outputs": outputs,
                     "parameters": parsed.get("design_parameters", {}),
                 }
-            # Parser returned None (rare) — stay in draft_pending, prompt user to retry
-            self.log("Synthesised completion: parser returned None, keeping draft_pending", "warning")
-            return {
-                "response": response_content,
-                "phase_complete": False,
-                "draft_pending": True,
-                "draft": {},
-                "outputs": {},
-                "parameters": {},
-            }
 
         # ── Normal conversational exchange ─────────────────────────────────
         return {
@@ -425,49 +370,62 @@ class RequirementsAgent(BaseAgent):
             "parameters": {},
         }
 
-    def _format_draft_response(self, draft_data: dict) -> str:
-        """Format the draft block diagram and summary for display in the chat."""
-        lines = ["### 📐 Draft Block Diagram"]
-        lines.append("")
-        lines.append(f"**{draft_data.get('project_summary', '')}**")
-        lines.append("")
 
-        # Assumptions
-        assumptions = draft_data.get("assumptions", [])
-        if assumptions:
-            lines.append("**⚙️ Assumptions made:**")
-            for a in assumptions:
-                lines.append(f"- {a}")
+    def _build_response_summary(self, tool_input: dict) -> str:
+        """Build a rich markdown summary from generate_requirements tool data.
+
+        Called when the LLM produced no significant preamble text before calling
+        the tool (common with terminal_tools pattern). Gives the user a detailed
+        view of what was captured rather than just a "Complete!" banner.
+        """
+        lines = []
+
+        # Project summary
+        summary = tool_input.get("project_summary", "")
+        if summary:
+            lines += ["## Project Summary", "", summary, ""]
+
+        # Design parameters table
+        params = tool_input.get("design_parameters", {})
+        if params:
+            lines += ["## Key Design Parameters", "",
+                      "| Parameter | Value |", "|---|---|"]
+            for k, v in list(params.items())[:12]:
+                lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
             lines.append("")
 
-        # Block diagram (Mermaid — rendered by Streamlit)
-        mermaid = draft_data.get("block_diagram_mermaid", "")
-        if mermaid:
-            lines.append("```mermaid")
-            lines.append(mermaid)
-            lines.append("```")
-            lines.append("")
-
-        # Requirements preview
-        reqs = draft_data.get("key_requirements_preview", [])
+        # Requirements summary (first 8)
+        reqs = tool_input.get("requirements", [])
         if reqs:
-            lines.append("**📋 Draft Requirements (preview):**")
-            for r in reqs:
-                lines.append(f"- `{r.get('req_id', '')}` — {r.get('title', '')}: {r.get('description', '')}")
+            lines += [f"## Requirements ({len(reqs)} captured)", "",
+                      "| ID | Title | Priority |", "|---|---|---|"]
+            for req in reqs[:8]:
+                lines.append(
+                    f"| {req.get('req_id','')} | {req.get('title','')} "
+                    f"| {req.get('priority','Must have')} |"
+                )
+            if len(reqs) > 8:
+                lines.append(f"| … | *+{len(reqs)-8} more requirements* | |")
             lines.append("")
 
-        # Components preview
-        comps = draft_data.get("top_components_preview", [])
+        # Components summary (first 5)
+        comps = tool_input.get("component_recommendations", [])
         if comps:
-            lines.append("**🔌 Suggested Components:**")
-            for c in comps:
-                lines.append(f"- **{c.get('function', '')}**: {c.get('part', '')} ({c.get('manufacturer', '')})")
+            lines += [f"## Component Selections ({len(comps)} components)", ""]
+            for comp in comps[:5]:
+                part = comp.get("primary_part", "TBD")
+                mfr  = comp.get("primary_manufacturer", "")
+                func = comp.get("function", "")
+                lines.append(f"- **{func}**: {part} ({mfr})")
+            if len(comps) > 5:
+                lines.append(f"- *…+{len(comps)-5} more components in component_recommendations.md*")
             lines.append("")
 
-        lines.append("---")
-        lines.append("✅ **Does this draft look right?**")
-        lines.append("- Click **Approve** to generate full documents")
-        lines.append("- Or tell me what to change and I'll revise")
+        # Block diagram (if present)
+        block = tool_input.get("block_diagram_mermaid", "")
+        if block:
+            lines += ["## System Block Diagram", "",
+                      "```mermaid", block.strip(), "```", ""]
 
         return "\n".join(lines)
 
@@ -502,7 +460,7 @@ class RequirementsAgent(BaseAgent):
                         "description": r.component.description,
                         "category": r.component.category,
                         "key_specs": r.component.key_specs,
-                        "similarity_score": r.similarity_score,
+                        "relevance_score": r.relevance_score,
                     }
                     for r in results
                 ],
@@ -589,13 +547,16 @@ class RequirementsAgent(BaseAgent):
         for cat, cat_reqs in categories.items():
             lines.append(f"### 3.{list(categories.keys()).index(cat)+1} {cat.title()} Requirements")
             lines.append("")
-            lines.append("| ID | Title | Description | Priority | Verification |")
-            lines.append("|---|---|---|---|---|")
+            lines.append("| ID | Title | Description | Priority | Validation | Dependencies | Constraints |")
+            lines.append("|---|---|---|---|---|---|---|")
             for req in cat_reqs:
+                deps = ", ".join(req.get('dependencies', [])) or "None"
+                constraints = ", ".join(req.get('constraints', [])) or "None"
                 lines.append(
                     f"| {req.get('req_id', '')} | {req.get('title', '')} | "
-                    f"{req.get('description', '')} | {req.get('priority', 'shall')} | "
-                    f"{req.get('verification_method', 'test')} |"
+                    f"{req.get('description', '')} | {req.get('priority', 'Must have')} | "
+                    f"{req.get('verification_method', 'test')} | "
+                    f"{deps} | {constraints} |"
                 )
             lines.append("")
 
@@ -647,32 +608,6 @@ class RequirementsAgent(BaseAgent):
 
         return "\n".join(lines)
 
-    def _detect_draft_response(self, response_content: str) -> bool:
-        """
-        Detect if the response is a DRAFT (asking for approval) rather than a complete doc.
-        GLM models return formatted drafts as plain text without tool calls.
-        """
-        content_lower = response_content.lower()
-        # Must have draft-like content (summary/requirements/components)
-        has_content = sum([
-            bool(re.search(r'REQ-HW-\d+', response_content, re.IGNORECASE)),
-            'project summary' in content_lower,
-            'key requirements' in content_lower or 'requirements' in content_lower,
-            'component' in content_lower,
-            'block diagram' in content_lower or 'architecture' in content_lower,
-        ]) >= 3
-        # AND must be asking for approval (not yet done)
-        asking_approval = any(phrase in content_lower for phrase in [
-            'does this draft look right',
-            'does this look right',
-            'approve to proceed',
-            'tell me what to change',
-            'look right?',
-            'looks good?',
-            'shall i proceed',
-            'would you like to',
-        ])
-        return has_content and asking_approval
 
     def _detect_complete_requirements(self, response_content: str) -> bool:
         """
@@ -748,11 +683,14 @@ class RequirementsAgent(BaseAgent):
                                  else "Extracted from requirements conversation.")
 
                     # Detect priority
-                    priority = "shall"
-                    if "should" in context.lower():
-                        priority = "should"
-                    elif "may" in context.lower():
-                        priority = "may"
+                    priority = "Must have"
+                    ctx_lower = context.lower()
+                    if "should" in ctx_lower or "should have" in ctx_lower:
+                        priority = "Should have"
+                    elif "could" in ctx_lower or "could have" in ctx_lower or "may" in ctx_lower:
+                        priority = "Could have"
+                    elif "won't" in ctx_lower or "wont" in ctx_lower:
+                        priority = "Won't have"
 
                     requirements.append({
                         "req_id": req_id,
@@ -760,7 +698,9 @@ class RequirementsAgent(BaseAgent):
                         "title": title,
                         "description": description,
                         "priority": priority,
-                        "verification_method": "test"
+                        "verification_method": "test",
+                        "dependencies": [],
+                        "constraints": []
                     })
 
             # Ensure we have at least some requirements
@@ -768,11 +708,11 @@ class RequirementsAgent(BaseAgent):
                 # Add default requirements based on conversation
                 requirements = [
                     {"req_id": "REQ-HW-001", "category": "functional", "title": "System Functionality",
-                     "description": "System shall meet the functional requirements described in the conversation.", "priority": "shall", "verification_method": "test"},
+                     "description": "System shall meet the functional requirements described in the conversation.", "priority": "Must have", "verification_method": "test", "dependencies": [], "constraints": []},
                     {"req_id": "REQ-HW-002", "category": "performance", "title": "Performance Targets",
-                     "description": "System shall meet the performance targets specified.", "priority": "shall", "verification_method": "test"},
+                     "description": "System shall meet the performance targets specified.", "priority": "Must have", "verification_method": "test", "dependencies": [], "constraints": []},
                     {"req_id": "REQ-HW-003", "category": "environmental", "title": "Environmental Conditions",
-                     "description": "System shall operate within the specified environmental conditions.", "priority": "shall", "verification_method": "test"},
+                     "description": "System shall operate within the specified environmental conditions.", "priority": "Must have", "verification_method": "test", "dependencies": [], "constraints": []},
                 ]
 
             # Extract design parameters from any tables or key-value pairs
