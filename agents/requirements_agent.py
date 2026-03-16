@@ -274,6 +274,21 @@ class RequirementsAgent(BaseAgent):
             if not messages or messages[-1]["role"] != "user":
                 messages.append({"role": "user", "content": user_input})
 
+            # ── Force tool call on first user message ──────────────────────
+            # Without this, the model often replies conversationally ("I'll analyze...")
+            # instead of immediately calling generate_requirements.
+            # We detect "first message" by checking there are no prior user turns
+            # in the history (only the current message is in the list).
+            prior_user_turns = sum(1 for m in messages[:-1] if m.get("role") == "user")
+            if prior_user_turns == 0 and messages:
+                original = messages[-1]["content"]
+                messages[-1]["content"] = (
+                    f"{original}\n\n"
+                    "CALL `generate_requirements` TOOL NOW with the complete BOM, requirements, "
+                    "block_diagram_mermaid, architecture_mermaid, design_parameters, and "
+                    "component_recommendations. Do NOT write any analysis text — call the tool immediately."
+                )
+
         # ── Tool handlers ──────────────────────────────────────────────────
         # generate_requirements: capture tool input via closure so we can detect
         # the call even after call_llm_with_tools finishes its loop.
