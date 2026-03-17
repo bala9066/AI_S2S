@@ -440,6 +440,30 @@ async def serve_frontend():
 
 ---
 
+## Planned Features (Roadmap)
+
+### Tier 1 — High value / Low effort
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | **"Re-run all stale phases" button** in MiniTopbar — appears when `stalePhaseIds.length > 0`, one-click re-runs the full pipeline to refresh all outdated documents | TODO |
+| 2 | **Chat history reload on F5** — reload `conversation_history` from DB on `handleLoadProject` so P1 chat isn't blank after browser refresh | TODO |
+| 3 | **Phase completion toast** — when any phase flips to `completed` during polling, show "P02 — HRS Document complete ✓" toast | TODO |
+
+### Tier 2 — Medium effort / High demo impact
+| # | Feature | Status |
+|---|---------|--------|
+| 4 | **Inline Mermaid rendering** — detect ` ```mermaid ` blocks in DocumentsView markdown and render as live diagrams via mermaid.js CDN | TODO |
+| 5 | **Export all as ZIP** — backend endpoint `GET /api/v1/projects/{id}/export` that zips the project output dir; frontend "Download All" button in DocumentsView | TODO |
+
+### Tier 3 — Bigger features
+| # | Feature | Status |
+|---|---------|--------|
+| 6 | **Requirement version history** — snapshot `requirements.md` on every P1 approval, store as `requirements_v1.md`, `v2.md`, etc.; viewable in a "History" drawer with diffs between versions | TODO |
+| 7 | **Real-time log streaming** — stream AI internal reasoning (tool calls, search steps) to a collapsible "Live Log" panel in the right panel while phase is running | TODO |
+| 8 | **Dependency graph view** — visual DAG: P1→P2→P3→P4→P5, P4→P6→P7, P1-P4→P8a→P8b→P8c; rendered as interactive SVG on the landing page or a dedicated "Pipeline Map" view | TODO |
+
+---
+
 ## Critical Gotchas
 
 **1. Windows cp1252 encoding crash**

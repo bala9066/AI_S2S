@@ -32,6 +32,8 @@ export default function App() {
   // Refs to prevent duplicate pipeline starts
   const pipelineStartedRef = useRef(false);
   const prevP1StatusRef = useRef<string | undefined>(undefined);
+  // Track previous statuses for completion toast detection
+  const prevStatusesRef = useRef<Statuses>({});
 
   // Ref to handleP1Complete so refreshStatuses can call it without circular dep
   const handleP1CompleteRef = useRef<() => void>(() => {});
@@ -71,6 +73,17 @@ export default function App() {
         api.getStatusRaw(project.id),
       ]);
       prevP1StatusRef.current = s['P1'];
+
+      // Detect newly completed phases for toast notifications
+      const prev = prevStatusesRef.current;
+      const newlyCompleted = PHASES.filter(
+        p => s[p.id] === 'completed' && prev[p.id] !== 'completed' && prev[p.id] !== undefined
+      );
+      if (newlyCompleted.length > 0) {
+        const phase = newlyCompleted[0]; // toast one at a time
+        showToast(`${phase.code} \u2014 ${phase.name} complete \u2713`);
+      }
+      prevStatusesRef.current = s;
 
       setStatuses(s);
       setStatusesRaw(raw);
@@ -132,10 +145,11 @@ export default function App() {
     handleP1CompleteRef.current = handleP1Complete;
   }, [handleP1Complete]);
 
-  // Reset pipeline-started guard when project changes
+  // Reset pipeline-started guard and status history when project changes
   useEffect(() => {
     pipelineStartedRef.current = false;
     prevP1StatusRef.current = undefined;
+    prevStatusesRef.current = {};
   }, [project]);
 
   const handleExecutePhase = useCallback(async (phaseId: string) => {
@@ -150,6 +164,21 @@ export default function App() {
       showToast(`${phaseId} started`);
     } catch {
       showToast(`Failed to execute ${phaseId}. Check backend.`);
+    }
+  }, [project, refreshStatuses]);
+
+  const handleRerunStale = useCallback(async (staleIds: string[]) => {
+    if (!project || staleIds.length === 0) return;
+    try {
+      await api.resetAndRerun(project.id, staleIds);
+      setHasRunning(true);
+      setTab('documents');
+      showToast(`Re-running ${staleIds.length} stale phase${staleIds.length > 1 ? 's' : ''}...`);
+      setTimeout(() => refreshStatuses(), 800);
+      setTimeout(() => refreshStatuses(), 2000);
+      setTimeout(() => refreshStatuses(), 4000);
+    } catch {
+      showToast('Could not re-run stale phases. Check backend.');
     }
   }, [project, refreshStatuses]);
 
@@ -193,9 +222,24 @@ export default function App() {
     setProject(p);
     setModal(null);
     setMode('pipeline');
-    setChatMessages([]);
     pipelineStartedRef.current = false;
     prevP1StatusRef.current = undefined;
+    try {
+      // Restore P1 chat history from DB so F5 doesn't blank the conversation
+      api.getConversationHistory(p.id)
+        .then(history => {
+          if (history.length > 0) {
+            const restored: ChatMessage[] = history.map(m => ({
+              role: m.role === 'assistant' ? 'ai' : 'user',
+              text: m.content,
+            }));
+            setChatMessages(restored);
+          } else {
+            setChatMessages([]);
+          }
+        })
+        .catch(() => setChatMessages([]));
+    } catch (_) { setChatMessages([]); }
     try {
       const s = await api.getStatus(p.id);
       setStatuses(s);
@@ -315,7 +359,9 @@ export default function App() {
           project={project}
           phases={PHASES}
           statuses={statuses}
+          stalePhaseIds={stalePhaseIds}
           onRunPipeline={handleRunPipeline}
+          onRerunStale={handleRerunStale}
           pipelineRunning={hasRunning}
         />
         <div className="fade-up" key={selectedPhaseIdx} style={{ flex: 1, overflowY: 'auto' }}>

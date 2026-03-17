@@ -70,6 +70,16 @@ export const api = {
   executePhase: (id: number, phaseId: string) =>
     req(`/api/v1/projects/${id}/phases/${phaseId}/execute`, { method: 'POST' }),
 
+  // Reset stale phases to 'pending' then re-run the pipeline
+  resetAndRerun: (id: number, phaseIds: string[]) =>
+    req(`/api/v1/projects/${id}/phases/reset`, {
+      method: 'POST',
+      body: JSON.stringify({ phase_ids: phaseIds }),
+    }),
+
+  // Export all project documents as a ZIP — returns a download URL
+  exportZipUrl: (id: number) => `${BASE}/api/v1/projects/${id}/export`,
+
   chat: async (id: number, message: string): Promise<ChatResult> => {
     const result = await req<{
       response?: string; message?: string; content?: string;

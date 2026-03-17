@@ -10,6 +10,7 @@ Design principles applied here:
 - Structured logging via Python logging throughout.
 """
 
+import functools
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -18,7 +19,9 @@ from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from pydantic import BaseModel
+from typing import List
 
 from config import settings
 from logging_config import configure_logging
@@ -93,10 +96,8 @@ app = FastAPI(
 
 # CORS: restrict to known origins only (never wildcard in any real deploy)
 _ALLOWED_ORIGINS = [
-    f"http://localhost:{settings.streamlit_port}",
-    f"http://127.0.0.1:{settings.streamlit_port}",
-    # Production domain added via CORS_ORIGIN env var
-    *([os.environ["CORS_ORIGIN"]] if "CORS_ORIGIN" in os.environ else []),
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -108,15 +109,19 @@ app.add_middleware(
 
 
 # ── Service singletons (created once per process) ─────────────────────────────
+# lru_cache ensures a single instance is reused for the lifetime of the process.
 
+@functools.lru_cache(maxsize=1)
 def _project_svc():
     from services.project_service import ProjectService
     return ProjectService()
 
+@functools.lru_cache(maxsize=1)
 def _chat_svc():
     from services.chat_service import ChatService
     return ChatService()
 
+@functools.lru_cache(maxsize=1)
 def _pipeline_svc():
     from services.pipeline_service import PipelineService
     return PipelineService()
@@ -164,6 +169,40 @@ async def get_project(project_id: int):
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
     return proj
+
+
+@app.get("/api/v1/projects/{project_id}/documents/{filename}", tags=["projects"])
+async def get_document(project_id: int, filename: str):
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    output_dir = proj.get("output_dir")
+    if not output_dir:
+        raise HTTPException(404, "Project has no output directory yet")
+
+    file_path = os.path.join(output_dir, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(404, f"Document {filename} not found")
+
+    return FileResponse(file_path)
+
+
+@app.get("/api/v1/projects/{project_id}/documents", tags=["projects"])
+async def list_documents(project_id: int):
+    """List all available output files for a project."""
+    proj = _project_svc().get(project_id)
+    output_dir = proj.get("output_dir") if proj else None
+    if not output_dir:
+        return []
+    try:
+        files = []
+        for f in os.listdir(output_dir):
+            full = os.path.join(output_dir, f)
+            if os.path.isfile(full):
+                files.append({"name": f, "size": os.path.getsize(full)})
+        return sorted(files, key=lambda x: x["name"])
+    except Exception:
+        return []
 
 
 # ── Chat (Phase 1) ─────────────────────────────────────────────────────────────
@@ -226,6 +265,82 @@ async def execute_single_phase(project_id: int, phase_id: str, background_tasks:
         raise HTTPException(400, str(exc))
 
 
+class ResetPhasesRequest(BaseModel):
+    phase_ids: List[str]
+
+@app.post("/api/v1/projects/{project_id}/phases/reset", tags=["pipeline"])
+async def reset_phases(project_id: int, body: ResetPhasesRequest, background_tasks: BackgroundTasks):
+    """
+    Reset given phases to 'pending' then immediately re-run the pipeline.
+    Used by the frontend 'Re-run all stale' button after requirements change.
+    """
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    if not body.phase_ids:
+        raise HTTPException(400, "phase_ids must not be empty")
+
+    # Validate phase IDs
+    invalid = [p for p in body.phase_ids if p not in VALID_PHASES]
+    if invalid:
+        raise HTTPException(400, f"Invalid phase IDs: {invalid}")
+
+    # Reset each phase status to pending
+    svc = _project_svc()
+    for phase_id in body.phase_ids:
+        svc.set_phase_status(project_id, phase_id, "pending")
+
+    log.info("api.phases_reset", extra={"project_id": project_id, "phase_ids": body.phase_ids})
+
+    # Kick off the pipeline — it will now run all the reset phases
+    pipeline = _pipeline_svc()
+    background_tasks.add_task(pipeline.run_pipeline, project_id)
+    return {"status": "pipeline_started", "reset_phases": body.phase_ids, "project_id": project_id}
+
+
+@app.get("/api/v1/projects/{project_id}/export", tags=["projects"])
+async def export_project_zip(project_id: int):
+    """
+    Stream all project output documents as a ZIP archive.
+    Frontend uses this for the 'Download All Documents' button.
+    """
+    import io, zipfile, pathlib
+
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    output_dir = proj.get("output_dir")
+    if not output_dir:
+        raise HTTPException(404, "No output directory for this project")
+
+    out_path = pathlib.Path(output_dir)
+    if not out_path.exists():
+        raise HTTPException(404, "Output directory does not exist")
+
+    # Collect all files in output dir (non-recursive by default, recursive if nested)
+    files = list(out_path.rglob("*"))
+    doc_files = [f for f in files if f.is_file()]
+
+    if not doc_files:
+        raise HTTPException(404, "No documents found to export")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in doc_files:
+            zf.write(f, f.relative_to(out_path))
+    buf.seek(0)
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in (proj.get("name") or "project"))
+    filename = f"{safe_name}_documents.zip"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Phase status (polling endpoint for UI) ─────────────────────────────────────
 
 @app.get("/api/v1/projects/{project_id}/status", tags=["pipeline"])
@@ -251,6 +366,16 @@ async def test_ui():
     if p.exists():
         return HTMLResponse(content=p.read_text(), status_code=200)
     return HTMLResponse(content="<h1>test_ui.html not found</h1>", status_code=404)
+
+
+@app.get("/app", response_class=HTMLResponse, tags=["ops"])
+async def serve_frontend():
+    """Serve the React v5 frontend bundle at http://localhost:8000/app"""
+    import pathlib
+    p = pathlib.Path(__file__).parent / "frontend" / "bundle.html"
+    if p.exists():
+        return HTMLResponse(content=p.read_text(encoding="utf-8", errors="replace"), status_code=200)
+    return HTMLResponse(content="<h1>Frontend not built yet. Run the React build.</h1>", status_code=404)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

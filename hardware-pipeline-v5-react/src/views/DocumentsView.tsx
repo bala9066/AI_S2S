@@ -565,20 +565,43 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
             </div>
           )}
         </div>
-        <button
-          onClick={() => fetchList()}
-          style={{
-            fontSize: 11, color: 'var(--text4)', background: 'var(--panel)',
-            border: '1px solid var(--panel3)', borderRadius: 5,
-            cursor: 'pointer', fontFamily: "'DM Mono', monospace",
-            padding: '4px 10px', transition: 'all 0.15s',
-            display: 'flex', alignItems: 'center', gap: 5,
-          }}
-          onMouseEnter={e => { e.currentTarget.style.color = phase.color; e.currentTarget.style.borderColor = `${phase.color}55`; }}
-          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text4)'; e.currentTarget.style.borderColor = 'var(--panel3)'; }}
-        >
-          ↻ Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 7, alignItems: 'center' }}>
+          {/* Download all as ZIP */}
+          {project && filteredFiles.length > 0 && (
+            <a
+              href={api.exportZipUrl(project.id)}
+              download
+              style={{
+                fontSize: 11, color: '#22c55e',
+                background: 'rgba(34,197,94,0.07)',
+                border: '1px solid rgba(34,197,94,0.3)',
+                borderRadius: 5, cursor: 'pointer',
+                fontFamily: "'DM Mono', monospace",
+                padding: '4px 11px', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 5,
+                textDecoration: 'none', whiteSpace: 'nowrap',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(34,197,94,0.14)'; (e.currentTarget as HTMLAnchorElement).style.boxShadow = '0 0 10px rgba(34,197,94,0.2)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.background = 'rgba(34,197,94,0.07)'; (e.currentTarget as HTMLAnchorElement).style.boxShadow = 'none'; }}
+            >
+              ↓ Export ZIP
+            </a>
+          )}
+          <button
+            onClick={() => fetchList()}
+            style={{
+              fontSize: 11, color: 'var(--text4)', background: 'var(--panel)',
+              border: '1px solid var(--panel3)', borderRadius: 5,
+              cursor: 'pointer', fontFamily: "'DM Mono', monospace",
+              padding: '4px 10px', transition: 'all 0.15s',
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = phase.color; e.currentTarget.style.borderColor = `${phase.color}55`; }}
+            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text4)'; e.currentTarget.style.borderColor = 'var(--panel3)'; }}
+          >
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* File list */}

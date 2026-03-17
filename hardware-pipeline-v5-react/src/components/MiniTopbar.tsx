@@ -4,11 +4,13 @@ interface Props {
   project: Project | null;
   phases: PhaseMeta[];
   statuses: Statuses;
+  stalePhaseIds?: string[];
   onRunPipeline?: () => void;
+  onRerunStale?: (staleIds: string[]) => void;
   pipelineRunning?: boolean;
 }
 
-export default function MiniTopbar({ project, phases, statuses, onRunPipeline, pipelineRunning }: Props) {
+export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = [], onRunPipeline, onRerunStale, pipelineRunning }: Props) {
   const completedCount = phases.filter(p => statuses[p.id] === 'completed').length;
   const runningPhase = phases.find(p => statuses[p.id] === 'in_progress');
   const pct = Math.round((completedCount / phases.length) * 100);
@@ -65,6 +67,28 @@ export default function MiniTopbar({ project, phases, statuses, onRunPipeline, p
           onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.12)'; e.currentTarget.style.boxShadow = 'none'; }}
         >
           ▶ Run Pipeline
+        </button>
+      )}
+
+      {/* Re-run stale phases button — amber, shown when requirements changed after some phases ran */}
+      {onRerunStale && stalePhaseIds.length > 0 && !pipelineRunning && (
+        <button
+          onClick={() => onRerunStale(stalePhaseIds)}
+          title={`Re-run ${stalePhaseIds.join(', ')} — requirements updated since these ran`}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 14px', borderRadius: 5,
+            background: 'rgba(245,158,11,0.1)',
+            border: '1px solid rgba(245,158,11,0.38)',
+            color: '#f59e0b', fontSize: 11,
+            fontFamily: "'DM Mono', monospace", fontWeight: 700,
+            cursor: 'pointer', letterSpacing: '0.05em',
+            transition: 'all 0.2s', flexShrink: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.2)'; e.currentTarget.style.boxShadow = '0 0 12px rgba(245,158,11,0.25)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.1)'; e.currentTarget.style.boxShadow = 'none'; }}
+        >
+          ↺ Re-run {stalePhaseIds.length} stale
         </button>
       )}
 
