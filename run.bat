@@ -1,93 +1,123 @@
 @echo off
 setlocal enabledelayedexpansion
-title AI Hardware Design Pipeline - S2S
+
+REM ── Always run from the folder that contains this .bat file ───────────────
+cd /d "%~dp0"
+
+title Hardware Pipeline — Starting...
 
 echo.
 echo  ============================================================
-echo   AI Hardware Design Pipeline  ^|  S2S V2
+echo   Hardware Pipeline  ^|  AI Design Studio  ^|  S2S V2
 echo  ============================================================
 echo.
 
-REM ── Find Python ────────────────────────────────────────────────
+REM ── Find Python ──────────────────────────────────────────────────────────────
+REM   Priority: py launcher (3.13→3.10), then plain python/python3
 set PYTHON_CMD=
 
+REM Try Python Launcher versions
 for %%V in (3.13 3.12 3.11 3.10) do (
     if not defined PYTHON_CMD (
         py -%%V --version >nul 2>&1
         if !errorlevel!==0 (
             set PYTHON_CMD=py -%%V
-            echo [OK] Python %%V found
+            echo  [OK]  Found Python %%V via launcher
         )
     )
 )
 
+REM Fallback: plain "python"
 if not defined PYTHON_CMD (
-    echo [ERROR] Python 3.10 or newer is required.
-    echo         Download from: https://python.org/downloads/
+    python --version >nul 2>&1
+    if !errorlevel!==0 (
+        set PYTHON_CMD=python
+        echo  [OK]  Found Python via "python" command
+    )
+)
+
+REM Fallback: "python3"
+if not defined PYTHON_CMD (
+    python3 --version >nul 2>&1
+    if !errorlevel!==0 (
+        set PYTHON_CMD=python3
+        echo  [OK]  Found Python via "python3" command
+    )
+)
+
+if not defined PYTHON_CMD (
+    echo.
+    echo  [ERROR]  Python 3.10 or newer is required but was not found.
+    echo           Download from: https://python.org/downloads/
+    echo           Make sure to check "Add Python to PATH" during install.
     echo.
     pause
     exit /b 1
 )
 
-REM ── Install / upgrade dependencies ────────────────────────────
+REM ── Install / upgrade dependencies ───────────────────────────────────────────
 echo.
-echo [1/3] Installing dependencies (this may take a minute on first run)...
-%PYTHON_CMD% -m pip install -r requirements.txt -q --no-warn-script-location
+echo  [1/2] Installing/verifying dependencies...
+%PYTHON_CMD% -m pip install -r requirements.txt -q --no-warn-script-location 2>&1
 if errorlevel 1 (
-    echo [WARN] Some packages may have failed to install.
-    echo        Check requirements.txt or run pip manually.
-)
-
-REM ── Kill any stale processes on our ports ─────────────────────
-for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":8000 "') do (
-    taskkill /PID %%P /F >nul 2>&1
-)
-for /f "tokens=5" %%P in ('netstat -ano 2^>nul ^| findstr ":8501 "') do (
-    taskkill /PID %%P /F >nul 2>&1
-)
-
-REM ── Start FastAPI backend ──────────────────────────────────────
-echo.
-echo [2/3] Starting FastAPI backend on http://localhost:8000 ...
-start "S2S - FastAPI Backend" cmd /k "title S2S FastAPI Backend && %PYTHON_CMD% -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info"
-
-REM ── Wait for backend to be ready ──────────────────────────────
-echo       Waiting for backend to be ready...
-set /a TRIES=0
-:waitloop
-timeout /t 2 /nobreak >nul
-%PYTHON_CMD% -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" >nul 2>&1
-if errorlevel 1 (
-    set /a TRIES+=1
-    if !TRIES! lss 15 goto :waitloop
-    echo [WARN] Backend health check timed out. Proceeding anyway...
+    echo  [WARN] Some packages may have failed. Continuing anyway...
 ) else (
-    echo [OK]  Backend is healthy.
+    echo  [OK]  Dependencies ready.
 )
 
-REM ── Start Streamlit UI ─────────────────────────────────────────
+REM ── Kill any stale process on port 8000 ──────────────────────────────────────
 echo.
-echo [3/3] Starting Streamlit UI on http://localhost:8501 ...
-start "S2S - Streamlit UI" cmd /k "title S2S Streamlit UI && %PYTHON_CMD% -m streamlit run app.py --server.port 8501 --server.headless false --browser.gatherUsageStats false"
+echo  [*]  Clearing port 8000...
+for /f "tokens=5 delims= " %%P in ('netstat -ano 2^>nul ^| findstr /R " :8000 "') do (
+    if not "%%P"=="" taskkill /PID %%P /F >nul 2>&1
+)
+timeout /t 1 /nobreak >nul
 
-timeout /t 4 /nobreak >nul
+REM ── Start FastAPI backend in a new window ────────────────────────────────────
+echo.
+echo  [2/2] Starting FastAPI backend  ->  http://localhost:8000
+set BACKEND_CMD=%PYTHON_CMD% -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info --reload
+start "S2S — FastAPI Backend" cmd /k "title S2S — FastAPI Backend && cd /d "%~dp0" && %BACKEND_CMD%"
 
-REM ── Open browser ──────────────────────────────────────────────
+REM ── Poll until backend is healthy (up to 30 seconds) ────────────────────────
+echo  [*]  Waiting for backend...
+set TRIES=0
+
+:healthloop
+timeout /t 2 /nobreak >nul
+%PYTHON_CMD% -c "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health',timeout=3); sys.exit(0)" >nul 2>&1
+if %errorlevel%==0 (
+    echo  [OK]  Backend is healthy!
+    goto :backend_ready
+)
+set /a TRIES=TRIES+1
+if %TRIES% lss 15 (
+    echo  [*]  Still waiting... ^(%TRIES%/15^)
+    goto :healthloop
+)
+echo  [WARN] Backend health check timed out after 30s. Proceeding anyway...
+
+:backend_ready
+
+REM ── Open browser to React UI ─────────────────────────────────────────────────
+timeout /t 2 /nobreak >nul
+
 echo.
 echo  ============================================================
-echo   Application started!
+echo   Hardware Pipeline is ready!
 echo.
-echo   UI    →  http://localhost:8501
-echo   API   →  http://localhost:8000/docs
+echo   App    ->  http://localhost:8000/app
+echo   API    ->  http://localhost:8000/docs
+echo   Health ->  http://localhost:8000/health
 echo  ============================================================
 echo.
-echo  Two terminal windows have opened:
-echo    "S2S - FastAPI Backend"  (keep this running)
-echo    "S2S - Streamlit UI"     (keep this running)
+echo   One window is running:
+echo     "S2S — FastAPI Backend"   (keep open)
 echo.
-echo  Close this window when you're done.
+echo   Close this window when finished.
 echo.
 
-start http://localhost:8501
+start "" "http://localhost:8000/app"
 
 pause
+endlocal

@@ -5,6 +5,7 @@ Routes execution through phases: P1 -> P2 -> P3 -> P4 -> P6 -> P8a -> P8b -> P8c
 (P5 and P7 are manual phases, skipped in automation)
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional

@@ -355,6 +355,7 @@ class BaseAgent(ABC):
         system: Optional[str] = None,
         tool_handlers: Optional[dict] = None,
         max_iterations: int = 10,
+        terminal_tools: Optional[set] = None,
     ) -> dict:
         """
         Call Claude with tool_use and automatically handle tool calls in a loop.
@@ -370,6 +371,7 @@ class BaseAgent(ABC):
         """
         system = system or self.system_prompt
         tool_handlers = tool_handlers or {}
+        terminal_tools = terminal_tools or set()
         accumulated_content = ""
         current_messages = list(messages)
 
@@ -429,6 +431,13 @@ class BaseAgent(ABC):
                     })
 
             current_messages.append({"role": "user", "content": tool_results})
+
+            # If any terminal tool was called, stop the loop immediately —
+            # no need for the model to write a follow-up summary.
+            called_names = {tc["name"] for tc in response["tool_calls"]}
+            if terminal_tools and called_names & terminal_tools:
+                response["content"] = accumulated_content
+                return response
 
         # Max iterations reached
         response["content"] = accumulated_content

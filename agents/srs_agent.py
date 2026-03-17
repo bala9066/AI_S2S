@@ -92,21 +92,54 @@ class SRSAgent(BaseAgent):
         hrs = self._load_file(output_dir / f"HRS_{project_name.replace(' ', '_')}.md")
         glr = self._load_file(output_dir / "glr_specification.md")
 
-        # Extract structured data using LLM
-        hw_requirements = await self._extract_hw_requirements(requirements, hrs)
-        sw_features = await self._extract_sw_features(glr, hrs)
-
-        # Generate SRS using the generator
-        srs_content = self.srs_generator.generate(
-            project_name=project_name,
-            hw_requirements=hw_requirements,
-            sw_features=sw_features,
-            metadata={"version": project_context.get("version", "1.0")},
+        # PRIMARY PATH: LLM writes the full IEEE 830 SRS from project context
+        user_message = (
+            f"Generate a complete IEEE 830/29148 Software Requirements Specification for:\n\n"
+            f"**Project:** {project_name}\n\n"
+            f"## Hardware Requirements Specification (P2)\n{hrs[:5000] if hrs else 'Not yet generated — use P1 requirements below.'}\n\n"
+            f"## P1 Requirements\n{requirements[:3000] if requirements else 'Not captured.'}\n\n"
+            f"## GLR Specification (P6)\n{glr[:3000] if glr else 'Not yet generated.'}\n\n"
+            "Generate ALL sections per the IEEE 830 structure in your system prompt. "
+            "Map every HW requirement to SW requirements with REQ-SW-xxx IDs. "
+            "Include Mermaid sequence diagrams, define C function prototypes, "
+            "error codes, and RTOS considerations. Be thorough and project-specific."
         )
 
-        # Save using generator's save method
-        srs_file = self.srs_generator.save(srs_content, output_dir, project_name)
+        srs_content = ""
+        try:
+            response = await self.call_llm(
+                messages=[{"role": "user", "content": user_message}],
+                system=SYSTEM_PROMPT,
+            )
+            srs_content = response.get("content", "")
+            # Continuation if truncated
+            if response.get("stop_reason") == "max_tokens" and srs_content:
+                self.log("SRS truncated, requesting continuation...")
+                cont = await self.call_llm(
+                    messages=[
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": srs_content},
+                        {"role": "user", "content": "Continue from where you left off. Do not repeat sections already written."},
+                    ],
+                    system=SYSTEM_PROMPT,
+                )
+                srs_content += "\n" + cont.get("content", "")
+        except Exception as e:
+            self.log(f"LLM SRS generation failed: {e} — falling back to template", "warning")
 
+        # FALLBACK: template generator
+        if not srs_content or len(srs_content) < 800:
+            hw_requirements = await self._extract_hw_requirements(requirements, hrs)
+            sw_features = await self._extract_sw_features(glr, hrs)
+            srs_content = self.srs_generator.generate(
+                project_name=project_name,
+                hw_requirements=hw_requirements,
+                sw_features=sw_features,
+                metadata={"version": project_context.get("version", "1.0")},
+            )
+
+        # Save output
+        srs_file = self.srs_generator.save(srs_content, output_dir, project_name)
         self.log(f"SRS generated: {len(srs_content)} chars")
 
         return {

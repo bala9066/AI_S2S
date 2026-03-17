@@ -77,9 +77,13 @@ footer,
   left: 0 !important;
 }
 
-/* Hide the collapse/expand toggle button — sidebar is always pinned open */
+/* Hide ALL sidebar collapse/expand toggle buttons — sidebar is always pinned open */
 [data-testid="stSidebarCollapseButton"],
-[data-testid="stSidebarHeader"] {
+[data-testid="stSidebarHeader"],
+[data-testid="stBaseButton-headerNoPadding"],
+[data-testid="stExpandSidebarButton"],
+button[aria-label="Collapse sidebar"],
+button[aria-label="Expand sidebar"] {
   display: none !important;
 }
 
@@ -503,7 +507,7 @@ a.step, a.step:visited, a.step:link {
 
 .hero-title {
   font-family: 'Cormorant Garamond', serif;
-  font-size: 38px; font-weight: 300;
+  font-size: 38px; font-weight: 300; font-style: italic;
   letter-spacing: -0.01em; color: var(--text);
   line-height: 1.1; margin-bottom: 10px;
 }
@@ -1250,12 +1254,33 @@ label,
 .stTextArea label,
 .stTextInput label,
 .stSelectbox label {
-  color: var(--text4) !important;
+  color: var(--text3) !important;
   font-family: 'JetBrains Mono', monospace !important;
   font-size: 9px !important;
   text-transform: uppercase;
   letter-spacing: 0.12em;
 }
+
+/* Placeholder text — brighter so users can read it */
+.stTextInput > div > div > input::placeholder,
+.stTextArea > div > div > textarea::placeholder {
+  color: var(--text3) !important;
+}
+
+/* Selectbox text visible */
+.stSelectbox > div > div > div { color: var(--text) !important; }
+
+/* Expander text */
+[data-testid="stExpander"] summary span {
+  color: var(--text2) !important;
+  font-family: 'Raleway', sans-serif !important;
+}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] {
+  color: var(--text2) !important;
+}
+
+/* Gold accent utility class */
+.gold-accent { color: var(--gold-light) !important; }
 
 /* ── 28. BUTTONS ─────────────────────────────────────────────── */
 .stButton > button {
@@ -1424,16 +1449,106 @@ label,
   color: var(--text) !important;
 }
 
-/* Chat input box */
+/* Chat input box — premium styling */
+[data-testid="stChatInput"] {
+  border: 1px solid var(--rim2) !important;
+  background: var(--panel) !important;
+  border-radius: 0 !important;
+  padding: 4px !important;
+}
 [data-testid="stChatInput"] textarea {
-  background: var(--slate) !important;
+  background: var(--panel) !important;
   color: var(--text) !important;
-  border: 1px solid var(--rim) !important;
+  border: none !important;
   border-radius: 0 !important;
   font-family: 'Raleway', sans-serif !important;
+  font-size: 14px !important;
+  min-height: 44px !important;
 }
-[data-testid="stChatInput"] textarea::placeholder { color: var(--text4) !important; }
+[data-testid="stChatInput"] textarea::placeholder {
+  color: var(--text3) !important;
+  font-style: italic;
+}
 [data-testid="stChatInput"] textarea:focus {
-  border-color: var(--gold-dim) !important;
-  box-shadow: 0 0 0 1px rgba(201,168,76,0.15) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+[data-testid="stChatInput"]:focus-within {
+  border-color: var(--gold) !important;
+  box-shadow: 0 0 12px rgba(201,168,76,0.15) !important;
+}
+/* Style the send button as gold GENERATE */
+[data-testid="stChatInputSubmitButton"] button {
+  background: linear-gradient(135deg, var(--gold), var(--gold-light)) !important;
+  border: none !important;
+  border-radius: 0 !important;
+  color: var(--obsidian) !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-weight: 700 !important;
+  min-width: 48px !important;
+}
+[data-testid="stChatInputSubmitButton"] button:hover {
+  filter: brightness(1.1) !important;
+  box-shadow: 0 0 16px rgba(201,168,76,0.3) !important;
+}
+[data-testid="stChatInputSubmitButton"] button svg {
+  fill: var(--obsidian) !important;
+  color: var(--obsidian) !important;
+}
+
+/* ── 34. GLOBAL TEXT COLOR FIX ───────────────────────────────
+   Streamlit's default theme sets text to rgb(49,51,63) — dark on dark.
+   Override all main-content text to use our light palette variable.     */
+[data-testid="stMainBlockContainer"],
+[data-testid="stMainBlockContainer"] p,
+[data-testid="stMainBlockContainer"] span:not(.st-emotion-cache-5r6ut5),
+[data-testid="stMainBlockContainer"] li,
+[data-testid="stMainBlockContainer"] td,
+[data-testid="stMainBlockContainer"] th,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] ul,
+[data-testid="stMarkdownContainer"] ol,
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p,
+.stCaption,
+.stCaption p {
+  color: var(--text) !important;
+}
+
+/* Headings in main content — gold-light for prominence */
+[data-testid="stMainBlockContainer"] h1,
+[data-testid="stMainBlockContainer"] h2,
+[data-testid="stMainBlockContainer"] h3,
+[data-testid="stMarkdownContainer"] h1,
+[data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 {
+  color: var(--text) !important;
+}
+
+/* Caption/secondary text — slightly dimmer */
+[data-testid="stCaptionContainer"] p,
+.stCaption p {
+  color: var(--text2) !important;
+}
+
+/* Strong/bold in normal markdown */
+[data-testid="stMarkdownContainer"] strong,
+[data-testid="stMarkdownContainer"] b {
+  color: var(--text) !important;
+}
+
+/* Data tables in main content */
+[data-testid="stMainBlockContainer"] table th {
+  color: var(--text3) !important;
+  background: var(--panel2) !important;
+}
+[data-testid="stMainBlockContainer"] table td {
+  color: var(--text2) !important;
+}
+
+/* Error / warning / info alerts */
+[data-testid="stAlert"] p {
+  color: inherit !important;
 }

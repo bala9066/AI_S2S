@@ -332,7 +332,8 @@ function PhaseDetails({ phase, color, collapsed = false }: { phase: PhaseMeta; c
 export default function DocumentsView({ project, phase, status, pipelineRunning }: Props) {
   const [files, setFiles] = useState<DocFile[]>([]);
   const [loadingList, setLoadingList] = useState(true);
-  const [hasLoaded, setHasLoaded] = useState(false);   // true after first successful fetch
+  // Track which phase IDs have been loaded at least once — prevents spinner on phase re-visit
+  const loadedPhaseIds = useRef<Set<string>>(new Set());
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
@@ -351,7 +352,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       .then(list => {
         setFiles(list);
         setLoadingList(false);
-        setHasLoaded(true);
+        loadedPhaseIds.current.add(phase.id);
       })
       .catch((err: Error) => {
         const msg = err?.message || 'Unknown error';
@@ -365,16 +366,14 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       });
   }, [project]);
 
-  // Initial load — show spinner once. After first load, status changes use silent refresh
-  // so "Loading documents..." never re-appears just because a phase ticked to completed.
+  // Load documents when project, phase, or status changes.
+  // Show spinner only on the very first visit to each phase — subsequent visits
+  // (including phase switches) refresh silently so no "Loading documents..." flash.
   useEffect(() => {
-    if (!hasLoaded) {
-      fetchList(false);   // show spinner on very first mount only
-    } else {
-      fetchList(true);    // silent refresh when status/project changes later
-    }
+    const alreadyLoaded = loadedPhaseIds.current.has(phase.id);
+    fetchList(!alreadyLoaded);   // silent=true if this phase was loaded before
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, status]);
+  }, [project, phase.id, status]);
 
   useEffect(() => {
     const shouldRefresh = pipelineRunning || status === 'in_progress';

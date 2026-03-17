@@ -111,33 +111,46 @@ class DocumentAgent(BaseAgent):
                 "outputs": {},
             }
 
-        # Extract structured requirements using LLM
-        structured_requirements = await self._extract_requirements(requirements_content, project_name)
-
-        # Extract component data
-        component_data = await self._extract_components(components)
-
-        # Extract metadata from project context
-        metadata = {
-            "version": project_context.get("version", "1.0"),
-            "author": project_context.get("author", "Hardware Pipeline AI"),
-            "input_voltage": project_context.get("design_parameters", {}).get("input_voltage", "12-24"),
-            "max_power": project_context.get("design_parameters", {}).get("max_power", "TBD"),
-            "temp_min": project_context.get("design_parameters", {}).get("temp_min", "-40"),
-            "temp_max": project_context.get("design_parameters", {}).get("temp_max", "+85"),
-        }
-
-        # Use HRSGenerator for IEEE-compliant document
-        hrs_content = self.hrs_generator.generate(
-            project_name=project_name,
-            requirements=structured_requirements,
-            component_data=component_data,
-            metadata=metadata,
+        # PRIMARY PATH: LLM writes the full IEEE 29148 document from P1 context
+        user_message = (
+            f"Generate a complete IEEE 29148:2018 Hardware Requirements Specification for:\n\n"
+            f"**Project:** {project_name}\n\n"
+            f"## Phase 1 Requirements\n{requirements_content[:5000]}\n\n"
+            f"## Block Diagram\n{block_diagram[:2000] if block_diagram else 'Not captured.'}\n\n"
+            f"## System Architecture\n{architecture[:2000] if architecture else 'Not captured.'}\n\n"
+            f"## Component Recommendations\n{components[:3000] if components else 'Not captured.'}\n\n"
+            "Generate ALL sections per the IEEE 29148 structure in your system prompt. "
+            "Be thorough and project-specific. Include real power calculations, interface tables, "
+            "and Mermaid diagrams. Do NOT skip any section."
         )
 
-        # Save output using generator's save method
-        hrs_file = self.hrs_generator.save(hrs_content, output_dir, project_name)
+        hrs_content = ""
+        try:
+            hrs_content = await self._generate_hrs(user_message, project_name)
+        except Exception as e:
+            self.log(f"LLM HRS generation failed: {e} — falling back to template", "warning")
 
+        # FALLBACK: template generator if LLM failed or returned too little
+        if not hrs_content or len(hrs_content) < 800:
+            structured_requirements = await self._extract_requirements(requirements_content, project_name)
+            component_data = await self._extract_components(components)
+            metadata = {
+                "version": project_context.get("version", "1.0"),
+                "author": project_context.get("author", "Hardware Pipeline AI"),
+                "input_voltage": project_context.get("design_parameters", {}).get("input_voltage", "12-24"),
+                "max_power": project_context.get("design_parameters", {}).get("max_power", "TBD"),
+                "temp_min": project_context.get("design_parameters", {}).get("temp_min", "-40"),
+                "temp_max": project_context.get("design_parameters", {}).get("temp_max", "+85"),
+            }
+            hrs_content = self.hrs_generator.generate(
+                project_name=project_name,
+                requirements=structured_requirements,
+                component_data=component_data,
+                metadata=metadata,
+            )
+
+        # Save output
+        hrs_file = self.hrs_generator.save(hrs_content, output_dir, project_name)
         self.log(f"HRS generated: {len(hrs_content)} chars -> {hrs_file}")
 
         return {

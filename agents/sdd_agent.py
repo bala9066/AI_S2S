@@ -109,23 +109,56 @@ class SDDAgent(BaseAgent):
                 "outputs": {},
             }
 
-        # Extract structured data using LLM
-        modules = await self._extract_modules(srs)
-        interfaces = await self._extract_interfaces(srs, glr)
-        state_machines = await self._extract_state_machines(srs)
-
-        # Generate SDD using the generator
-        sdd_content = self.sdd_generator.generate(
-            project_name=project_name,
-            modules=modules,
-            interfaces=interfaces,
-            state_machines=state_machines,
-            metadata={"version": project_context.get("version", "1.0")},
+        # PRIMARY PATH: LLM writes the full IEEE 1016 SDD from SRS context
+        user_message = (
+            f"Generate a complete IEEE 1016-2009 Software Design Document for:\n\n"
+            f"**Project:** {project_name}\n\n"
+            f"## Software Requirements Specification (SRS)\n{srs[:6000]}\n\n"
+            f"## GLR Specification\n{glr[:2000] if glr else 'Not available.'}\n\n"
+            f"## HRS (Hardware context)\n{hrs[:2000] if hrs else 'Not available.'}\n\n"
+            "Generate ALL sections per the IEEE 1016 structure in your system prompt. "
+            "Include Mermaid class diagrams, sequence diagrams, and state diagrams. "
+            "Define actual C struct layouts and function prototypes. "
+            "Be thorough, project-specific, and MISRA-C compliant."
         )
 
-        # Save using generator's save method
-        sdd_file = self.sdd_generator.save(sdd_content, output_dir, project_name)
+        sdd_content = ""
+        try:
+            response = await self.call_llm(
+                messages=[{"role": "user", "content": user_message}],
+                system=SYSTEM_PROMPT,
+            )
+            sdd_content = response.get("content", "")
+            # Continuation if truncated
+            if response.get("stop_reason") == "max_tokens" and sdd_content:
+                self.log("SDD truncated, requesting continuation...")
+                cont = await self.call_llm(
+                    messages=[
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": sdd_content},
+                        {"role": "user", "content": "Continue from where you left off. Do not repeat sections already written."},
+                    ],
+                    system=SYSTEM_PROMPT,
+                )
+                sdd_content += "\n" + cont.get("content", "")
+        except Exception as e:
+            self.log(f"LLM SDD generation failed: {e} — falling back to template", "warning")
 
+        # FALLBACK: template generator
+        if not sdd_content or len(sdd_content) < 800:
+            modules = await self._extract_modules(srs)
+            interfaces = await self._extract_interfaces(srs, glr)
+            state_machines = await self._extract_state_machines(srs)
+            sdd_content = self.sdd_generator.generate(
+                project_name=project_name,
+                modules=modules,
+                interfaces=interfaces,
+                state_machines=state_machines,
+                metadata={"version": project_context.get("version", "1.0")},
+            )
+
+        # Save output
+        sdd_file = self.sdd_generator.save(sdd_content, output_dir, project_name)
         self.log(f"SDD generated: {len(sdd_content)} chars")
 
         return {

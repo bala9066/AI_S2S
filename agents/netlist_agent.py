@@ -213,7 +213,7 @@ Generate the netlist using the generate_netlist tool. Include:
 
             # Run NetworkX validation
             validation = self._validate_netlist(netlist_data)
-            outputs["validation"] = validation
+            outputs["validation"] = json.dumps(validation, indent=2)
 
             self.log(f"Netlist: {len(netlist_data.get('nodes', []))} nodes, {len(netlist_data.get('edges', []))} edges")
 

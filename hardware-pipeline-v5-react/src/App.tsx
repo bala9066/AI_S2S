@@ -364,7 +364,8 @@ export default function App() {
           onRerunStale={handleRerunStale}
           pipelineRunning={hasRunning}
         />
-        <div className="fade-up" key={selectedPhaseIdx} style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div className="fade-up" key={selectedPhaseIdx}>
           <PhaseHeader
             phase={selectedPhase}
             status={selectedStatus}
@@ -374,6 +375,7 @@ export default function App() {
             pipelineRunning={hasRunning}
             isStale={stalePhaseIds.includes(selectedPhase?.id)}
           />
+          </div>
           <div style={{ padding: '0 26px 26px' }}>
             {/* ChatView: only for P1 — kept mounted while on P1 so state is preserved */}
             {selectedPhase.id === 'P1' && (
@@ -397,9 +399,8 @@ export default function App() {
                 />
               </div>
             )}
-            {/* DocumentsView: always mounted for the active phase, hidden when on chat tab.
-                This prevents the file list and content cache from being lost when switching
-                between the Chat and Documents tabs. */}
+            {/* DocumentsView: always mounted, never remounted on phase switch.
+                Phase changes propagate via props so the file cache is preserved. */}
             <div style={{ display: tab === 'documents' ? 'block' : 'none' }}>
               <DocumentsView project={project} phase={selectedPhase} status={selectedStatus} pipelineRunning={hasRunning} />
             </div>

@@ -69,6 +69,10 @@ class Settings:
         # --- ChromaDB ---
         self.chroma_persist_dir = _env("CHROMA_PERSIST_DIR", "./chroma_data")
         self.chroma_collection_name = _env("CHROMA_COLLECTION_NAME", "component_datasheets")
+        # Disable ChromaDB telemetry (prevents posthog network calls on startup)
+        import os
+        os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+        os.environ.setdefault("CHROMA_ANONYMIZED_TELEMETRY", "False")
 
         # --- Embedding ---
         self.embedding_model = _env("EMBEDDING_MODEL", "text-embedding-3-large")

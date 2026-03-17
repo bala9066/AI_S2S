@@ -53,13 +53,16 @@ def seed_if_empty() -> None:
 
         added_count = 0
         for comp_data in components:
-            # Create Component object
+            # Create Component object — coerce all key_specs values to str
+            raw_specs = comp_data.get("key_specs", {})
+            str_specs = {k: str(v) for k, v in raw_specs.items()}
+
             component = Component(
                 part_number=comp_data.get("part_number", ""),
                 manufacturer=comp_data.get("manufacturer", ""),
                 description=comp_data.get("description", ""),
                 category=comp_data.get("category", "Unknown"),
-                key_specs=comp_data.get("key_specs", {}),
+                key_specs=str_specs,
                 datasheet_url=comp_data.get("datasheet_url", ""),
                 lifecycle_status=comp_data.get("lifecycle_status", "unknown"),
                 estimated_cost_usd=comp_data.get("estimated_cost_usd"),

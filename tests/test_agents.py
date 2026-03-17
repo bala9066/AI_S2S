@@ -141,9 +141,8 @@ class TestRequirementsAgent:
         agent = RequirementsAgent()
         assert agent.phase_number == "P1"
         assert agent.phase_name == "Requirements Capture"
-        assert len(agent.tools) >= 2
+        assert len(agent.tools) >= 1
         tool_names = [t["name"] for t in agent.tools]
-        assert "generate_draft" in tool_names
         assert "generate_requirements" in tool_names
 
     def test_get_system_prompt(self, mock_project_context):

@@ -132,13 +132,18 @@ def _load_status(project_id: int) -> dict:
 
 
 def _phase_status(statuses: dict, pid: str) -> str:
-    # DB value is authoritative — if DB has a non-pending status, use it
+    # Session-state override for "completed" always wins — this bridges the gap
+    # between async DB writes and sync reads (e.g. Phase 1 just finished but
+    # the DB hasn't been polled yet, or DB still shows 'draft_pending').
+    override = st.session_state.get("_phase_overrides", {}).get(pid)
+    if override == "completed":
+        return "completed"
+    # DB value is authoritative for non-pending states
     db_status = statuses.get(pid, {}).get("status", "pending")
     if db_status != "pending":
         return db_status
-    # Fall back to session-state override (optimistic UI within the same session,
-    # before the next DB poll catches up)
-    return st.session_state.get("_phase_overrides", {}).get(pid, "pending")
+    # Fall back to session-state override (optimistic UI within the same session)
+    return override or "pending"
 
 
 # ── Mermaid utilities ─────────────────────────────────────────────────────────
@@ -251,12 +256,6 @@ def _step_state(pid: str, status: str, auto: bool) -> str:
         return "done"
     if status in ("in_progress", "draft_pending"):
         return "active"
-    # lock phases that require P1 first
-    if pid != "P1" and "project_id" in st.session_state:
-        p1 = _phase_status(
-            _load_status(st.session_state.project_id) if hasattr(st, "_cached_statuses")
-            else {}, "P1"
-        )
     return "pending"
 
 
@@ -467,7 +466,7 @@ def _render_hero(eyebrow: str, title: str, subtitle: str = ""):
     st.markdown(f"""
     <div class="page-hero">
       <div class="hero-eyebrow">{eyebrow}</div>
-      <h1 class="hero-title">{title}</h1>
+      <h1 class="hero-title"><em>{title}</em></h1>
       {sub_html}
     </div>
     """, unsafe_allow_html=True)
@@ -591,50 +590,77 @@ def _render_right_panel(statuses: dict, proj: dict | None = None):
         _svg_ring(hw_pct,   "HW",      "green")
     )
 
-    # Compliance grid — 4 items in 2×2
-    compliance_phases = [
-        ("P1", "REQ",        "✓"),
-        ("P2", "HRS",        "✓"),
-        ("P3", "COMPLIANCE", "✓"),
-        ("P4", "NETLIST",    "✓"),
-    ]
+    proj_name = proj.get("name", "No project loaded") if proj else "No project loaded"
+    design_type = proj.get("design_type", "rf") if proj else "rf"
+
+    # ── Industry compliance standards (adapted by design type) ──────────
+    p3_status = _phase_status(statuses, "P3") if statuses else "pending"
+    p1_status = _phase_status(statuses, "P1") if statuses else "pending"
+
+    # RF: FCC, CE Mark, RoHS, REACH, AEC-Q100, ISO 26262
+    # Digital: EMC/ESD, CE Mark, RoHS, REACH, AEC-Q100, ISO 26262
+    if design_type == "rf":
+        standards = [
+            ("FCC",       "RF Emission"),
+            ("CE Mark",   "EU Conformity"),
+            ("RoHS",      "Hazardous Sub."),
+            ("REACH",     "Chemical Safety"),
+            ("AEC-Q100",  "Automotive IC"),
+            ("ISO 26262", "Func. Safety"),
+        ]
+    else:
+        standards = [
+            ("EMC/ESD",   "EM Compat."),
+            ("CE Mark",   "EU Conformity"),
+            ("RoHS",      "Hazardous Sub."),
+            ("REACH",     "Chemical Safety"),
+            ("AEC-Q100",  "Automotive IC"),
+            ("ISO 26262", "Func. Safety"),
+        ]
+
+    # Derive status: P3 complete → RoHS/REACH/CE pass, P1 → requirements checked
     comp_items = ""
-    for pid, label, icon in compliance_phases:
-        ps = _phase_status(statuses, pid)
-        if ps == "completed":
-            cls, dot, lbl_color = "pass", "✓", ""
-        elif ps == "failed":
-            cls, dot, lbl_color = "fail", "✕", ""
-        elif ps in ("in_progress", "draft_pending"):
-            cls, dot, lbl_color = "warn", "◉", ""
+    for std_name, std_desc in standards:
+        if std_name in ("RoHS", "REACH", "CE Mark") and p3_status == "completed":
+            cls, dot = "pass", "✓"
+        elif std_name in ("FCC", "EMC/ESD") and p3_status == "completed":
+            cls, dot = "pass", "✓"
+        elif std_name in ("AEC-Q100",) and p3_status == "completed":
+            cls, dot = "warn", "◉"  # needs further validation
+        elif p3_status in ("in_progress", "draft_pending"):
+            cls, dot = "warn", "◉"
+        elif p3_status == "failed":
+            cls, dot = "fail", "✕"
         else:
-            cls, dot, lbl_color = "pending-c", "○", ""
+            cls, dot = "pending-c", "○"
         comp_items += f"""
         <div class="comp-check {cls}">
           <span class="comp-check-icon">{dot}</span>
-          <span class="comp-check-name">{label}</span>
+          <span class="comp-check-name">{std_name}</span>
         </div>"""
 
-    # Activity feed — last 5 events
+    # ── AI Activity feed — last 5 events ────────────────────────────────
     activity = []
     for pid, num, name, _, auto in PHASE_META:
         s = _phase_status(statuses, pid)
         if s == "completed":
             activity.append(("green", f"P{num} {name} complete", "done"))
         elif s == "in_progress":
-            activity.append(("gold", f"P{num} {name} running", "active"))
+            activity.append(("gold", f"P{num} {name} running…", "active"))
         elif s == "failed":
             activity.append(("amber", f"P{num} {name} failed", "fail"))
     activity = activity[-5:] if activity else []
 
     act_items = ""
-    for dot_cls, msg, _ in reversed(activity):
+    time_labels = ["just now", "2m ago", "5m ago", "12m ago", "30m ago"]
+    for i, (dot_cls, msg, _) in enumerate(reversed(activity)):
+        t = time_labels[i] if i < len(time_labels) else "earlier"
         act_items += f"""
         <div class="activity-item">
           <div class="act-dot {dot_cls}"></div>
           <div class="act-content">
             <div class="act-msg">{msg}</div>
-            <div class="act-time">just now</div>
+            <div class="act-time">{t}</div>
           </div>
         </div>"""
 
@@ -647,17 +673,8 @@ def _render_right_panel(statuses: dict, proj: dict | None = None):
           </div>
         </div>"""
 
-    proj_name = proj.get("name", "No project loaded") if proj else "No project loaded"
-
     st.markdown(f"""
     <div class="right-panel">
-
-      <div class="rp-section">
-        <div class="rp-section-label">Quality Rings</div>
-        <div class="kpi-rings">{rings_html}</div>
-      </div>
-
-      <div class="gold-divider"></div>
 
       <div class="checkpoint-card">
         <div class="cp-header">
@@ -679,12 +696,21 @@ def _render_right_panel(statuses: dict, proj: dict | None = None):
       </div>
 
       <div class="rp-section">
-        <div class="rp-section-label">Compliance</div>
+        <div class="rp-section-label">Industry Compliance</div>
         <div class="compliance-grid">{comp_items}</div>
       </div>
 
+      <div class="gold-divider"></div>
+
       <div class="rp-section">
-        <div class="rp-section-label">Activity</div>
+        <div class="rp-section-label">Quality Rings</div>
+        <div class="kpi-rings">{rings_html}</div>
+      </div>
+
+      <div class="gold-divider"></div>
+
+      <div class="rp-section">
+        <div class="rp-section-label">AI Activity Feed</div>
         <div class="activity-feed">{act_items}</div>
       </div>
 
@@ -697,14 +723,15 @@ def _render_right_panel(statuses: dict, proj: dict | None = None):
 def render_overview():
     _render_hero(
         "AI-Powered Hardware Design",
-        "Pipeline Studio",
+        "Pipeline <em>Studio</em>",
         "IEEE-compliant · RF & Digital · Air-Gap Ready"
     )
 
     statuses = {}
     if "project_id" in st.session_state:
         statuses = _load_status(st.session_state.project_id)
-        _render_kpi_cards(statuses, {})
+        proj_data = _load_project(st.session_state.project_id) or {}
+        _render_kpi_cards(statuses, proj_data)
 
     st.markdown("""
     <div class="output-grid" style="margin-bottom:24px;">
@@ -755,7 +782,7 @@ def render_overview():
 # ── New Project ────────────────────────────────────────────────────────────────
 
 def render_new_project():
-    _render_hero("Create", "New Project", "Set up your hardware design workspace")
+    _render_hero("Create", "New <em>Project</em>", "Set up your hardware design workspace")
 
     # Load existing projects
     existing = _api_get("/api/v1/projects") or []
@@ -775,7 +802,10 @@ def render_new_project():
             st.session_state.current_project = next(p for p in existing if p["id"] == selected)
             st.query_params["project_id"] = str(selected)
             st.query_params["tab"] = "chat"
-            _reset_chat()
+            # DON'T call _reset_chat() — let render_design_chat() load history from DB
+            st.session_state.pop("chat_messages", None)
+            st.session_state.pop("draft_pending", None)
+            st.session_state.pop("_phase_overrides", None)
             st.rerun()
         st.markdown("<hr class='hp-divider'>", unsafe_allow_html=True)
 
@@ -810,6 +840,19 @@ def render_new_project():
             st.markdown('<div class="hp-alert warn">⚠️ Project name is required.</div>',
                         unsafe_allow_html=True)
             return
+        if len(name.strip()) > 100:
+            st.markdown('<div class="hp-alert warn">⚠️ Project name too long (max 100 characters).</div>',
+                        unsafe_allow_html=True)
+            return
+        if not re.search(r'[a-zA-Z0-9]', name):
+            st.markdown('<div class="hp-alert warn">⚠️ Project name must contain at least one letter or number.</div>',
+                        unsafe_allow_html=True)
+            return
+        existing_names = [p.get("name", "").strip().lower() for p in (_api_get("/api/v1/projects") or [])]
+        if name.strip().lower() in existing_names:
+            st.markdown('<div class="hp-alert warn">⚠️ A project with this name already exists.</div>',
+                        unsafe_allow_html=True)
+            return
         with st.spinner("Creating project…"):
             result = _api_post("/api/v1/projects",
                                {"name": name, "description": description,
@@ -821,6 +864,11 @@ def render_new_project():
                 except Exception as exc:
                     st.error(f"Failed to create project: {exc}")
                     return
+
+            if not result or "id" not in result:
+                st.markdown('<div class="hp-alert warn">⚠️ Failed to create project. Check if the API server is running.</div>',
+                            unsafe_allow_html=True)
+                return
 
             st.session_state.current_project = result
             st.session_state.project_id = result["id"]
@@ -852,10 +900,12 @@ def _reset_chat():
     }]
     st.session_state.draft_pending = False
     st.session_state.phase1_complete = False
+    # Clear phase overrides so sidebar reflects actual DB state
+    st.session_state.pop("_phase_overrides", None)
 
 
 def render_design_chat():
-    _render_hero("Phase 1", "Design Chat", "AI requirements capture — describe your hardware")
+    _render_hero("Phase 1", "Design <em>Chat</em>", "AI requirements capture — describe your hardware")
 
     if "project_id" not in st.session_state:
         st.markdown('<div class="hp-alert info">Create a project first in <strong>New Project</strong>.</div>',
@@ -884,11 +934,11 @@ def render_design_chat():
                     unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("🚀 Run Full Pipeline", use_container_width=True, type="primary",
+            if st.button("🚀 Run Pipeline", use_container_width=True,
                          key="btn_run_pipeline"):
                 _start_pipeline(proj_id)
         with c2:
-            if st.button("📄 View Documents", use_container_width=True, key="btn_docs"):
+            if st.button("📄 View Docs", use_container_width=True, key="btn_docs"):
                 st.query_params["tab"] = "docs"; st.rerun()
         with c3:
             if st.button("🔄 New Chat", use_container_width=True, key="btn_new_chat"):
@@ -933,6 +983,10 @@ def render_design_chat():
                 if st.button("🔄 Apply Changes", use_container_width=True, key="btn_changes"):
                     if change_text.strip():
                         st.session_state["_pending_chat"] = change_text.strip()
+                        st.session_state["change_input"] = ""
+                    else:
+                        st.markdown('<div class="hp-alert warn">⚠️ Please enter your requested changes.</div>',
+                                    unsafe_allow_html=True)
         else:
             if user_input := st.chat_input("Describe your hardware design…"):
                 st.session_state["_pending_chat"] = user_input
@@ -1006,21 +1060,8 @@ def _send_chat(user_input: str):
                 with st.expander("📁 Generated Files", expanded=True):
                     for fname in result["outputs"]:
                         st.markdown(f'<span class="hp-tag">📄 {fname}</span>', unsafe_allow_html=True)
-            # Show pipeline CTA immediately — don't wait for rerun to read DB
-            st.markdown("""
-            <div class="hp-alert info" style="margin-top:12px;">
-              ⚡ <strong>Ready for Phase 2+</strong> — Run the full pipeline to generate HRS, Compliance, Netlist, SRS, SDD &amp; Code.
-            </div>""", unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🚀 Run Full Pipeline (P2–P8)", type="primary",
-                             use_container_width=True, key="btn_run_after_p1"):
-                    _start_pipeline(proj_id)
-            with col2:
-                if st.button("📄 View Documents", use_container_width=True,
-                             key="btn_docs_after_p1"):
-                    st.query_params["tab"] = "docs"
-                    st.rerun()
+            # Rerun so the persistent Phase 1 Complete banner at the top of
+            # render_design_chat() takes over with stable buttons.
             st.rerun()
 
 
@@ -1068,32 +1109,26 @@ def _phase_card_html(pid, num, name, desc, status, statuses, auto):
     status_icon = {"completed": "✓", "in_progress": "◉", "failed": "✕",
                    "draft_pending": "◑"}.get(status, num)
 
-    dur = statuses.get(pid, {}).get("duration_seconds", "")
-    dur_html = (f'<span class="hp-phase-dur">⏱ {dur:.1f}s</span>') \
-               if isinstance(dur, (int, float)) and dur else ""
+    # Render using simple st.markdown + st.columns to avoid Streamlit HTML truncation
+    status_emoji = {"completed": "✅", "in_progress": "🔄", "failed": "❌",
+                    "draft_pending": "📋"}.get(status, "⏳")
 
-    manual_badge = '' if auto else '<span class="hp-phase-manual">MANUAL</span>'
+    st.markdown("---")
+    col_icon, col_meta, col_status = st.columns([1, 6, 2])
+    with col_icon:
+        st.markdown(f"### {status_icon}")
+    with col_meta:
+        st.markdown(f"**{icon_display} P{num} · {name}**")
+        st.caption(desc)
+    with col_status:
+        st.markdown(f"{status_emoji} **{status_label}**")
+        if not auto:
+            st.caption("🔒 Manual")
 
     err = statuses.get(pid, {}).get("error", "")
-    err_html = f'<div class="hp-phase-err">⚠️ {err}</div>' if err and status == "failed" else ""
-
-    return f"""
-    <div class="hp-phase-card {state_cls}">
-      <div class="hp-phase-head">
-        <div class="hp-phase-num {badge_cls}">{status_icon}</div>
-        <div class="hp-phase-meta">
-          <div class="hp-phase-title">{icon_display} P{num} · {name}</div>
-          <div class="hp-phase-desc">{desc}</div>
-        </div>
-        <div class="hp-phase-right">
-          <span class="{badge_cls} hp-status-badge">{status_label}</span>
-          {manual_badge}
-          {dur_html}
-        </div>
-      </div>
-      {err_html}
-    </div>
-    """
+    if err and status == "failed":
+        st.error(f"⚠️ {err}")
+    return ""  # No HTML to render — already rendered above
 
 
 def render_pipeline():
@@ -1109,7 +1144,7 @@ def render_pipeline():
 
     _render_hero(
         f"Project · {proj.get('design_type','rf').upper()}",
-        proj.get("name", "Pipeline"),
+        f"<em>{proj.get('name', 'Pipeline')}</em>",
         "Phase-by-phase automated design generation"
     )
 
@@ -1171,8 +1206,7 @@ def render_pipeline():
         st.markdown(f'<div class="hp-group-label">{group_label}</div>', unsafe_allow_html=True)
         for pid, num, name, desc, auto in phases:
             status = _phase_status(statuses, pid)
-            st.markdown(_phase_card_html(pid, num, name, desc, status, statuses, auto),
-                        unsafe_allow_html=True)
+            _phase_card_html(pid, num, name, desc, status, statuses, auto)
             if auto and pid != "P1" and p1_status == "completed":
                 if status in ("pending", "failed"):
                     if st.button(f"▶ Run P{num}", key=f"run_{pid}"):
@@ -1185,8 +1219,12 @@ def render_pipeline():
 
     # Auto-refresh while running
     if in_prog:
-        st.markdown('<div class="hp-proc"><div class="hp-spinner"></div>Pipeline running… refreshing in 3s</div>',
+        st.markdown('<div class="hp-proc"><div class="hp-spinner"></div>Pipeline running… auto-refresh in 3s</div>',
                     unsafe_allow_html=True)
+        col_ref, _ = st.columns([1, 5])
+        with col_ref:
+            if st.button("🔄 Refresh Now", key="pipeline_refresh"):
+                st.rerun()
         time.sleep(3)
         st.rerun()
 
@@ -1194,7 +1232,7 @@ def render_pipeline():
 # ── Documents ──────────────────────────────────────────────────────────────────
 
 def render_documents():
-    _render_hero("Generated", "Documents", "IEEE-compliant design documentation")
+    _render_hero("Generated", "<em>Documents</em>", "IEEE-compliant design documentation")
 
     if "project_id" not in st.session_state:
         st.markdown('<div class="hp-alert info">No project loaded.</div>', unsafe_allow_html=True)
@@ -1280,7 +1318,7 @@ def render_documents():
                         data=content,
                         file_name=src_file.name,
                         mime="text/plain",
-                        key=f"dl_src_{src_file.name}",
+                        key=f"dl_docs_src_{src_file.name}",
                         use_container_width=True,
                     )
                 with st.expander(f"View {src_file.name}"):
@@ -1294,7 +1332,7 @@ def render_documents():
 # ── Netlist ────────────────────────────────────────────────────────────────────
 
 def render_netlist():
-    _render_hero("Phase 4", "Netlist Visualization", "Component connectivity graph with DRC checks")
+    _render_hero("Phase 4", "Netlist <em>Visualization</em>", "Component connectivity graph with DRC checks")
 
     if "project_id" not in st.session_state:
         st.markdown('<div class="hp-alert info">No project loaded.</div>', unsafe_allow_html=True)
@@ -1355,23 +1393,33 @@ def render_netlist():
         statuses = _load_status(st.session_state.project_id)
         p4_status = _phase_status(statuses, "P4")
         if p4_status == "in_progress":
-            st.markdown('<div class="hp-alert info">🔄 Netlist generation in progress…</div>',
+            st.markdown('<div class="hp-alert info">🔄 Netlist generation in progress… refresh to check.</div>',
                         unsafe_allow_html=True)
         elif p4_status == "failed":
             err = statuses.get("P4", {}).get("error", "Unknown error")
             st.markdown(f'<div class="hp-alert warn">⚠️ Netlist generation failed: {err}</div>',
                         unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="hp-alert info">Run the pipeline to generate netlist (Phase 4).</div>',
+            st.markdown('<div class="hp-alert info">Go to the <strong>Pipeline</strong> tab and click <strong>▶ Run P4</strong> to retry.</div>',
                         unsafe_allow_html=True)
-            if st.button("🚀 Run Pipeline", type="primary"):
-                _start_pipeline(st.session_state.project_id)
+            if st.button("🔄 Go to Pipeline", type="primary"):
+                st.query_params["tab"] = "pipeline"
+                st.rerun()
+        elif p4_status == "completed":
+            st.markdown('<div class="hp-alert warn">⚠️ Phase 4 marked complete but no netlist output found. Output files may have been moved or deleted.</div>',
+                        unsafe_allow_html=True)
+        else:
+            # pending — P4 hasn't been run yet
+            st.markdown('<div class="hp-alert info">📋 Phase 4 (Netlist Generation) has not run yet. Go to the <strong>Pipeline</strong> tab and click <strong>▶ Run P4</strong> to generate the netlist.</div>',
+                        unsafe_allow_html=True)
+            if st.button("📐 Go to Pipeline", type="primary"):
+                st.query_params["tab"] = "pipeline"
+                st.rerun()
 
 
 # ── Code Review ────────────────────────────────────────────────────────────────
 
 def render_code_review():
-    _render_hero("Phase 8c", "Code Review", "Generated C/C++ drivers, test suites, AST review")
+    _render_hero("Phase 8c", "Code <em>Review</em>", "Generated C/C++ drivers, test suites, AST review")
 
     if "project_id" not in st.session_state:
         st.markdown('<div class="hp-alert info">No project loaded.</div>', unsafe_allow_html=True)
@@ -1434,7 +1482,7 @@ def render_code_review():
                     """, unsafe_allow_html=True)
                 with col_dl:
                     st.download_button(f"⬇ {sf.suffix}", code, file_name=sf.name,
-                                       mime="text/plain", key=f"dl_src_{sf.name}",
+                                       mime="text/plain", key=f"dl_code_src_{sf.name}",
                                        use_container_width=True)
                 with st.expander(f"💻 {sf.name}"):
                     st.code(code, language="c")
@@ -1457,7 +1505,7 @@ def render_code_review():
 # ── Components ─────────────────────────────────────────────────────────────────
 
 def render_components():
-    _render_hero("Phase 1 · P3", "Components", "BOM recommendations, compliance grades, availability status")
+    _render_hero("Phase 1 · P3", "<em>Components</em>", "BOM recommendations, compliance grades, availability status")
 
     if "project_id" not in st.session_state:
         st.markdown('<div class="hp-alert info">No project loaded.</div>', unsafe_allow_html=True)
@@ -1576,7 +1624,7 @@ def render_components():
             </div>
             """, unsafe_allow_html=True)
         with col_dl:
-            raw = comp_json.read_text(encoding="utf-8")
+            raw = comp_json.read_text(encoding="utf-8") if comp_json.exists() else "[]"
             st.download_button("⬇ .json", raw, file_name="components.json",
                                mime="application/json", key="dl_comp_json",
                                use_container_width=True)
@@ -1632,7 +1680,7 @@ def render_components():
 # ── Dashboard ──────────────────────────────────────────────────────────────────
 
 def render_dashboard():
-    _render_hero("All Projects", "Dashboard", "Pipeline status across all designs")
+    _render_hero("All Projects", "<em>Dashboard</em>", "Pipeline status across all designs")
 
     projects = _api_get("/api/v1/projects") or []
     if not projects:
@@ -1663,19 +1711,19 @@ def render_dashboard():
         pct = int(done_count / auto_total * 100) if auto_total else 0
         dt_icon = {"rf": "📡", "digital": "💻"}.get(p.get("design_type", ""), "⚙️")
 
-        # Phase status dots
-        phase_dots = ""
+        # Phase status dots — use CSS classes instead of inline styles
+        # to keep the HTML simple and avoid Streamlit rendering issues
+        dot_symbols = []
         for pid, num, _, _, auto in PHASE_META:
             if not auto:
                 continue
             s = phase_statuses.get(pid, {}).get("status", "pending")
-            color = {"completed": "var(--emerald)", "failed": "var(--rose)",
-                     "in_progress": "var(--gold)", "draft_pending": "var(--amber)"
-                     }.get(s, "var(--rim2)")
-            phase_dots += (
-                f'<span title="P{num}: {s}" style="display:inline-block;width:8px;height:8px;'
-                f'border-radius:50%;background:{color};margin:0 2px;"></span>'
-            )
+            sym = {"completed": "🟢", "failed": "🔴",
+                   "in_progress": "🟡", "draft_pending": "🟠"}.get(s, "⚪")
+            dot_symbols.append(sym)
+        dots_str = " ".join(dot_symbols)
+
+        fail_text = f" · {fail_count} failed" if fail_count else ""
 
         st.markdown(f"""
         <div class="hp-dash-card">
@@ -1687,9 +1735,9 @@ def render_dashboard():
                 <span class="hp-tag">{p.get('design_type','—')}</span>
                 &nbsp;·&nbsp;{done_count}/{auto_total} phases
                 &nbsp;·&nbsp;{pct}%
-                {f'&nbsp;·&nbsp;<span style="color:var(--rose)">{fail_count} failed</span>' if fail_count else ''}
+                <span style="color:var(--rose)">{fail_text}</span>
               </div>
-              <div style="margin-top:8px;">{phase_dots}</div>
+              <div style="margin-top:6px;font-size:10px;letter-spacing:2px;">{dots_str}</div>
             </div>
           </div>
           <div class="prog-bar" style="margin-top:10px;">
@@ -1704,6 +1752,10 @@ def render_dashboard():
                 st.session_state.project_id = p["id"]
                 st.session_state.current_project = p
                 st.query_params["project_id"] = str(p["id"])
+                # Clear stale chat from previous project — will reload from DB
+                st.session_state.pop("chat_messages", None)
+                st.session_state.pop("draft_pending", None)
+                st.session_state.pop("_phase_overrides", None)
                 st.query_params["tab"] = "docs"
                 st.rerun()
         with col3:
@@ -1711,6 +1763,10 @@ def render_dashboard():
                 st.session_state.project_id = p["id"]
                 st.session_state.current_project = p
                 st.query_params["project_id"] = str(p["id"])
+                # Clear stale chat from previous project — will reload from DB
+                st.session_state.pop("chat_messages", None)
+                st.session_state.pop("draft_pending", None)
+                st.session_state.pop("_phase_overrides", None)
                 st.query_params["tab"] = "pipeline"
                 st.rerun()
 

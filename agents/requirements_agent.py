@@ -284,9 +284,9 @@ class RequirementsAgent(BaseAgent):
                 original = messages[-1]["content"]
                 messages[-1]["content"] = (
                     f"{original}\n\n"
-                    "CALL `generate_requirements` TOOL NOW with the complete BOM, requirements, "
-                    "block_diagram_mermaid, architecture_mermaid, design_parameters, and "
-                    "component_recommendations. Do NOT write any analysis text — call the tool immediately."
+                    "After your analysis, call the `generate_requirements` tool with the complete BOM, "
+                    "requirements, block_diagram_mermaid, architecture_mermaid, design_parameters, and "
+                    "component_recommendations."
                 )
 
         # ── Tool handlers ──────────────────────────────────────────────────

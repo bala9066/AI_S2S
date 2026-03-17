@@ -10,14 +10,16 @@ from typing import Optional, List
 from pathlib import Path
 
 # Optional chromadb import - may not be available due to dependency issues
+# NOTE: chromadb.config.Settings is intentionally NOT imported.
+# On Windows, ChromaDB 1.x Settings defines a chroma_server_nofile field
+# (a Unix file-descriptor limit) that Pydantic v2 cannot infer a type for,
+# causing an import-time exception.  PersistentClient works without Settings.
 try:
     import chromadb
-    from chromadb.config import Settings as ChromaSettings
     CHROMADB_AVAILABLE = True
 except (ImportError, Exception) as e:
     CHROMADB_AVAILABLE = False
     chromadb = None  # type: ignore
-    ChromaSettings = None  # type: ignore
     logging.info("ChromaDB not available (optional): %s", e)
 
 from config import settings
@@ -56,14 +58,33 @@ class ComponentSearchTool:
             # Initialize ChromaDB client
             self._client = chromadb.PersistentClient(
                 path=str(persist_dir),
-                settings=ChromaSettings(anonymized_telemetry=False),
             )
 
-            # Get or create collection
-            self._collection = self._client.get_or_create_collection(
-                name=settings.chroma_collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
+            # Try to use OpenAI text-embedding-3-large if key is available
+            embedding_fn = None
+            _placeholder_keys = {"", "sk-xxxxx", "sk-proj-xxxxx", "your-key-here"}
+            if settings.openai_api_key and settings.openai_api_key.strip() not in _placeholder_keys:
+                try:
+                    from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+                    embedding_fn = OpenAIEmbeddingFunction(
+                        api_key=settings.openai_api_key,
+                        model_name=settings.embedding_model,  # text-embedding-3-large
+                    )
+                    logger.info(f"ChromaDB: using OpenAI embedding '{settings.embedding_model}'")
+                except Exception as e:
+                    logger.warning(f"OpenAI embedding unavailable ({e}), falling back to default (all-MiniLM-L6-v2)")
+            else:
+                logger.info("ChromaDB: no valid OpenAI key, using default embedding (all-MiniLM-L6-v2)")
+
+            # Get or create collection — pass embedding fn if available
+            collection_kwargs: dict = {
+                "name": settings.chroma_collection_name,
+                "metadata": {"hnsw:space": "cosine"},
+            }
+            if embedding_fn is not None:
+                collection_kwargs["embedding_function"] = embedding_fn
+
+            self._collection = self._client.get_or_create_collection(**collection_kwargs)
 
             logger.info(f"ChromaDB initialized: {len(self._collection.get()['ids'])} components cached")
 
@@ -128,7 +149,7 @@ class ComponentSearchTool:
                     search_results.append(
                         ComponentSearchResult(
                             component=component,
-                            similarity_score=round(similarity, 3),
+                            relevance_score=round(similarity, 3),
                             match_reason=results["documents"][0][i] if results["documents"] else "",
                         )
                     )
