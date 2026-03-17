@@ -584,10 +584,10 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                   GENERATED DOCUMENTS
                 </div>
                 {[
-                  { icon: '📋', name: 'requirements.md', label: 'IEEE-style hardware requirements (REQ-HW-xxx)' },
-                  { icon: '⬡', name: 'block_diagram.md', label: 'System block diagram + signal flow' },
-                  { icon: '🏗', name: 'architecture.md', label: 'Full architecture with Mermaid diagrams' },
-                  { icon: '📦', name: 'component_recommendations.md', label: 'BOM with 2-3 alternates per part' },
+                  { icon: '◈', name: 'requirements.md', label: 'IEEE-style hardware requirements (REQ-HW-xxx)' },
+                  { icon: '○', name: 'block_diagram.md', label: 'System block diagram + signal flow' },
+                  { icon: '◆', name: 'architecture.md', label: 'Full architecture with Mermaid diagrams' },
+                  { icon: '▣', name: 'component_recommendations.md', label: 'BOM with 2-3 alternates per part' },
                 ].map(f => (
                   <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
                     <span style={{ fontSize: 13 }}>{f.icon}</span>

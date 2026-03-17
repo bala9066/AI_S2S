@@ -5,116 +5,201 @@ interface Props {
   status: PhaseStatusValue;
   tab: CenterTab;
   onTabChange: (t: CenterTab) => void;
+  onExecute?: () => void;
+  pipelineRunning?: boolean;
 }
 
-export default function PhaseHeader({ phase, status, tab, onTabChange }: Props) {
+export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute, pipelineRunning }: Props) {
   const isComplete = status === 'completed';
   const isRunning = status === 'in_progress';
+  const isFailed = status === 'failed';
 
   const tabs: { id: CenterTab; label: string; show: boolean }[] = [
-    { id: 'chat', label: '⚡ Chat', show: phase.id === 'P1' },
-    { id: 'details', label: '◆ Details', show: true },
-    { id: 'metrics', label: '◎ Metrics', show: true },
-    { id: 'documents', label: '📄 Documents', show: true },
+    { id: 'chat',      label: '⚡ Chat',       show: phase.id === 'P1' },
+    { id: 'documents', label: '📄 Documents',  show: true },
   ].filter(t => t.show);
 
+  // Status pill config
+  const statusConfig = isRunning
+    ? { label: 'RUNNING', color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)', animate: true }
+    : isComplete
+    ? { label: 'COMPLETE', color: phase.color, bg: `${phase.color}12`, border: `${phase.color}33`, animate: false }
+    : isFailed
+    ? { label: 'FAILED', color: '#dc2626', bg: 'rgba(220,38,38,0.1)', border: 'rgba(220,38,38,0.3)', animate: false }
+    : { label: phase.manual ? 'MANUAL / EXTERNAL' : 'PENDING', color: 'var(--text4)', bg: 'var(--panel2)', border: 'var(--panel3)', animate: false };
+
   return (
-    <div style={{ padding: '22px 26px 0', borderBottom: '1px solid var(--border2)' }}>
-      {/* Phase title row */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
-        {/* Circle icon */}
-        <div style={{
-          width: 46, height: 46, borderRadius: '50%', flexShrink: 0,
-          background: `${phase.color}15`,
-          border: `2px solid ${phase.color}`,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 16,
-          color: phase.color,
-          boxShadow: isRunning ? `0 0 18px ${phase.color}44` : 'none',
-          transition: 'box-shadow 0.3s',
-        }}>
-          {isComplete && !phase.manual ? '✓' : isRunning ? (
+    <div style={{ borderBottom: '1px solid #1e2d40' }}>
+      {/* Phase title area */}
+      <div style={{
+        padding: '20px 24px 16px',
+        background: `linear-gradient(180deg, ${phase.color}06 0%, transparent 100%)`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+          {/* Phase circle */}
+          <div style={{
+            width: 48, height: 48, borderRadius: '50%', flexShrink: 0,
+            background: isComplete
+              ? `${phase.color}18`
+              : `${phase.color}12`,
+            border: `2px solid ${isRunning ? phase.color : isComplete ? phase.color + 'aa' : phase.color + '44'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 17,
+            color: isComplete ? phase.color : isRunning ? phase.color : `${phase.color}bb`,
+            boxShadow: isRunning
+              ? `0 0 20px ${phase.color}44, 0 0 40px ${phase.color}18`
+              : isComplete
+              ? `0 0 12px ${phase.color}25`
+              : 'none',
+            transition: 'all 0.3s',
+          }}>
+            {isRunning ? (
+              <div style={{
+                width: 17, height: 17, borderRadius: '50%',
+                border: `2.5px solid ${phase.color}`,
+                borderTopColor: 'transparent',
+                animation: 'spin 0.8s linear infinite',
+              }} />
+            ) : isComplete && !phase.manual ? (
+              <span>✓</span>
+            ) : phase.manual ? (
+              <span style={{ fontSize: 20 }}>⚙</span>
+            ) : phase.num}
+          </div>
+
+          {/* Title + meta */}
+          <div style={{ flex: 1 }}>
+            {/* Code + badges row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+              <span style={{
+                fontSize: 11, color: phase.color,
+                letterSpacing: '0.14em', fontFamily: "'DM Mono', monospace",
+                fontWeight: 500,
+              }}>
+                {phase.code}
+              </span>
+
+              {/* Status pill */}
+              <span style={{
+                fontSize: 10, padding: '2px 9px', borderRadius: 12,
+                color: statusConfig.color, background: statusConfig.bg,
+                border: `1px solid ${statusConfig.border}`,
+                letterSpacing: '0.06em',
+                animation: statusConfig.animate ? 'pulse 1.5s ease infinite' : 'none',
+              }}>
+                {statusConfig.label}
+              </span>
+
+              {/* Auto / Manual badge */}
+              <span style={{
+                fontSize: 10, padding: '2px 9px', borderRadius: 12,
+                color: phase.auto ? `${phase.color}cc` : 'var(--text4)',
+                background: phase.auto ? `${phase.color}0e` : 'var(--panel2)',
+                border: `1px solid ${phase.auto ? phase.color + '28' : 'var(--panel3)'}`,
+              }}>
+                {phase.manual ? 'EXTERNAL' : '⚡ AUTOMATED'}
+              </span>
+
+              {/* Time estimate */}
+              <span style={{
+                fontSize: 11, color: 'var(--text4)',
+                fontFamily: "'DM Mono', monospace",
+              }}>
+                {phase.time}
+              </span>
+            </div>
+
+            {/* Phase name */}
             <div style={{
-              width: 16, height: 16, borderRadius: '50%',
-              border: `2.5px solid ${phase.color}`,
-              borderTopColor: 'transparent',
-              animation: 'spin 0.8s linear infinite',
-            }} />
-          ) : phase.num}
+              fontFamily: "'Syne', sans-serif", fontSize: 18, fontWeight: 800,
+              color: 'var(--text)', lineHeight: 1.2, marginBottom: 4,
+            }}>
+              {phase.name}
+            </div>
+
+            {/* Tagline */}
+            <div style={{ fontSize: 12.5, color: 'var(--text3)', lineHeight: 1.5, marginBottom: onExecute ? 10 : 0 }}>
+              {phase.tagline}
+            </div>
+
+            {/* Execute button — shown for non-P1, non-manual AI phases when pending or failed */}
+            {onExecute && !phase.manual && phase.id !== 'P1' && !pipelineRunning && (status === 'pending' || status === 'failed') && (
+              <button
+                onClick={onExecute}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                  padding: '8px 18px', borderRadius: 6,
+                  background: phase.color, border: 'none',
+                  color: '#070b14', fontSize: 12,
+                  fontFamily: "'DM Mono', monospace", fontWeight: 700,
+                  cursor: 'pointer', letterSpacing: '0.05em',
+                  boxShadow: `0 0 16px ${phase.color}44`,
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.boxShadow = `0 0 28px ${phase.color}66`; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                onMouseLeave={e => { e.currentTarget.style.boxShadow = `0 0 16px ${phase.color}44`; e.currentTarget.style.transform = 'translateY(0)'; }}
+              >
+                ▶ Execute {phase.code}
+              </button>
+            )}
+
+            {/* Running indicator — replaces execute button while running */}
+            {!phase.manual && phase.id !== 'P1' && isRunning && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                <div style={{ width: 10, height: 10, borderRadius: '50%', border: `2px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+                <span style={{ fontSize: 12, color: phase.color, fontFamily: "'DM Mono', monospace" }}>
+                  Running — check Documents tab for output...
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Meta */}
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, color: phase.color, letterSpacing: '0.12em', fontFamily: "'DM Mono', monospace" }}>
-              {phase.code}
-            </span>
-            <span style={{
-              fontSize: 10, padding: '1px 8px', borderRadius: 3,
-              color: phase.auto ? phase.color : 'var(--text4)',
-              background: phase.auto ? `${phase.color}15` : 'var(--panel2)',
-              border: `1px solid ${phase.auto ? phase.color + '33' : 'var(--panel3)'}`,
-            }}>
-              {phase.manual ? 'MANUAL / EXTERNAL' : '⚡ AUTOMATED'}
-            </span>
-            <span style={{ fontSize: 11, color: 'var(--text4)', fontFamily: "'DM Mono', monospace" }}>
-              {phase.time}
-            </span>
-            {isComplete && !phase.manual && (
-              <span style={{
-                fontSize: 10, color: phase.color, background: `${phase.color}15`,
-                border: `1px solid ${phase.color}33`, padding: '1px 10px', borderRadius: 3,
-              }}>
-                COMPLETED
-              </span>
-            )}
-            {isRunning && (
-              <span style={{
-                fontSize: 10, color: '#f59e0b', background: 'rgba(245,158,11,0.1)',
-                border: '1px solid rgba(245,158,11,0.3)', padding: '1px 10px', borderRadius: 3,
-                animation: 'pulse 1.5s ease infinite',
-              }}>
-                RUNNING...
-              </span>
-            )}
+        {/* Manual phase info banner */}
+        {phase.manual && (
+          <div style={{
+            marginTop: 14,
+            padding: '10px 14px', borderRadius: 7,
+            background: 'rgba(71,85,105,0.12)', border: '1px solid rgba(71,85,105,0.3)',
+            fontSize: 12, color: 'var(--text3)',
+            display: 'flex', gap: 10, alignItems: 'flex-start',
+          }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>⚙</span>
+            <div>
+              <div style={{ fontWeight: 600, color: 'var(--text2)', marginBottom: 2 }}>
+                Completed in {phase.externalTool || 'external EDA tool'}
+              </div>
+              <div>This phase is performed manually. The pipeline continues automatically once the external design is complete.</div>
+            </div>
           </div>
-          <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>
-            {phase.name}
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 3 }}>{phase.tagline}</div>
-        </div>
+        )}
       </div>
 
-      {/* Manual lock note */}
-      {phase.manual && (
+      {/* Tab bar */}
+      {tabs.length > 0 && (
         <div style={{
-          marginBottom: 14, padding: '9px 14px',
-          background: 'var(--panel2)', border: '1px solid var(--panel3)',
-          borderRadius: 6, fontSize: 12, color: 'var(--text3)',
-          display: 'flex', gap: 8, alignItems: 'center',
+          display: 'flex', padding: '0 24px',
+          borderTop: '1px solid #1a2235',
+          background: '#080c17',
         }}>
-          <span>🔒</span>
-          <span>
-            Completed externally in {phase.externalTool || 'external EDA tool'}. This phase is informational and does not block the pipeline.
-          </span>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => onTabChange(t.id)} style={{
+              padding: '10px 20px', fontSize: 12.5,
+              fontFamily: "'DM Mono', monospace",
+              cursor: 'pointer', border: 'none', background: 'transparent',
+              color: tab === t.id ? phase.color : 'var(--text4)',
+              borderBottom: `2.5px solid ${tab === t.id ? phase.color : 'transparent'}`,
+              transition: 'all 0.15s', whiteSpace: 'nowrap', letterSpacing: '0.04em',
+              marginBottom: -1,
+            }}
+              onMouseEnter={e => { if (tab !== t.id) e.currentTarget.style.color = 'var(--text2)'; }}
+              onMouseLeave={e => { if (tab !== t.id) e.currentTarget.style.color = 'var(--text4)'; }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       )}
-
-      {/* Sub-tabs */}
-      <div style={{ display: 'flex', gap: 0 }}>
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => onTabChange(t.id)} style={{
-            padding: '7px 18px', fontSize: 12,
-            fontFamily: "'DM Mono', monospace",
-            cursor: 'pointer', border: 'none', background: 'transparent',
-            color: tab === t.id ? phase.color : 'var(--text4)',
-            borderBottom: `2px solid ${tab === t.id ? phase.color : 'transparent'}`,
-            transition: 'all 0.15s', whiteSpace: 'nowrap',
-          }}>
-            {t.label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }

@@ -4,45 +4,129 @@ interface Props {
   project: Project | null;
   phases: PhaseMeta[];
   statuses: Statuses;
+  onRunPipeline?: () => void;
+  pipelineRunning?: boolean;
 }
 
-export default function MiniTopbar({ project, phases, statuses }: Props) {
+export default function MiniTopbar({ project, phases, statuses, onRunPipeline, pipelineRunning }: Props) {
   const completedCount = phases.filter(p => statuses[p.id] === 'completed').length;
+  const runningPhase = phases.find(p => statuses[p.id] === 'in_progress');
+  const pct = Math.round((completedCount / phases.length) * 100);
+  const p1Done = statuses['P1'] === 'completed';
+  const allDone = completedCount === phases.length;
+  // Only show Run Pipeline when pipeline has already been started (P2+ has activity)
+  // but is currently stopped — this is the recovery/restart case.
+  // Hidden during initial Approve flow (user uses the Approve button in chat instead).
+  const p2PlusActive = phases.filter(p => p.id !== 'P1').some(p =>
+    ['completed', 'in_progress', 'failed'].includes(statuses[p.id] || ''));
+  const showRunBtn = onRunPipeline && p1Done && !pipelineRunning && !allDone && p2PlusActive;
 
   return (
     <div style={{
-      padding: '9px 26px', borderBottom: '1px solid var(--border2)',
-      display: 'flex', alignItems: 'center', gap: 10,
-      background: 'var(--navy)', position: 'sticky', top: 0, zIndex: 5,
+      padding: '0 24px', borderBottom: '1px solid #1e2d40',
+      background: '#080c17', position: 'sticky', top: 0, zIndex: 5,
+      minHeight: 52, display: 'flex', alignItems: 'center', gap: 12,
     }}>
-      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>
-        {project?.name || 'No project'}
-      </span>
-      {project?.design_type && (
+      {/* Project name + type */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
         <span style={{
-          fontSize: 11, color: 'var(--teal)', background: '#0a2a20',
-          border: '1px solid #0d4035', padding: '2px 8px', borderRadius: 3,
-          fontFamily: "'DM Mono', monospace",
+          fontSize: 14, fontWeight: 600, color: 'var(--text)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          maxWidth: 240,
         }}>
-          {project.design_type.toUpperCase()}
+          {project?.name || 'No project'}
         </span>
+        {project?.design_type && (
+          <span style={{
+            fontSize: 10, color: 'var(--teal)', background: 'rgba(0,198,167,0.08)',
+            border: '1px solid rgba(0,198,167,0.25)', padding: '2px 8px', borderRadius: 3,
+            fontFamily: "'DM Mono', monospace", letterSpacing: '0.06em', flexShrink: 0,
+          }}>
+            {project.design_type.toUpperCase()}
+          </span>
+        )}
+      </div>
+
+      {/* Run Pipeline button — shown when P1 done but pipeline not yet running */}
+      {showRunBtn && (
+        <button
+          onClick={onRunPipeline}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 14px', borderRadius: 5,
+            background: 'rgba(0,198,167,0.12)',
+            border: '1px solid rgba(0,198,167,0.4)',
+            color: '#00c6a7', fontSize: 11,
+            fontFamily: "'DM Mono', monospace", fontWeight: 700,
+            cursor: 'pointer', letterSpacing: '0.05em',
+            transition: 'all 0.2s', flexShrink: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.22)'; e.currentTarget.style.boxShadow = '0 0 12px rgba(0,198,167,0.3)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.12)'; e.currentTarget.style.boxShadow = 'none'; }}
+        >
+          ▶ Run Pipeline
+        </button>
       )}
 
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ fontSize: 11, color: 'var(--text4)' }}>
-          {completedCount} / {phases.length}
-        </span>
-        <div style={{ display: 'flex', gap: 3 }}>
-          {phases.map(p => (
-            <div key={p.id} title={p.code} style={{
-              width: 16, height: 4, borderRadius: 2,
-              background: statuses[p.id] === 'completed' ? p.color
-                : statuses[p.id] === 'in_progress' ? p.color + '88'
-                : 'var(--panel2)',
-              transition: 'background 0.3s',
-            }} />
-          ))}
+      {/* Running indicator */}
+      {runningPhase && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <div style={{
+            width: 7, height: 7, borderRadius: '50%',
+            background: runningPhase.color,
+            boxShadow: `0 0 8px ${runningPhase.color}`,
+            animation: 'pulse 1.5s ease infinite',
+          }} />
+          <span style={{ fontSize: 11, color: runningPhase.color, fontFamily: "'DM Mono', monospace", letterSpacing: '0.04em' }}>
+            {runningPhase.code} running
+          </span>
         </div>
+      )}
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Phase progress pills */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 10, color: 'var(--text4)', fontFamily: "'DM Mono', monospace", marginRight: 4 }}>
+          {pct}%
+        </span>
+        <div style={{ display: 'flex', gap: 2.5 }}>
+          {phases.map(p => {
+            const s = statuses[p.id];
+            const isDone = s === 'completed';
+            const isRunning = s === 'in_progress';
+            return (
+              <div
+                key={p.id}
+                title={`${p.code} — ${p.name}: ${s || 'pending'}`}
+                style={{
+                  width: 20, height: 6, borderRadius: 3,
+                  background: isDone
+                    ? p.color
+                    : isRunning
+                    ? p.color + '77'
+                    : '#1e2d40',
+                  transition: 'background 0.4s',
+                  boxShadow: isRunning ? `0 0 6px ${p.color}55` : 'none',
+                  position: 'relative',
+                  overflow: isRunning ? 'hidden' : 'visible',
+                }}
+              >
+                {isRunning && (
+                  <div style={{
+                    position: 'absolute', inset: 0, borderRadius: 3,
+                    background: `linear-gradient(90deg, transparent, ${p.color}cc, transparent)`,
+                    animation: 'shimmer 1.5s linear infinite',
+                  }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text4)', fontFamily: "'DM Mono', monospace", marginLeft: 4 }}>
+          {completedCount}/{phases.length}
+        </span>
       </div>
     </div>
   );

@@ -331,7 +331,8 @@ function PhaseDetails({ phase, color, collapsed = false }: { phase: PhaseMeta; c
 
 export default function DocumentsView({ project, phase, status, pipelineRunning }: Props) {
   const [files, setFiles] = useState<DocFile[]>([]);
-  const [loadingList, setLoadingList] = useState(false);
+  const [loadingList, setLoadingList] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);   // true after first successful fetch
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
@@ -347,7 +348,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     if (!project) return;
     if (!silent) { setLoadingList(true); setError(null); }
     api.listDocuments(project.id)
-      .then(list => { setFiles(list); if (!silent) setLoadingList(false); })
+      .then(list => {
+        setFiles(list);
+        setLoadingList(false);
+        setHasLoaded(true);
+      })
       .catch((err: Error) => {
         const msg = err?.message || 'Unknown error';
         if (!silent) {
@@ -355,12 +360,21 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           else if (msg.includes('HTTP 500')) setError('Server error (HTTP 500): ' + msg);
           else if (msg.includes('HTTP 405')) setError('Method not allowed (HTTP 405). Restart the backend.');
           else setError('API error: ' + msg);
-          setLoadingList(false);
         }
+        setLoadingList(false);
       });
   }, [project]);
 
-  useEffect(() => { fetchList(); }, [project, status]);
+  // Initial load — show spinner once. After first load, status changes use silent refresh
+  // so "Loading documents..." never re-appears just because a phase ticked to completed.
+  useEffect(() => {
+    if (!hasLoaded) {
+      fetchList(false);   // show spinner on very first mount only
+    } else {
+      fetchList(true);    // silent refresh when status/project changes later
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, status]);
 
   useEffect(() => {
     const shouldRefresh = pipelineRunning || status === 'in_progress';

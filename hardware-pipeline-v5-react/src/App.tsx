@@ -34,6 +34,27 @@ export default function App() {
   // Ref to handleP1Complete so refreshStatuses can call it without circular dep
   const handleP1CompleteRef = useRef<() => void>(() => {});
 
+  // ── F5 / reload persistence ─────────────────────────────────────────────────
+  // Restore last-used project from sessionStorage so F5 doesn't send the user
+  // back to the landing page.
+  useEffect(() => {
+    const saved = sessionStorage.getItem('hw-pipeline-project-id');
+    if (saved) {
+      api.getProject(parseInt(saved))
+        .then(p => handleLoadProject(p))
+        .catch(() => sessionStorage.removeItem('hw-pipeline-project-id'));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (project) {
+      sessionStorage.setItem('hw-pipeline-project-id', String(project.id));
+    } else {
+      sessionStorage.removeItem('hw-pipeline-project-id');
+    }
+  }, [project]);
+
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
@@ -180,7 +201,7 @@ export default function App() {
       const firstIncomplete = PHASES.findIndex(ph => !ph.manual && !done.includes(ph.id));
       const idx = firstIncomplete >= 0 ? firstIncomplete : 0;
       setSelectedPhaseIdx(idx);
-      setTab(PHASES[idx].id === 'P1' ? 'chat' : 'documents');
+      setTab(PHASES[idx].id === 'P1' ? 'chat' : 'details');
 
       // Auto-start pipeline if P1 is done but P2-P8 are all still pending
       // (handles page reload or returning to a partially-run project)
@@ -282,6 +303,7 @@ export default function App() {
             tab={tab}
             onTabChange={setTab}
             onExecute={() => handleExecutePhase(selectedPhase.id)}
+            pipelineRunning={hasRunning}
           />
           <div style={{ padding: '0 26px 26px' }}>
             {/* ChatView: only for P1 — kept mounted while on P1 so state is preserved */}
