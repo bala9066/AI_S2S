@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { Project, Statuses, AppMode, CenterTab } from './types';
+import type { Project, Statuses, StatusesRaw, AppMode, CenterTab } from './types';
 import type { ChatMessage } from './views/ChatView';
 import { PHASES, isUnlocked } from './data/phases';
 import { api } from './api';
@@ -23,6 +23,8 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [completedIds, setCompletedIds] = useState<string[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // Raw status entries with updated_at timestamps — used for staleness detection
+  const [statusesRaw, setStatusesRaw] = useState<StatusesRaw>({});
 
   // Reactive polling speed — 2s when running, 5s when idle
   const [hasRunning, setHasRunning] = useState(false);
@@ -64,11 +66,14 @@ export default function App() {
   const refreshStatuses = useCallback(async () => {
     if (!project) return;
     try {
-      const s = await api.getStatus(project.id);
-      const prevP1 = prevP1StatusRef.current;
+      const [s, raw] = await Promise.all([
+        api.getStatus(project.id),
+        api.getStatusRaw(project.id),
+      ]);
       prevP1StatusRef.current = s['P1'];
 
       setStatuses(s);
+      setStatusesRaw(raw);
       const done = PHASES.filter(p => s[p.id] === 'completed').map(p => p.id);
       setCompletedIds(done);
       const running = Object.values(s).some(v => v === 'in_progress');
@@ -242,6 +247,22 @@ export default function App() {
   const selectedPhase = PHASES[selectedPhaseIdx];
   const selectedStatus = statuses[selectedPhase?.id] || 'pending';
 
+  // Staleness: a downstream phase is "stale" if P1 was re-approved AFTER that phase last ran.
+  // We compare updated_at timestamps: if P1.updated_at > phase.updated_at, the phase is stale.
+  const stalePhaseIds: string[] = (() => {
+    const p1Updated = statusesRaw['P1']?.updated_at;
+    if (!p1Updated) return [];
+    const p1Time = new Date(p1Updated).getTime();
+    return PHASES
+      .filter(p => !p.manual && p.id !== 'P1' && statuses[p.id] === 'completed')
+      .filter(p => {
+        const phaseUpdated = statusesRaw[p.id]?.updated_at;
+        if (!phaseUpdated) return false;
+        return p1Time > new Date(phaseUpdated).getTime();
+      })
+      .map(p => p.id);
+  })();
+
   if (mode === 'landing') {
     return (
       <>
@@ -274,6 +295,7 @@ export default function App() {
         selectedIdx={selectedPhaseIdx}
         statuses={statuses}
         completedIds={completedIds}
+        stalePhaseIds={stalePhaseIds}
         onSelect={handleSelectPhase}
         onLanding={() => {
           setMode('landing');
@@ -304,6 +326,7 @@ export default function App() {
             onTabChange={setTab}
             onExecute={() => handleExecutePhase(selectedPhase.id)}
             pipelineRunning={hasRunning}
+            isStale={stalePhaseIds.includes(selectedPhase?.id)}
           />
           <div style={{ padding: '0 26px 26px' }}>
             {/* ChatView: only for P1 — kept mounted while on P1 so state is preserved */}

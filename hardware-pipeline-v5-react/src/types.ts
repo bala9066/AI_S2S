@@ -1,5 +1,12 @@
 export type PhaseStatusValue = 'pending' | 'in_progress' | 'completed' | 'failed' | 'draft_pending';
 
+export interface PhaseStatusEntry {
+  status: PhaseStatusValue;
+  updated_at?: string; // ISO string from backend
+}
+
+export type StatusesRaw = Record<string, PhaseStatusEntry>;
+
 export interface Project {
   id: number;
   name: string;
@@ -37,5 +44,5 @@ export interface PhaseMeta {
   externalTool?: string;
 }
 
-export type CenterTab = 'chat' | 'details' | 'metrics' | 'documents';
+export type CenterTab = 'chat' | 'documents';
 export type AppMode = 'landing' | 'pipeline';

@@ -7,9 +7,10 @@ interface Props {
   onTabChange: (t: CenterTab) => void;
   onExecute?: () => void;
   pipelineRunning?: boolean;
+  isStale?: boolean;
 }
 
-export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute, pipelineRunning }: Props) {
+export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute, pipelineRunning, isStale = false }: Props) {
   const isComplete = status === 'completed';
   const isRunning = status === 'in_progress';
   const isFailed = status === 'failed';
@@ -107,6 +108,19 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               }}>
                 {phase.time}
               </span>
+
+              {/* Stale badge */}
+              {isStale && !isRunning && (
+                <span style={{
+                  fontSize: 10, padding: '2px 9px', borderRadius: 12,
+                  color: '#f59e0b',
+                  background: 'rgba(245,158,11,0.1)',
+                  border: '1px solid rgba(245,158,11,0.3)',
+                  letterSpacing: '0.06em',
+                }}>
+                  ⚠ STALE
+                </span>
+              )}
             </div>
 
             {/* Phase name */}
@@ -141,6 +155,46 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               >
                 ▶ Execute {phase.code}
               </button>
+            )}
+
+            {/* Stale warning + re-run button */}
+            {isStale && !isRunning && !pipelineRunning && (
+              <div style={{
+                marginTop: 12,
+                padding: '10px 14px', borderRadius: 7,
+                background: 'rgba(245,158,11,0.07)',
+                border: '1px solid rgba(245,158,11,0.28)',
+                display: 'flex', alignItems: 'center', gap: 12,
+                flexWrap: 'wrap',
+              }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#f59e0b', marginBottom: 2, fontFamily: "'DM Mono', monospace" }}>
+                    ⚠ Requirements updated
+                  </div>
+                  <div style={{ fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.5 }}>
+                    P1 was re-approved after this phase last ran. Re-run to regenerate with updated requirements.
+                  </div>
+                </div>
+                {onExecute && !phase.manual && (
+                  <button
+                    onClick={onExecute}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      padding: '7px 16px', borderRadius: 6,
+                      background: 'rgba(245,158,11,0.15)',
+                      border: '1px solid rgba(245,158,11,0.4)',
+                      color: '#f59e0b', fontSize: 11.5,
+                      fontFamily: "'DM Mono', monospace", fontWeight: 700,
+                      cursor: 'pointer', letterSpacing: '0.05em',
+                      transition: 'all 0.2s', whiteSpace: 'nowrap',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.22)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(245,158,11,0.15)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+                  >
+                    ↺ Re-run {phase.code}
+                  </button>
+                )}
+              </div>
             )}
 
             {/* Running indicator — replaces execute button while running */}
