@@ -85,7 +85,7 @@ class DocumentAgent(BaseAgent):
         super().__init__(
             phase_number="P2",
             phase_name="HRS Generation",
-            model=settings.fast_model,  # Haiku for speed on large doc generation
+            model=settings.primary_model,  # Use primary model for quality document generation
             max_tokens=8192,
         )
         self.hrs_generator = HRSGenerator()
@@ -115,10 +115,10 @@ class DocumentAgent(BaseAgent):
         user_message = (
             f"Generate a complete IEEE 29148:2018 Hardware Requirements Specification for:\n\n"
             f"**Project:** {project_name}\n\n"
-            f"## Phase 1 Requirements\n{requirements_content[:5000]}\n\n"
-            f"## Block Diagram\n{block_diagram[:2000] if block_diagram else 'Not captured.'}\n\n"
-            f"## System Architecture\n{architecture[:2000] if architecture else 'Not captured.'}\n\n"
-            f"## Component Recommendations\n{components[:3000] if components else 'Not captured.'}\n\n"
+            f"## Phase 1 Requirements\n{requirements_content[:8000]}\n\n"
+            f"## Block Diagram\n{block_diagram[:3000] if block_diagram else 'Not captured.'}\n\n"
+            f"## System Architecture\n{architecture[:3000] if architecture else 'Not captured.'}\n\n"
+            f"## Component Recommendations\n{components[:5000] if components else 'Not captured.'}\n\n"
             "Generate ALL sections per the IEEE 29148 structure in your system prompt. "
             "Be thorough and project-specific. Include real power calculations, interface tables, "
             "and Mermaid diagrams. Do NOT skip any section."
@@ -131,7 +131,8 @@ class DocumentAgent(BaseAgent):
             self.log(f"LLM HRS generation failed: {e} — falling back to template", "warning")
 
         # FALLBACK: template generator if LLM failed or returned too little
-        if not hrs_content or len(hrs_content) < 800:
+        # Section-by-section generation produces several thousand chars minimum; < 2000 means most sections failed
+        if not hrs_content or len(hrs_content) < 2000:
             structured_requirements = await self._extract_requirements(requirements_content, project_name)
             component_data = await self._extract_components(components)
             metadata = {
@@ -160,30 +161,151 @@ class DocumentAgent(BaseAgent):
         }
 
     async def _generate_hrs(self, user_message: str, project_name: str) -> str:
-        """Generate HRS, potentially in multiple LLM calls for long documents."""
+        """Generate HRS section-by-section to avoid token-limit truncation.
+
+        Each major IEEE 29148 section is generated in its own LLM call.
+        Sections are concatenated to produce a complete, untruncated document.
+        """
         system = self.get_system_prompt({})
 
-        response = await self.call_llm(
-            messages=[{"role": "user", "content": user_message}],
-            system=system,
-        )
+        # Context block injected into every section call
+        context_block = user_message
 
-        hrs_content = response.get("content", "")
+        sections = [
+            (
+                "Section 1 — Introduction",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 1 of the HRS:\n"
+                    "# 1. Introduction\n"
+                    "## 1.1 Purpose\n## 1.2 Scope\n## 1.3 Definitions, Acronyms, and Abbreviations\n"
+                    "## 1.4 References\n## 1.5 Overview\n\n"
+                    "Be specific to the project. Include a full definitions table. 2-4 pages."
+                ),
+            ),
+            (
+                "Section 2 — System Overview",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 2 of the HRS:\n"
+                    "# 2. System Overview\n"
+                    "## 2.1 System Description\n## 2.2 System Block Diagram\n"
+                    "## 2.3 System Architecture\n## 2.4 Operating Environment\n\n"
+                    "Include a Mermaid block diagram. Describe the full system architecture in detail. 4-6 pages."
+                ),
+            ),
+            (
+                "Section 3a — Functional & Performance Requirements",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 3.1 and 3.2 of the HRS:\n"
+                    "## 3.1 Functional Requirements\n"
+                    "## 3.2 Performance Requirements\n\n"
+                    "Each requirement MUST have a unique REQ-HW-xxx ID, description, rationale, and priority. "
+                    "List at least 15-20 functional requirements and 8-10 performance requirements with "
+                    "specific measurable values. Use markdown tables where helpful."
+                ),
+            ),
+            (
+                "Section 3b — Interface, Environmental, Power & Physical Requirements",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Sections 3.3 through 3.6 of the HRS:\n"
+                    "## 3.3 Interface Requirements\n### 3.3.1 External Interfaces\n"
+                    "### 3.3.2 Internal Interfaces\n### 3.3.3 Communication Interfaces\n"
+                    "## 3.4 Environmental Requirements\n"
+                    "## 3.5 Power Requirements\n"
+                    "## 3.6 Physical Requirements\n\n"
+                    "Include detailed pin tables for interfaces. Include power budget table with each rail "
+                    "(voltage, typical current, max current, power). Include thermal requirements. "
+                    "All requirements must have REQ-HW-xxx IDs."
+                ),
+            ),
+            (
+                "Section 4 — Design Constraints",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 4 of the HRS:\n"
+                    "# 4. Design Constraints\n"
+                    "## 4.1 Standards Compliance\n## 4.2 Component Constraints\n## 4.3 Manufacturing Constraints\n\n"
+                    "List specific standards (IPC-2221, IPC-7711, RoHS, REACH, FCC, CE, UL). "
+                    "Include component sourcing constraints, lifecycle considerations. 3-4 pages."
+                ),
+            ),
+            (
+                "Section 5 — Verification Requirements",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 5 of the HRS:\n"
+                    "# 5. Verification Requirements\n"
+                    "## 5.1 Test Requirements\n## 5.2 Analysis Requirements\n## 5.3 Inspection Requirements\n\n"
+                    "Include a detailed test plan with test cases for key requirements. "
+                    "Specify which requirements are verified by test, analysis, or inspection. "
+                    "Use a table: REQ-ID | Test Method | Pass Criteria | Priority. 5-8 pages."
+                ),
+            ),
+            (
+                "Section 6 — Bill of Materials",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 6 (Preliminary BOM) of the HRS:\n"
+                    "# 6. Bill of Materials (Preliminary)\n\n"
+                    "Create a detailed BOM table with columns: Item No | Reference Designator | "
+                    "Part Number | Description | Manufacturer | Qty | Unit Cost (USD) | Total Cost | Notes.\n"
+                    "Include ALL major components: ICs, passives, connectors, power components, crystals, etc. "
+                    "Group by category. Include a total cost summary. 3-5 pages."
+                ),
+            ),
+            (
+                "Section 7 — Traceability Matrix",
+                (
+                    f"{context_block}\n\n"
+                    "Write ONLY Section 7 (Traceability Matrix) of the HRS:\n"
+                    "# 7. Traceability Matrix\n\n"
+                    "Create a comprehensive requirement traceability matrix as a markdown table:\n"
+                    "REQ-ID | Requirement Summary | Source | Verification Method | Phase | Status\n"
+                    "Include ALL REQ-HW-xxx requirements from the document. "
+                    "Minimum 25-30 rows. End with a summary count by verification method. 4-6 pages."
+                ),
+            ),
+        ]
 
-        # If the document seems truncated, ask for continuation
-        if response.get("stop_reason") == "max_tokens":
-            self.log("HRS truncated, requesting continuation...")
-            continuation = await self.call_llm(
-                messages=[
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": hrs_content},
-                    {"role": "user", "content": "Continue from where you left off. Do not repeat any sections."},
-                ],
-                system=system,
-            )
-            hrs_content += "\n" + continuation.get("content", "")
+        all_sections: list[str] = []
 
-        return hrs_content
+        for section_name, section_prompt in sections:
+            self.log(f"Generating HRS {section_name}...")
+            try:
+                resp = await self.call_llm(
+                    messages=[{"role": "user", "content": section_prompt}],
+                    system=system,
+                )
+                section_text = resp.get("content", "")
+
+                # If this section was also truncated, request one continuation
+                if resp.get("stop_reason") == "max_tokens" and section_text:
+                    self.log(f"  {section_name} truncated — continuing...")
+                    cont = await self.call_llm(
+                        messages=[
+                            {"role": "user", "content": section_prompt},
+                            {"role": "assistant", "content": section_text},
+                            {"role": "user", "content": "Continue the section from where you stopped. Do not repeat already-written content."},
+                        ],
+                        system=system,
+                    )
+                    section_text += "\n" + cont.get("content", "")
+
+                if section_text.strip():
+                    all_sections.append(section_text.strip())
+            except Exception as e:
+                self.log(f"  {section_name} generation failed: {e}", "warning")
+                # Don't fail the whole document — skip and continue
+                continue
+
+        if not all_sections:
+            return ""
+
+        # Join sections with a horizontal rule for readability
+        return "\n\n---\n\n".join(all_sections)
 
     def _load_file(self, path: Path) -> str:
         """Load a file's content or return empty string."""
