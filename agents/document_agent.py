@@ -75,6 +75,8 @@ Generate a COMPLETE, DETAILED Hardware Requirements Specification following this
 - Reference specific component part numbers from the recommendations
 - Use tables for structured data (BOM, pin assignments, power budget)
 - Target 50-100 pages of content (be thorough)
+- Do NOT add any boilerplate approval/review disclaimers such as
+  "This document shall be reviewed and approved by..." — omit all such lines
 """
 
 
@@ -149,6 +151,15 @@ class DocumentAgent(BaseAgent):
                 component_data=component_data,
                 metadata=metadata,
             )
+
+        # Strip boilerplate review/approval disclaimer lines the LLM sometimes adds
+        import re as _re
+        hrs_content = _re.sub(
+            r'\*?This (?:document|HRS|specification) shall be reviewed and approved[^\n]*\n?',
+            '',
+            hrs_content,
+            flags=_re.IGNORECASE,
+        ).strip()
 
         # Save output
         hrs_file = self.hrs_generator.save(hrs_content, output_dir, project_name)

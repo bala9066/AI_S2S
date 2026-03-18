@@ -252,20 +252,9 @@ export default function App() {
       setSelectedPhaseIdx(idx);
       setTab(PHASES[idx].id === 'P1' ? 'chat' : 'details');
 
-      // Auto-start pipeline if P1 is done but P2-P8 are all still pending
-      // (handles page reload or returning to a partially-run project)
-      const autoPhaseIds = ['P2', 'P3', 'P4', 'P6', 'P8a', 'P8b', 'P8c'];
-      const p2Plus = autoPhaseIds.map(id => s[id] || 'pending');
-      const noneStarted = p2Plus.every(st => st === 'pending' || st === 'failed');
-      if (s['P1'] === 'completed' && noneStarted && !running) {
-        pipelineStartedRef.current = true;
-        // Slight delay so state settles before firing
-        setTimeout(() => {
-          api.runPipeline(p.id)
-            .then(() => { setHasRunning(true); })
-            .catch(() => { /* user can click Run Pipeline in topbar */ });
-        }, 800);
-      }
+      // NOTE: Do NOT auto-start the pipeline here. The user must explicitly click
+      // "Approve & Start Pipeline" in the P1 chat view. This gives them a chance to
+      // review the generated requirements and request changes before committing.
     } catch (_) { setTab('documents'); }
   };
 

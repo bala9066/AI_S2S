@@ -88,7 +88,15 @@ export const api = {
       `/api/v1/projects/${id}/chat`,
       { method: 'POST', body: JSON.stringify({ message }) }
     );
-    const text = result.response || result.message || result.content || JSON.stringify(result);
+    // Use `result.response` if it is defined (even if it's an empty string).
+    // Only fall through to other fields or JSON.stringify when the key is truly absent.
+    const text = (result.response != null)
+      ? result.response
+      : (result.message != null)
+        ? result.message
+        : (result.content != null)
+          ? result.content
+          : JSON.stringify(result);
     return { text, phaseComplete: !!result.phase_complete };
   },
 

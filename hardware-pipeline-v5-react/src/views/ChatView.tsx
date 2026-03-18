@@ -456,11 +456,16 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     setInput('');
     setLoading(true);
     setStreaming('');
+    // Hide the approve card while the user is actively chatting — it will
+    // re-appear after the next AI response if phaseComplete is still true.
+    if (showApproveCard && !approveClicked) setShowApproveCard(false);
 
     try {
       const result = await api.chat(project.id, text);
       // Strip backend boilerplate referencing non-existent UI buttons
-      const cleanText = cleanAiText(result.text);
+      // If the backend returned an empty response, show a helpful fallback
+      const rawText = result.text || 'I processed your request. Check the Documents tab to see updated outputs, or try rephrasing your request.';
+      const cleanText = cleanAiText(rawText);
       // Typewriter animation — 16ms/6chars keeps it fast with fewer setState calls
       let idx = 0;
       const interval = setInterval(() => {
@@ -609,24 +614,24 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
               </div>
 
               {/* Approve button */}
-              <div style={{ padding: '12px 18px' }}>
+              <div style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
                 <button
                   onClick={() => { setApproveClicked(true); onPhaseComplete(); }}
                   style={{
-                    width: '100%', padding: '12px 20px', borderRadius: 6,
+                    padding: '8px 18px', borderRadius: 6,
                     border: 'none', background: color,
-                    color: '#070b14', fontSize: 13.5, fontFamily: "'Syne',sans-serif",
+                    color: '#070b14', fontSize: 12.5, fontFamily: "'Syne',sans-serif",
                     fontWeight: 800, cursor: 'pointer', letterSpacing: '0.03em',
-                    transition: 'all 0.15s', display: 'flex', alignItems: 'center',
-                    justifyContent: 'center', gap: 8,
+                    transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 6,
+                    flexShrink: 0,
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
                   onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'none'; }}
                 >
-                  <span style={{ fontSize: 15 }}>&#10003;</span>
-                  Approve &amp; Start Full Pipeline (P2 &#8594; P8c) &#8594;
+                  <span style={{ fontSize: 13 }}>&#10003;</span>
+                  Approve &amp; Start Pipeline (P2&#8594;P8c)
                 </button>
-                <div style={{ fontSize: 10.5, color: 'var(--text4)', textAlign: 'center', marginTop: 6, fontFamily: "'DM Mono',monospace" }}>
+                <div style={{ fontSize: 10.5, color: 'var(--text4)', fontFamily: "'DM Mono',monospace", lineHeight: 1.4 }}>
                   Runs HRS &#x2022; Compliance &#x2022; Netlist &#x2022; GLR &#x2022; SRS &#x2022; SDD &#x2022; Code Review
                 </div>
               </div>
