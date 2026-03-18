@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 from agents.base_agent import BaseAgent
+from agents.sbom_generator import generate_sbom
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -96,14 +97,38 @@ Generate a complete compliance report with:
 
         report_content = response.get("content", "")
 
-        # Save report
+        # Save compliance report
         report_file = output_dir / "compliance_report.md"
         report_file.write_text(report_content, encoding="utf-8")
 
         self.log(f"Compliance report generated: {len(report_content)} chars")
 
+        outputs = {report_file.name: report_content}
+
+        # --- CycloneDX SBOM generation ---
+        try:
+            self.log("Generating CycloneDX 1.4 SBOM...")
+            sbom_result = generate_sbom(
+                project_name=project_name,
+                output_dir=output_dir,
+                components_text=components,
+                requirements_text=requirements,
+            )
+            outputs["sbom.json"] = sbom_result["sbom_json"]
+            outputs["sbom_summary.md"] = sbom_result["sbom_summary"]
+            self.log(
+                f"SBOM generated: {sbom_result['component_count']} components "
+                f"-> {sbom_result['sbom_path']}"
+            )
+        except Exception as e:
+            self.log(f"SBOM generation failed (non-fatal): {e}", "warning")
+
         return {
-            "response": "Compliance validation complete.",
+            "response": (
+                f"Compliance validation complete. "
+                f"CycloneDX SBOM generated with "
+                f"{len([k for k in outputs if k == 'sbom.json'])} SBOM file(s)."
+            ),
             "phase_complete": True,
-            "outputs": {report_file.name: report_content},
+            "outputs": outputs,
         }

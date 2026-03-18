@@ -50,13 +50,13 @@ export const PHASES: PhaseMeta[] = [
       { label: 'EMC pre-compliance check', time: '45s', detail: 'IEC 61000 series: conducted/radiated emissions estimated' },
       { label: 'Safety standard mapping', time: '30s', detail: 'ISO 26262, IEC 61508, MIL-STD-461 rules applied per domain' },
       { label: 'Generate compliance matrix', time: '20s', detail: 'PASS / WARN / FAIL per standard with evidence links' },
-      { label: 'Cost impact estimation', time: '15s', detail: 'Remediation cost per non-conformance calculated' },
-      { label: 'Compliance report export', time: '10s', detail: 'Full report with certificate readiness score generated' },
+      { label: 'Generate CycloneDX SBOM', time: '8s', detail: 'CycloneDX 1.4 JSON SBOM with component PURLs — importable into Dependency-Track' },
+      { label: 'Compliance report export', time: '10s', detail: 'Full report + SBOM exported; certificate readiness score included' },
     ],
     metrics: { timeSaved: '1 week → 4 min', errorReduction: '91%', confidence: '97%', costImpact: 'Rs 6.8L/yr' },
     inputs: ['HRS from P2', 'BOM from P1', 'Design type'],
-    outputs: ['Compliance matrix (PASS/WARN/FAIL)', 'Compliance report (.md)', 'Certificate readiness score'],
-    tools: ['Claude AI', 'RoHS/REACH DB', 'IEC 61000 rules engine', 'ISO 26262 checker'],
+    outputs: ['Compliance matrix (PASS/WARN/FAIL)', 'Compliance report (.md)', 'CycloneDX SBOM (.json)', 'Certificate readiness score'],
+    tools: ['Claude AI', 'RoHS/REACH DB', 'IEC 61000 rules engine', 'cyclonedx-bom'],
   },
   {
     id: 'P4', code: 'P04', num: 4,
@@ -175,17 +175,18 @@ export const PHASES: PhaseMeta[] = [
     tagline: 'MISRA-C + Clang-Tidy static analysis',
     color: '#8b5cf6', auto: true, manual: false, time: '~4 min',
     subSteps: [
-      { label: 'Load firmware source files', time: '8s', detail: 'C/C++ source files scanned from project output directory' },
-      { label: 'Run MISRA-C static analysis', time: '45s', detail: '143 MISRA-C:2012 rules checked, violations classified' },
-      { label: 'Run Clang-Tidy checks', time: '40s', detail: 'Modernize, bugprone, performance, readability checks' },
-      { label: 'Classify issues by severity', time: '15s', detail: 'Critical / Major / Minor / Advisory severity assigned' },
-      { label: 'Generate fix suggestions', time: '50s', detail: 'Claude proposes specific code fixes for each violation' },
-      { label: 'Export review report', time: '10s', detail: 'Full report with issue list, metrics, fix suggestions' },
+      { label: 'Load firmware source files', time: '8s', detail: 'C/C++ source files from P8b driver generator scanned' },
+      { label: 'Run Cppcheck static analysis', time: '45s', detail: 'Real cppcheck binary: null pointers, memory leaks, MISRA rule mapping' },
+      { label: 'Run Lizard complexity analysis', time: '25s', detail: 'Cyclomatic complexity per function — MISRA Rule 15.5 violations flagged' },
+      { label: 'Generate PySide6 Qt GUI', time: '60s', detail: 'Runnable PySide6 GUI with serial dashboard, control panels, dark theme' },
+      { label: 'LLM MISRA-C 2023 annotations', time: '50s', detail: 'Claude maps real tool findings to exact MISRA-C 2023 rule numbers + fixes' },
+      { label: 'Git commit + GitHub PR', time: '12s', detail: 'All artefacts committed; PR opened with review summary in description' },
+      { label: 'Export review report', time: '8s', detail: 'code_review_report.md + gui_application.py + git_summary.md' },
     ],
     metrics: { timeSaved: '3 days → 4 min', errorReduction: '83%', confidence: '95%', costImpact: 'Rs 4.8L/yr' },
-    inputs: ['Firmware source files (.c/.h)', 'MISRA-C ruleset', 'Coding standard config'],
-    outputs: ['Code review report (.md)', 'Issue list with severities', 'Fix suggestions'],
-    tools: ['Claude AI', 'Clang-Tidy', 'MISRA-C checker', 'cppcheck'],
+    inputs: ['Firmware source files (.c/.h)', 'SDD from P8b', 'SRS from P8a'],
+    outputs: ['Code review report (.md)', 'PySide6 Qt GUI (.py)', 'Git commit + PR URL', 'CycloneDX SBOM reference'],
+    tools: ['Cppcheck', 'Lizard', 'cpplint', 'Claude AI (MISRA-C 2023)', 'gitpython', 'PyGithub', 'PySide6'],
   },
 ];
 
@@ -221,14 +222,14 @@ export function isUnlocked(phase: PhaseMeta, completedIds: string[]): boolean {
 export const PHASE_DOCUMENTS: Record<string, string[]> = {
   'P1': ['requirements.md', 'block_diagram.md', 'architecture.md', 'component_recommendations.md'],
   'P2': ['HRS_{project_name}.md', 'HRS_{project_name}.docx', 'HRS_{project_name}.pdf'],
-  'P3': ['compliance_report.md', 'compliance_matrix.csv'],
+  'P3': ['compliance_report.md', 'compliance_matrix.csv', 'sbom.json', 'sbom_summary.md'],
   'P4': ['netlist.json', 'netlist_visual.md', 'drc_report.md'],
   'P5': [], // Manual phase - no AI-generated documents
   'P6': ['glr_specification.md', 'rtl_constraints.xdc', 'pin_assignments.csv'],
   'P7': [], // Manual phase - no AI-generated documents
   'P8a': ['SRS_{project_name}.md', 'SRS_{project_name}.docx', 'traceability_matrix.csv'],
   'P8b': ['SDD_{project_name}.md', 'SDD_{project_name}.docx'],
-  'P8c': ['code_review_report.md', 'misra_violations.json', 'fix_suggestions.md'],
+  'P8c': ['code_review_report.md', 'gui_application.py', 'GUI_README.md', 'git_summary.md'],
 };
 
 // Get documents for the given phase only (not cumulative across prior phases).

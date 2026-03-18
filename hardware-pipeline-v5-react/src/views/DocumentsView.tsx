@@ -27,12 +27,14 @@ const EXT_COLOR: Record<string, string> = {
   md: '#00c6a7', docx: '#3b82f6', pdf: '#f59e0b',
   json: '#f59e0b', net: '#8b5cf6', txt: '#94a3b8',
   html: '#f59e0b', csv: '#10b981', xdc: '#8b5cf6',
+  py: '#3b82f6', c: '#00c6a7', h: '#94a3b8', cpp: '#00c6a7',
 };
 
 const EXT_LABEL: Record<string, string> = {
   md: 'Markdown', docx: 'Word Doc', pdf: 'PDF',
   json: 'JSON', net: 'Netlist', txt: 'Text',
   html: 'HTML', csv: 'CSV', xdc: 'Constraints',
+  py: 'Python', c: 'C Source', h: 'C Header', cpp: 'C++ Source',
 };
 
 function extColor(ext: string): string { return EXT_COLOR[ext] || '#64748b'; }
@@ -44,7 +46,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const VIEWABLE = new Set(['md', 'txt', 'json', 'html', 'csv', 'net', 'xdc']);
+const VIEWABLE = new Set(['md', 'txt', 'json', 'html', 'csv', 'net', 'xdc', 'py', 'c', 'h', 'cpp']);
 
 // ── Mermaid sanitization ──────────────────────────────────────────────────────
 
@@ -711,6 +713,32 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                 }}>
                   {ext === 'md' || ext === 'txt' ? (
                     <MarkdownRenderer content={contents[file.name]} color={phase.color} />
+                  ) : ext === 'json' ? (
+                    /* JSON: pretty-print with syntax-tinted scrollable pane */
+                    <div>
+                      <div style={{ padding: '8px 22px 4px', background: 'rgba(245,158,11,0.06)', borderBottom: '1px solid rgba(245,158,11,0.15)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 10, color: '#f59e0b', fontFamily: "'DM Mono', monospace", letterSpacing: 1 }}>JSON</span>
+                        {file.name.includes('sbom') && (
+                          <span style={{ fontSize: 10, color: '#10b981', fontFamily: "'DM Mono', monospace", background: 'rgba(16,185,129,0.1)', padding: '2px 7px', borderRadius: 3, border: '1px solid rgba(16,185,129,0.3)' }}>CycloneDX SBOM</span>
+                        )}
+                      </div>
+                      <pre style={{ margin: 0, padding: '14px 22px', fontSize: 11, color: '#f59e0b', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: "'JetBrains Mono', monospace" }}>
+                        {(() => { try { return JSON.stringify(JSON.parse(contents[file.name]), null, 2); } catch { return contents[file.name]; } })()}
+                      </pre>
+                    </div>
+                  ) : ext === 'py' || ext === 'c' || ext === 'cpp' || ext === 'h' ? (
+                    /* Code files: language-labelled monospace block */
+                    <div>
+                      <div style={{ padding: '8px 22px 4px', background: `${extColor(ext)}0d`, borderBottom: `1px solid ${extColor(ext)}25`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 10, color: extColor(ext), fontFamily: "'DM Mono', monospace", letterSpacing: 1 }}>{extLabel(ext).toUpperCase()}</span>
+                        {file.name === 'gui_application.py' && (
+                          <span style={{ fontSize: 10, color: '#8b5cf6', fontFamily: "'DM Mono', monospace", background: 'rgba(139,92,246,0.1)', padding: '2px 7px', borderRadius: 3, border: '1px solid rgba(139,92,246,0.3)' }}>PySide6 Qt GUI • pip install PySide6 pyserial && python {file.name}</span>
+                        )}
+                      </div>
+                      <pre style={{ margin: 0, padding: '14px 22px', fontSize: 11, color: 'var(--text2)', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: "'JetBrains Mono', monospace" }}>
+                        {contents[file.name]}
+                      </pre>
+                    </div>
                   ) : (
                     <pre style={{
                       margin: 0, padding: '18px 22px',

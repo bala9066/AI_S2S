@@ -69,6 +69,12 @@ class Settings:
         self.glm_model = _env("GLM_MODEL", "glm-4.7")
         self.glm_fast_model = _env("GLM_FAST_MODEL", "glm-4.5-air")
 
+        # --- GitHub / Git Integration ---
+        self.github_token = _env("GITHUB_TOKEN", "")
+        self.github_repo = _env("GITHUB_REPO", "")          # e.g. "owner/hardware-pipeline-demo"
+        self.github_repo_url = _env("GITHUB_REPO_URL", "")  # HTTPS clone URL (auto-derived if empty)
+        self.git_enabled = _env_bool("GIT_ENABLED", bool(_env("GITHUB_TOKEN", "")))
+
         # --- Component Search APIs ---
         self.digikey_client_id = _env("DIGIKEY_CLIENT_ID", "")
         self.digikey_client_secret = _env("DIGIKEY_CLIENT_SECRET", "")
