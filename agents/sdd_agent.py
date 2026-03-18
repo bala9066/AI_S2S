@@ -84,7 +84,7 @@ class SDDAgent(BaseAgent):
         super().__init__(
             phase_number="P8b",
             phase_name="SDD Generation",
-            model=settings.primary_model,
+            model=settings.fast_model,  # Structured template doc — fast model sufficient
             max_tokens=8192,
         )
         self.sdd_generator = SDDGenerator()

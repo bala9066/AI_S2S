@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import anthropic
 import httpx
+from openai import AsyncOpenAI
 
 from config import settings
 
@@ -55,10 +56,19 @@ class BaseAgent(ABC):
                 api_key=settings.anthropic_api_key
             )
 
-        # Fallback chain — auto-promote GLM to primary if no Anthropic key
+        # Initialize DeepSeek client (OpenAI-compatible API)
+        self._deepseek_client: Optional[AsyncOpenAI] = None
+        if settings.deepseek_api_key:
+            self._deepseek_client = AsyncOpenAI(
+                api_key=settings.deepseek_api_key,
+                base_url=settings.deepseek_base_url,
+            )
+            logger.info("DeepSeek client initialized — using DeepSeek-V3 as primary LLM")
+
+        # Fallback chain — auto-promote based on available keys
         self.fallback_chain = settings.fallback_chain
-        if not settings.anthropic_api_key and settings.glm_api_key:
-            logger.info("No Anthropic key — using GLM via Z.AI as primary LLM")
+        if not settings.anthropic_api_key and not settings.deepseek_api_key and settings.glm_api_key:
+            logger.info("No Anthropic/DeepSeek key — using GLM via Z.AI as primary LLM")
 
     @abstractmethod
     async def execute(self, project_context: dict, user_input: str) -> dict:
@@ -158,6 +168,8 @@ class BaseAgent(ABC):
 
         if model.startswith("claude"):
             return await self._call_anthropic(model, messages, system, tools, max_tokens)
+        elif model.startswith("deepseek"):
+            return await self._call_deepseek(model, messages, system, tools, max_tokens)
         elif model.startswith("ollama"):
             return await self._call_ollama(model, messages, system, max_tokens)
         elif model.startswith("glm"):
@@ -213,6 +225,90 @@ class BaseAgent(ABC):
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
             },
+        }
+
+    async def _call_deepseek(
+        self,
+        model: str,
+        messages: list[dict],
+        system: str,
+        tools: list[dict],
+        max_tokens: int,
+    ) -> dict:
+        """Call DeepSeek API (OpenAI-compatible).
+
+        DeepSeek-V3 ('deepseek-chat') supports function/tool calling via the
+        OpenAI tools schema.  Tool definitions are converted from Anthropic
+        format → OpenAI format on the fly.
+        """
+        if not self._deepseek_client:
+            raise RuntimeError("DeepSeek client not initialized (missing DEEPSEEK_API_KEY)")
+
+        # Build message list with optional system prompt
+        oai_messages: list[dict] = []
+        if system:
+            oai_messages.append({"role": "system", "content": system})
+        oai_messages.extend(messages)
+
+        # Convert Anthropic tool schema → OpenAI tool schema
+        oai_tools = []
+        for t in tools:
+            oai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema", {}),
+                },
+            })
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": oai_messages,
+            "max_tokens": max_tokens,
+        }
+        if oai_tools:
+            kwargs["tools"] = oai_tools
+            kwargs["tool_choice"] = "auto"
+
+        response = await self._deepseek_client.chat.completions.create(**kwargs)
+
+        choice = response.choices[0]
+        msg = choice.message
+
+        content_text = msg.content or ""
+        tool_calls = []
+
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    input_data = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    input_data = {"raw": tc.function.arguments}
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": input_data,
+                })
+
+        # Map OpenAI finish_reason → Anthropic stop_reason for compatibility
+        finish_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "tool_calls": "tool_use",
+            "content_filter": "end_turn",
+        }
+        stop_reason = finish_map.get(choice.finish_reason or "stop", "end_turn")
+
+        return {
+            "content": content_text,
+            "tool_calls": tool_calls,
+            "stop_reason": stop_reason,
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+            },
+            "model_used": model,
         }
 
     async def _call_ollama(

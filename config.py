@@ -40,12 +40,25 @@ class Settings:
         self.anthropic_api_key = _env("ANTHROPIC_API_KEY", "")
         self.openai_api_key = _env("OPENAI_API_KEY", "")
         self.glm_api_key = _env("GLM_API_KEY", "")
+        self.deepseek_api_key = _env("DEEPSEEK_API_KEY", "")
+
+        # --- DeepSeek ---
+        self.deepseek_base_url = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        # deepseek-chat = DeepSeek-V3 (general), deepseek-reasoner = DeepSeek-R1 (reasoning)
+        self.deepseek_model = _env("DEEPSEEK_MODEL", "deepseek-chat")
+        self.deepseek_fast_model = _env("DEEPSEEK_FAST_MODEL", "deepseek-chat")
 
         # --- LLM Models ---
-        self.primary_model = _env("PRIMARY_MODEL", "glm-4.7")
-        self.fast_model = _env("FAST_MODEL", "glm-4.5-air")
-        self.fallback_model = _env("FALLBACK_MODEL", "ollama/qwen2.5-coder:32b")
-        self.last_resort_model = _env("LAST_RESORT_MODEL", "glm-4.7")
+        # Priority: DeepSeek-V3 > GLM-4.7 > Ollama local > GLM fallback
+        # If DEEPSEEK_API_KEY is set, DeepSeek-V3 becomes primary automatically.
+        _has_deepseek = bool(_env("DEEPSEEK_API_KEY", ""))
+        self.primary_model = _env("PRIMARY_MODEL",
+            "deepseek-chat" if _has_deepseek else "glm-4.7")
+        self.fast_model = _env("FAST_MODEL",
+            "deepseek-chat" if _has_deepseek else "glm-4.5-air")
+        self.fallback_model = _env("FALLBACK_MODEL",
+            "glm-4.7" if _has_deepseek else "ollama/qwen2.5-coder:32b")
+        self.last_resort_model = _env("LAST_RESORT_MODEL", "ollama/qwen2.5-coder:32b")
 
         # --- Ollama (Air-Gap) ---
         self.ollama_base_url = _env("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -106,7 +119,7 @@ class Settings:
 
     @property
     def has_any_llm_key(self) -> bool:
-        return bool(self.anthropic_api_key or self.glm_api_key)
+        return bool(self.anthropic_api_key or self.glm_api_key or self.deepseek_api_key)
 
     @property
     def is_air_gapped(self) -> bool:
@@ -121,6 +134,7 @@ class Settings:
     def get_api_key_status(self) -> dict:
         return {
             "Anthropic": (bool(self.anthropic_api_key), "✅" if self.anthropic_api_key else "⬜"),
+            "DeepSeek": (bool(self.deepseek_api_key), "✅" if self.deepseek_api_key else "⬜"),
             "GLM / Z.AI": (bool(self.glm_api_key), "✅" if self.glm_api_key else "⬜"),
             "OpenAI": (bool(self.openai_api_key), "✅" if self.openai_api_key else "⬜"),
             "DigiKey": (bool(self.digikey_client_id and self.digikey_client_secret), "✅" if self.digikey_client_id else "⬜"),

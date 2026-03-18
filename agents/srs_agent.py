@@ -74,7 +74,7 @@ class SRSAgent(BaseAgent):
         super().__init__(
             phase_number="P8a",
             phase_name="SRS Generation",
-            model=settings.primary_model,
+            model=settings.fast_model,  # Structured template doc — fast model sufficient
             max_tokens=8192,
         )
         self.srs_generator = SRSGenerator()
