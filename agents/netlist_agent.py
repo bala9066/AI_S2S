@@ -200,26 +200,38 @@ Generate the netlist using the generate_netlist tool. Include:
                 metadata=netlist_data.get("metadata", {}),
             )
 
-            # Save using generator's save method
-            netlist_json = self.netlist_generator.save(generator_netlist, output_dir, project_name)
+            # Build outputs through the dict — write_outputs in pipeline_service
+            # handles the actual file writes via StorageAdapter (single write path).
             outputs["netlist.json"] = json.dumps(generator_netlist, indent=2)
 
-            # Generate and save visual markdown
+            # Generate visual markdown with full component/connection tables
             mermaid_diagram = self.netlist_generator.to_mermaid(generator_netlist)
             visual_content = self._build_visual_md(netlist_data, project_name, mermaid_diagram)
-            visual_file = output_dir / "netlist_visual.md"
-            visual_file.write_text(visual_content, encoding="utf-8")
             outputs["netlist_visual.md"] = visual_content
 
-            # Run NetworkX validation
+            # Run NetworkX validation — always store as JSON string (not dict)
             validation = self._validate_netlist(netlist_data)
-            outputs["validation"] = json.dumps(validation, indent=2)
+            outputs["netlist_validation.json"] = json.dumps(validation, indent=2)
 
             self.log(f"Netlist: {len(netlist_data.get('nodes', []))} nodes, {len(netlist_data.get('edges', []))} edges")
 
+        else:
+            # LLM did not call the generate_netlist tool — produce a fallback
+            # document so the phase is never silently "completed" with no output.
+            logger.warning("P4: generate_netlist tool was not called — using fallback")
+            fallback_md = (
+                f"# Logical Netlist — {project_name}\n\n"
+                "**Status:** Netlist generation could not be completed automatically.\n\n"
+                "The AI model did not return structured netlist data. "
+                "Please re-run Phase 4 or verify that Phase 1 requirements are sufficiently detailed.\n\n"
+                "## LLM Response\n\n"
+                f"{response.get('content', '(no response)')}\n"
+            )
+            outputs["netlist_visual.md"] = fallback_md
+
         return {
             "response": response.get("content", "Netlist generated."),
-            "phase_complete": True,
+            "phase_complete": bool(netlist_data),
             "outputs": outputs,
         }
 

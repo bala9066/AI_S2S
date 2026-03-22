@@ -375,7 +375,7 @@ class StaticAnalysisRunner:
                 "| Severity | File | Line | Issue | MISRA Rule |",
                 "|----------|------|------|-------|-----------|",
             ]
-            for f in results["cppcheck"][:30]:  # cap at 30 for readability
+            for f in results["cppcheck"][:100]:  # full findings list
                 misra = f.get("misra_rule", "—")[:60]
                 lines.append(
                     f"| {f['severity']} | `{f['file']}` | {f['line']} "
@@ -410,7 +410,7 @@ class StaticAnalysisRunner:
                 "| Function | File | CC | LOC | Parameters | Status |",
                 "|----------|------|----|-----|-----------|--------|",
             ]
-            for f in results["complexity"][:20]:
+            for f in results["complexity"][:50]:
                 status = "⚠️ VIOLATION" if f["cyclomatic_complexity"] > 10 else "✅ OK"
                 lines.append(
                     f"| `{f['function']}` | `{f['file']}` | {f['cyclomatic_complexity']} "
@@ -443,7 +443,7 @@ class StaticAnalysisRunner:
                 "",
             ]
             # Show top 10 by confidence
-            top = sorted(results["style"], key=lambda x: x.get("confidence", 0), reverse=True)[:10]
+            top = sorted(results["style"], key=lambda x: x.get("confidence", 0), reverse=True)[:30]
             for f in top:
                 lines.append(f"- `{f['file']}:{f['line']}` [{f['category']}] {f['message']}")
             lines.append("")

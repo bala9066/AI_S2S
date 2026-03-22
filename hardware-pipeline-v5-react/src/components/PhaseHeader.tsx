@@ -16,8 +16,8 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
   const isFailed = status === 'failed';
 
   const tabs: { id: CenterTab; label: string; show: boolean }[] = [
-    { id: 'chat',      label: '⚡ Chat',       show: phase.id === 'P1' },
-    { id: 'documents', label: '📄 Documents',  show: true },
+    { id: 'chat',      label: '⚡ Chat',      show: phase.id === 'P1' },
+    { id: 'documents', label: '📄 Documents', show: true },
   ].filter(t => t.show);
 
   // Status pill config
@@ -30,7 +30,7 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
     : { label: phase.manual ? 'MANUAL / EXTERNAL' : 'PENDING', color: 'var(--text4)', bg: 'var(--panel2)', border: 'var(--panel3)', animate: false };
 
   return (
-    <div style={{ borderBottom: '1px solid #1e2d40' }}>
+    <div style={{ borderBottom: '1px solid var(--border2)' }}>
       {/* Phase title area */}
       <div style={{
         padding: '20px 24px 16px',
@@ -197,12 +197,12 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               </div>
             )}
 
-            {/* Running indicator — replaces execute button while running */}
+            {/* Running indicator — shown below badge row while phase executes */}
             {!phase.manual && phase.id !== 'P1' && isRunning && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
                 <div style={{ width: 10, height: 10, borderRadius: '50%', border: `2px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
                 <span style={{ fontSize: 12, color: phase.color, fontFamily: "'DM Mono', monospace" }}>
-                  Running — check Documents tab for output...
+                  AI agent running — see Documents tab for live output
                 </span>
               </div>
             )}
@@ -233,8 +233,8 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
       {tabs.length > 0 && (
         <div style={{
           display: 'flex', padding: '0 24px',
-          borderTop: '1px solid #1a2235',
-          background: '#080c17',
+          borderTop: '1px solid var(--border2)',
+          background: 'var(--navy)',
         }}>
           {tabs.map(t => (
             <button key={t.id} onClick={() => onTabChange(t.id)} style={{

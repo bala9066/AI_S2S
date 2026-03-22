@@ -65,7 +65,7 @@ Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compl
 - Flag any technical constraints that lack a defined solution.
 - IMMEDIATELY call `generate_requirements` tool with full outputs (requirements.md, block_diagram.md, architecture.md, component_recommendations.md) without asking for a draft approval.
 - Do NOT ask questions first — analyze the user input, make assumptions where necessary, establish the requirements, and call the tool.
-- End your response with a summary of the generated requirements.
+- After calling the tool, provide a brief technical commentary: note any design tradeoffs, flagged constraints, or open TBC items. Do NOT just list what the tool already captured — add engineering insight.
 
 ## IMPORTANT RULES:
 - Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
@@ -387,60 +387,126 @@ class RequirementsAgent(BaseAgent):
 
 
     def _build_response_summary(self, tool_input: dict) -> str:
-        """Build a rich markdown summary from generate_requirements tool data.
+        """Build a full in-depth analysis from generate_requirements tool data.
 
-        Called when the LLM produced no significant preamble text before calling
-        the tool (common with terminal_tools pattern). Gives the user a detailed
-        view of what was captured rather than just a "Complete!" banner.
+        Shows everything: all requirements with full detail, all components,
+        all design parameters, both diagrams. No truncation.
         """
         lines = []
 
         # Project summary
         summary = tool_input.get("project_summary", "")
         if summary:
-            lines += ["## Project Summary", "", summary, ""]
+            lines += ["## Project Overview", "", summary, ""]
 
-        # Design parameters table
+        # Design parameters — ALL of them
         params = tool_input.get("design_parameters", {})
         if params:
             lines += ["## Key Design Parameters", "",
-                      "| Parameter | Value |", "|---|---|"]
-            for k, v in list(params.items())[:12]:
+                      "| Parameter | Value |", "|-----------|-------|"]
+            for k, v in params.items():
                 lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
             lines.append("")
 
-        # Requirements summary (first 8)
-        reqs = tool_input.get("requirements", [])
-        if reqs:
-            lines += [f"## Requirements ({len(reqs)} captured)", "",
-                      "| ID | Title | Priority |", "|---|---|---|"]
-            for req in reqs[:8]:
-                lines.append(
-                    f"| {req.get('req_id','')} | {req.get('title','')} "
-                    f"| {req.get('priority','Must have')} |"
-                )
-            if len(reqs) > 8:
-                lines.append(f"| … | *+{len(reqs)-8} more requirements* | |")
-            lines.append("")
-
-        # Components summary (first 5)
-        comps = tool_input.get("component_recommendations", [])
-        if comps:
-            lines += [f"## Component Selections ({len(comps)} components)", ""]
-            for comp in comps[:5]:
-                part = comp.get("primary_part", "TBD")
-                mfr  = comp.get("primary_manufacturer", "")
-                func = comp.get("function", "")
-                lines.append(f"- **{func}**: {part} ({mfr})")
-            if len(comps) > 5:
-                lines.append(f"- *…+{len(comps)-5} more components in component_recommendations.md*")
-            lines.append("")
-
-        # Block diagram (if present)
+        # Block diagram
         block = tool_input.get("block_diagram_mermaid", "")
         if block:
             lines += ["## System Block Diagram", "",
                       "```mermaid", block.strip(), "```", ""]
+
+        # Architecture diagram
+        arch = tool_input.get("architecture_mermaid", "")
+        if arch:
+            lines += ["## System Architecture", "",
+                      "```mermaid", arch.strip(), "```", ""]
+
+        # Full requirements — every single one with all fields
+        reqs = tool_input.get("requirements", [])
+        if reqs:
+            lines += [f"## Requirements — {len(reqs)} Captured", ""]
+            # Group by category for readability
+            categories = ["functional", "performance", "interface", "environmental", "constraint"]
+            grouped: dict = {c: [] for c in categories}
+            other: list = []
+            for req in reqs:
+                cat = req.get("category", "").lower()
+                if cat in grouped:
+                    grouped[cat].append(req)
+                else:
+                    other.append(req)
+
+            for cat in categories:
+                cat_reqs = grouped[cat]
+                if not cat_reqs:
+                    continue
+                lines += [f"### {cat.title()} Requirements", "",
+                           "| ID | Title | Priority | Verification |",
+                           "|----|-------|----------|--------------|"]
+                for req in cat_reqs:
+                    rid   = req.get("req_id", "")
+                    title = req.get("title", "")
+                    pri   = req.get("priority", "Must have")
+                    ver   = req.get("verification_method", "test")
+                    lines.append(f"| {rid} | {title} | {pri} | {ver} |")
+                lines.append("")
+                # Show full descriptions as sub-list
+                for req in cat_reqs:
+                    rid  = req.get("req_id", "")
+                    desc = req.get("description", "")
+                    deps = req.get("dependencies", [])
+                    cons = req.get("constraints", [])
+                    lines.append(f"**{rid}** — {desc}")
+                    if deps:
+                        lines.append(f"  - *Dependencies:* {', '.join(deps)}")
+                    if cons:
+                        lines.append(f"  - *Constraints:* {', '.join(cons)}")
+                lines.append("")
+
+            if other:
+                lines += ["### Other Requirements", ""]
+                for req in other:
+                    lines.append(
+                        f"**{req.get('req_id','')}** ({req.get('priority','')}) — "
+                        f"{req.get('description', req.get('title',''))}"
+                    )
+                lines.append("")
+
+        # Full component recommendations — ALL components, all fields
+        comps = tool_input.get("component_recommendations", [])
+        if comps:
+            lines += [f"## Component Recommendations — {len(comps)} Selected", "",
+                      "| Function | Primary Part | Manufacturer | Alternates |",
+                      "|----------|-------------|--------------|------------|"]
+            for comp in comps:
+                func  = comp.get("function", "")
+                part  = comp.get("primary_part", "TBD")
+                mfr   = comp.get("primary_manufacturer", "")
+                alts  = comp.get("alternatives", [])
+                alt_str = ", ".join(
+                    (a.get("part") or a.get("name") or a.get("part_number") or str(a))
+                    if isinstance(a, dict) else str(a)
+                    for a in alts[:3]
+                ) if alts else "—"
+                lines.append(f"| {func} | `{part}` | {mfr} | {alt_str} |")
+            lines.append("")
+
+            # Detailed component notes
+            lines += ["### Component Details", ""]
+            for comp in comps:
+                func   = comp.get("function", "")
+                part   = comp.get("primary_part", "TBD")
+                rationale = comp.get("rationale", comp.get("reason", ""))
+                specs  = comp.get("key_specs", comp.get("specs", ""))
+                lifecycle = comp.get("lifecycle", "")
+                if rationale or specs:
+                    lines.append(f"**{func}** (`{part}`)")
+                    if specs:
+                        lines.append(f"  - Specs: {specs}")
+                    if rationale:
+                        lines.append(f"  - Rationale: {rationale}")
+                    if lifecycle:
+                        lines.append(f"  - Lifecycle: {lifecycle}")
+            lines.append("")
 
         return "\n".join(lines)
 

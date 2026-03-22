@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import type { Project, PhaseMeta, PhaseStatusValue } from '../types';
 import { api } from '../api';
 import { getVisibleDocuments } from '../data/phases';
+import { loadMermaid, purgeMermaidScratch } from '../utils/mermaid';
 
 interface DocFile {
   name: string;
@@ -110,36 +111,6 @@ function sanitizeMermaidCode(raw: string): string {
   return code;
 }
 
-// ── Mermaid loader ────────────────────────────────────────────────────────────
-
-declare global {
-  interface Window {
-    mermaid?: {
-      initialize: (cfg: object) => void;
-      render: (id: string, code: string) => Promise<{ svg: string }>;
-      parse: (code: string) => Promise<unknown>;
-    };
-  }
-}
-
-let mermaidLoadPromise: Promise<void> | null = null;
-
-function loadMermaid(): Promise<void> {
-  if (window.mermaid) return Promise.resolve();
-  if (mermaidLoadPromise) return mermaidLoadPromise;
-  mermaidLoadPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js';
-    s.onload = () => {
-      window.mermaid?.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', suppressErrorRendering: true });
-      resolve();
-    };
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-  return mermaidLoadPromise;
-}
-
 // ── Marked setup ──────────────────────────────────────────────────────────────
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -154,18 +125,30 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    const rid = id.current;
     loadMermaid().then(async () => {
       try {
-        await window.mermaid!.parse(code);
-        const result = await window.mermaid!.render(id.current, code);
-        if (!cancelled) setSvg(result.svg);
+        // render() only — no parse() so Mermaid never fires error toasts before our catch
+        const result = await window.mermaid!.render(rid, code);
+        purgeMermaidScratch(rid);
+        if (!cancelled) {
+          if (result.svg?.includes('<svg') && !result.svg.includes('class="error"')) {
+            setSvg(result.svg);
+          } else {
+            setErr('Diagram render produced no output');
+          }
+        }
       } catch (e: unknown) {
+        purgeMermaidScratch(rid);
         if (!cancelled) setErr(e instanceof Error ? e.message : 'Diagram error');
       }
     }).catch(e => {
       if (!cancelled) setErr(e?.message || 'Could not load Mermaid');
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      purgeMermaidScratch(rid);
+    };
   }, [code]);
 
   if (err) {
@@ -176,8 +159,8 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
           DIAGRAM SOURCE (render failed)
         </div>
         <pre style={{
-          background: '#060a10', border: '1px solid #1e2d40', borderRadius: 6,
-          padding: '12px 14px', margin: 0, fontSize: 11, color: '#64748b',
+          background: 'var(--panel2)', border: '1px solid var(--border2)', borderRadius: 6,
+          padding: '12px 14px', margin: 0, fontSize: 11, color: 'var(--text3)',
           fontFamily: "'JetBrains Mono', monospace",
           overflowX: 'auto', lineHeight: 1.65, whiteSpace: 'pre-wrap',
         }}>
@@ -196,7 +179,7 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
   }
   return (
     <div ref={ref}
-      style={{ padding: '14px', overflowX: 'auto', background: '#0a0f1a', borderRadius: 6 }}
+      style={{ padding: '14px', overflowX: 'auto', background: 'var(--panel2)', borderRadius: 6 }}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
@@ -336,6 +319,8 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [loadingList, setLoadingList] = useState(true);
   // Track which phase IDs have been loaded at least once — prevents spinner on phase re-visit
   const loadedPhaseIds = useRef<Set<string>>(new Set());
+  // Track if we've ever successfully fetched any files — once true, phase switches are always silent
+  const hasAnyFiles = useRef(false);
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
@@ -347,16 +332,29 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
   const filteredFiles = files.filter(f => visibleFilenames.has(f.name));
 
-  const fetchList = useCallback((silent = false) => {
+  const fetchList = useCallback((silent = false, currentPhaseId?: string) => {
     if (!project) return;
     if (!silent) { setLoadingList(true); setError(null); }
+
+    // Timeout: if loading takes >8s, force-complete to avoid permanent spinner
+    let timedOut = false;
+    const timeout = !silent ? setTimeout(() => {
+      timedOut = true;
+      setLoadingList(false);
+    }, 8000) : undefined;
+
     api.listDocuments(project.id)
       .then(list => {
+        if (timeout) clearTimeout(timeout);
+        if (timedOut) return;
         setFiles(list);
         setLoadingList(false);
-        loadedPhaseIds.current.add(phase.id);
+        if (list.length > 0) hasAnyFiles.current = true;
+        if (currentPhaseId) loadedPhaseIds.current.add(currentPhaseId);
       })
       .catch((err: Error) => {
+        if (timeout) clearTimeout(timeout);
+        if (timedOut) return;
         const msg = err?.message || 'Unknown error';
         if (!silent) {
           if (msg.includes('HTTP 404')) setError('Documents endpoint not found (HTTP 404). Restart the backend.');
@@ -368,14 +366,17 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       });
   }, [project]);
 
-  // Load documents when project, phase, or status changes.
-  // Show spinner only on the very first visit to each phase — subsequent visits
-  // (including phase switches) refresh silently so no "Loading documents..." flash.
+  // Load documents when project or phase changes.
+  // Show spinner only on the very first project load when no files exist yet.
+  // Once any files have been fetched (hasAnyFiles), all phase switches are silent
+  // so cached data shows instantly while the list refreshes in the background.
   useEffect(() => {
     const alreadyLoaded = loadedPhaseIds.current.has(phase.id);
-    fetchList(!alreadyLoaded);   // silent=true if this phase was loaded before
+    // Silent if: visited this phase before, OR any files ever loaded (project-wide cache exists)
+    const silent = alreadyLoaded || hasAnyFiles.current;
+    fetchList(!silent, phase.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, phase.id, status]);
+  }, [project, phase.id]);
 
   useEffect(() => {
     const shouldRefresh = pipelineRunning || status === 'in_progress';
@@ -476,14 +477,16 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           border: `1px dashed ${phase.color}30`, borderRadius: 10,
           textAlign: 'center', marginBottom: 20,
         }}>
-          {(pipelineRunning || status === 'in_progress') ? (
+          {status === 'in_progress' ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 10 }}>
                 <div style={{ width: 14, height: 14, borderRadius: '50%', border: `2.5px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
-                <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>Generating documents...</div>
+                <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>AI agent running — generating documents...</div>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 360, margin: '0 auto' }}>
-                Files will appear here as each phase completes. The list updates automatically every 3 seconds.
+              <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto', lineHeight: 1.7 }}>
+                Estimated time: <span style={{ color: phase.color }}>{phase.time}</span>
+                <br />
+                Output files will appear here automatically once the phase completes.
               </div>
             </>
           ) : status === 'pending' ? (
@@ -528,7 +531,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       {/* Markdown style injection */}
       <style>{`
         .md-body { color: var(--text2); font-size: 13.5px; }
-        .md-body h1 { font-size: 21px; font-weight: 800; color: var(--text); font-family: 'Syne', sans-serif; margin: 24px 0 10px; border-bottom: 1px solid #1e2d40; padding-bottom: 8px; }
+        .md-body h1 { font-size: 21px; font-weight: 800; color: var(--text); font-family: 'Syne', sans-serif; margin: 24px 0 10px; border-bottom: 1px solid var(--border2); padding-bottom: 8px; }
         .md-body h2 { font-size: 17px; font-weight: 700; color: var(--text); font-family: 'Syne', sans-serif; margin: 20px 0 8px; }
         .md-body h3 { font-size: 14px; font-weight: 700; color: var(--text2); margin: 16px 0 6px; }
         .md-body h4 { font-size: 13px; font-weight: 600; color: var(--text3); margin: 12px 0 5px; }
@@ -537,18 +540,40 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
         .md-body li { margin: 5px 0; line-height: 1.7; }
         .md-body strong { color: var(--text); }
         .md-body em { color: var(--text3); }
-        .md-body code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; background: rgba(0,198,167,0.08); color: #00c6a7; padding: 1px 6px; border-radius: 3px; }
-        .md-body pre { background: #060a10; border: 1px solid #1e2d40; border-radius: 6px; padding: 14px 18px; overflow-x: auto; margin: 14px 0; }
+        .md-body code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; background: var(--panel2); color: var(--teal); padding: 1px 6px; border-radius: 3px; }
+        .md-body pre { background: var(--panel2); border: 1px solid var(--border2); border-radius: 6px; padding: 14px 18px; overflow-x: auto; margin: 14px 0; }
         .md-body pre code { background: none; color: var(--text2); padding: 0; font-size: 12px; }
         .md-body blockquote { border-left: 3px solid var(--teal); margin: 12px 0; padding: 8px 16px; background: rgba(0,198,167,0.05); color: var(--text3); border-radius: 0 5px 5px 0; }
         .md-body table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 12.5px; }
-        .md-body th { background: #0d1627; color: var(--text); padding: 9px 13px; text-align: left; border: 1px solid #1e2d40; font-weight: 600; font-size: 11.5px; letter-spacing: 0.04em; }
-        .md-body td { padding: 8px 13px; border: 1px solid #1a2235; color: var(--text2); vertical-align: top; line-height: 1.55; }
-        .md-body tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
-        .md-body hr { border: none; border-top: 1px solid #1e2d40; margin: 18px 0; }
-        .md-body a { color: #3b82f6; text-decoration: underline; }
+        .md-body th { background: var(--panel2); color: var(--text); padding: 9px 13px; text-align: left; border: 1px solid var(--border2); font-weight: 600; font-size: 11.5px; letter-spacing: 0.04em; }
+        .md-body td { padding: 8px 13px; border: 1px solid var(--border2); color: var(--text2); vertical-align: top; line-height: 1.55; }
+        .md-body tr:nth-child(even) td { background: rgba(0,0,0,0.03); }
+        .md-body hr { border: none; border-top: 1px solid var(--border2); margin: 18px 0; }
+        .md-body a { color: var(--blue); text-decoration: underline; }
         @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
       `}</style>
+
+      {/* Stale-status banner: phase is PENDING but previous outputs exist */}
+      {status === 'pending' && filteredFiles.length > 0 && (
+        <div style={{
+          marginBottom: 14,
+          padding: '9px 14px',
+          background: 'rgba(245,158,11,0.07)',
+          border: '1px solid rgba(245,158,11,0.28)',
+          borderRadius: 7,
+          display: 'flex', alignItems: 'center', gap: 9,
+        }}>
+          <span style={{ fontSize: 14, flexShrink: 0 }}>⚠</span>
+          <div>
+            <span style={{ fontSize: 11.5, color: '#f59e0b', fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>
+              Previous run output
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--text4)', marginLeft: 6 }}>
+              These documents are from a prior pipeline run. Status shows PENDING — re-run this phase to refresh.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -559,7 +584,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           }}>
             {filteredFiles.length} {filteredFiles.length === 1 ? 'DOCUMENT' : 'DOCUMENTS'}
           </div>
-          {(pipelineRunning || status === 'in_progress') && (
+          {status === 'in_progress' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
               <div style={{ width: 7, height: 7, borderRadius: '50%', background: phase.color, animation: 'pulse 1.5s ease infinite' }} />
               <span style={{ fontSize: 10, color: phase.color, fontFamily: "'DM Mono', monospace" }}>UPDATING</span>
@@ -617,10 +642,10 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
           return (
             <div key={file.name} style={{
-              border: `1px solid ${isOpen ? phase.color + '60' : '#1e2d40'}`,
+              border: `1px solid ${isOpen ? phase.color + '60' : 'var(--border2)'}`,
               borderRadius: 10, overflow: 'hidden',
               transition: 'border-color 0.2s',
-              background: isOpen ? '#080d18' : 'var(--panel)',
+              background: isOpen ? 'var(--panel2)' : 'var(--panel)',
             }}>
               {/* File row */}
               <div style={{
@@ -707,7 +732,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
               {isOpen && contentLoaded && (
                 <div style={{
                   borderTop: `1px solid ${phase.color}25`,
-                  background: '#060b13',
+                  background: 'var(--panel)',
                   maxHeight: 720,
                   overflowY: 'auto',
                 }}>

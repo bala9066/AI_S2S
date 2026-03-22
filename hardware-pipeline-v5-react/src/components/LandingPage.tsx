@@ -1,6 +1,8 @@
 interface Props {
   onCreate: () => void;
   onLoad: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
 const PHASES_PREVIEW = [
@@ -20,27 +22,67 @@ const STEPS = [
   { num: '03', label: 'Download & export', detail: 'HRS, compliance matrix, netlist, SRS, SDD, code review — all ready to use', color: '#8b5cf6' },
 ];
 
-export default function LandingPage({ onCreate, onLoad }: Props) {
+export default function LandingPage({ onCreate, onLoad, theme = 'dark', onToggleTheme }: Props) {
   return (
     <div style={{
       minHeight: '100vh', background: 'var(--navy)',
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       position: 'relative', overflow: 'hidden',
     }}>
+      {/* Theme toggle — top-right corner */}
+      {onToggleTheme && (
+        <button
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          style={{
+            position: 'absolute', top: 18, right: 20, zIndex: 10,
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 12px', borderRadius: 7,
+            background: 'var(--panel2)',
+            border: '1px solid var(--border)',
+            color: 'var(--text2)',
+            cursor: 'pointer', fontSize: 13,
+            fontFamily: "'DM Mono', monospace",
+            letterSpacing: '0.04em',
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'var(--panel3)';
+            e.currentTarget.style.color = 'var(--teal)';
+            e.currentTarget.style.borderColor = 'var(--teal-border)';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'var(--panel2)';
+            e.currentTarget.style.color = 'var(--text2)';
+            e.currentTarget.style.borderColor = 'var(--border)';
+          }}
+        >
+          <span>{theme === 'dark' ? '☀' : '☽'}</span>
+          <span style={{ fontSize: 10, fontWeight: 700 }}>{theme === 'dark' ? 'LIGHT' : 'DARK'}</span>
+        </button>
+      )}
+
       {/* Grid background */}
       <div style={{
         position: 'absolute', inset: 0,
-        backgroundImage: 'linear-gradient(#0c1524 1px, transparent 1px), linear-gradient(90deg, #0c1524 1px, transparent 1px)',
+        backgroundImage: 'linear-gradient(var(--panel) 1px, transparent 1px), linear-gradient(90deg, var(--panel) 1px, transparent 1px)',
         backgroundSize: '52px 52px', opacity: 0.5, pointerEvents: 'none',
       }} />
 
-      {/* Glow orb */}
+      {/* Glow orb — breathing animation */}
       <div style={{
         position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)',
         width: 700, height: 700, borderRadius: '50%',
-        background: 'radial-gradient(circle, rgba(0,198,167,0.1) 0%, transparent 65%)',
+        background: 'radial-gradient(circle, rgba(0,198,167,0.12) 0%, transparent 65%)',
         pointerEvents: 'none',
+        animation: 'orbPulse 4s ease-in-out infinite',
       }} />
+      <style>{`
+        @keyframes orbPulse {
+          0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+          50% { transform: translate(-50%, -50%) scale(1.12); opacity: 0.7; }
+        }
+      `}</style>
 
       {/* Main content */}
       <div style={{ position: 'relative', textAlign: 'center', maxWidth: 680, padding: '0 24px', width: '100%' }}>
@@ -61,6 +103,28 @@ export default function LandingPage({ onCreate, onLoad }: Props) {
         </div>
         <div style={{ fontSize: 11, color: 'var(--text4)', letterSpacing: '0.14em', marginBottom: 40, fontFamily: "'DM Mono', monospace" }}>
           DATA PATTERNS INDIA · GREAT AI HACK-A-THON 2026
+        </div>
+
+        {/* Metrics strip */}
+        <div style={{ display: 'flex', gap: 0, justifyContent: 'center', marginBottom: 40, flexWrap: 'wrap' }}>
+          {[
+            { before: '8 weeks', after: '4 min', label: 'spec authoring' },
+            { before: 'manual', after: 'automated', label: '8 AI phases' },
+            { before: 'siloed', after: 'end-to-end', label: 'requirements → code' },
+          ].map((m, i) => (
+            <div key={i} style={{
+              padding: '10px 22px',
+              borderRight: i < 2 ? '1px solid #1e2d40' : 'none',
+              textAlign: 'center',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', marginBottom: 4 }}>
+                <span style={{ fontSize: 13, color: 'var(--text4)', fontFamily: "'DM Mono', monospace", textDecoration: 'line-through' }}>{m.before}</span>
+                <span style={{ fontSize: 11, color: 'var(--text4)' }}>→</span>
+                <span style={{ fontSize: 14, color: '#00c6a7', fontFamily: "'Syne', sans-serif", fontWeight: 800 }}>{m.after}</span>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text4)', fontFamily: "'DM Mono', monospace", letterSpacing: '0.08em' }}>{m.label}</div>
+            </div>
+          ))}
         </div>
 
         {/* CTA buttons */}

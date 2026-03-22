@@ -32,12 +32,12 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
 
   return (
     <div style={{
-      width: 264, background: 'var(--navy)', borderRight: '1px solid #1e2d40',
+      width: 264, background: 'var(--navy)', borderRight: '1px solid var(--border2)',
       display: 'flex', flexDirection: 'column', flexShrink: 0,
       height: '100vh', position: 'sticky', top: 0,
     }}>
       {/* Logo */}
-      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid #1e2d40' }}>
+      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--border2)' }}>
         <button onClick={onLanding} title="Back to home" style={{
           background: 'transparent', border: 'none', cursor: 'pointer',
           textAlign: 'left', width: '100%', padding: 0,
@@ -107,7 +107,7 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                   display: 'flex', alignItems: 'center', gap: 8,
                 }}>
                   {groupLabel}
-                  <div style={{ flex: 1, height: 1, background: '#1e2d40' }} />
+                  <div style={{ flex: 1, height: 1, background: 'var(--border2)' }} />
                 </div>
               )}
 
@@ -145,7 +145,7 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                     ? `${phase.color}22`
                     : isComplete
                     ? `${phase.color}14`
-                    : '#111827',
+                    : 'var(--panel2)',
                   border: `2px solid ${
                     isActive
                       ? phase.color
@@ -243,7 +243,7 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
       </div>
 
       {/* Footer */}
-      <div style={{ padding: '10px 14px 12px', borderTop: '1px solid #1e2d40' }}>
+      <div style={{ padding: '10px 14px 12px', borderTop: '1px solid var(--border2)' }}>
         <div style={{ fontSize: 10, color: 'var(--text4)', lineHeight: 1.5 }}>
           <span style={{ color: 'var(--teal)' }}>{phases.filter(p => p.auto).length} AI phases</span>
           {' · '}

@@ -5,15 +5,24 @@ interface Props {
   onCancel: () => void;
 }
 
+/** Infer RF vs Digital from the project name/description — no need to ask the user */
+function inferDesignType(name: string, desc: string): string {
+  const text = (name + ' ' + desc).toLowerCase();
+  const rfKeywords = ['rf', 'radio', 'antenna', 'ghz', 'mhz', 'frequency', 'amplifier', 'pa ', 'lna',
+    'filter', 'mixer', 'oscillator', 'transmit', 'receiv', 'wireless', 'ism', 'radar', 'microwave'];
+  if (rfKeywords.some(k => text.includes(k))) return 'rf';
+  return 'digital';
+}
+
 export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
-  const [dtype, setDtype] = useState('rf');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setLoading(true);
+    const dtype = inferDesignType(name, desc);
     await onConfirm(name.trim(), desc.trim(), dtype);
     setLoading(false);
   };
@@ -43,7 +52,7 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
           New Project
         </div>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 24 }}>
-          Configure your hardware design project
+          Describe your hardware design — the pipeline handles the rest
         </div>
 
         <div style={{ marginBottom: 16 }}>
@@ -53,35 +62,21 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
             placeholder="e.g. BLDC Motor Driver v2"
             value={name}
             onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
             autoFocus
           />
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 28 }}>
           <label style={labelStyle}>DESCRIPTION</label>
           <textarea
-            style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }}
-            placeholder="Describe the hardware design..."
+            style={{ ...inputStyle, minHeight: 90, resize: 'vertical' }}
+            placeholder="e.g. 3-phase BLDC motor controller, 10kW, 48V bus, GaN switches, CAN bus interface"
             value={desc}
             onChange={e => setDesc(e.target.value)}
           />
-        </div>
-
-        <div style={{ marginBottom: 28 }}>
-          <label style={labelStyle}>DESIGN TYPE</label>
-          <div style={{ display: 'flex', gap: 10 }}>
-            {['rf', 'digital'].map(dt => (
-              <button key={dt} onClick={() => setDtype(dt)} style={{
-                flex: 1, padding: '9px 0', borderRadius: 5, cursor: 'pointer',
-                fontSize: 12, fontFamily: "'DM Mono', monospace",
-                background: dtype === dt ? 'rgba(0,198,167,0.15)' : '#060a10',
-                border: `1px solid ${dtype === dt ? 'var(--teal)' : 'var(--panel3)'}`,
-                color: dtype === dt ? 'var(--teal)' : 'var(--text3)',
-                transition: 'all 0.15s',
-              }}>
-                {dt.toUpperCase()}
-              </button>
-            ))}
+          <div style={{ fontSize: 10.5, color: 'var(--text4)', marginTop: 6, fontFamily: "'DM Mono',monospace" }}>
+            Design type is auto-detected from your description.
           </div>
         </div>
 

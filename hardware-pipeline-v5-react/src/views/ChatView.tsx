@@ -1,72 +1,9 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Project, PhaseMeta } from '../types';
 import { api } from '../api';
+import { ensureMermaid, purgeMermaidScratch, nextMermaidId } from '../utils/mermaid';
 
 export interface ChatMessage { role: 'user' | 'ai'; text: string; }
-
-interface Props {
-  project: Project | null;
-  phase: PhaseMeta;
-  phaseStatus: string;           // P1 status from backend ('pending' | 'completed' | etc.)
-  pipelineStarted: boolean;      // true when P2+ phases are completed or in_progress
-  messages: ChatMessage[];
-  onMessages: (msgs: ChatMessage[]) => void;
-  onStatusChange: () => void;
-  onPhaseComplete: () => void;
-}
-
-// ---- Mermaid CDN loader ----
-let mermaidLoaded = false;
-let mermaidReady = false;
-const mermaidCallbacks: (() => void)[] = [];
-
-function ensureMermaid(cb: () => void) {
-  if (mermaidReady) { cb(); return; }
-  mermaidCallbacks.push(cb);
-  if (mermaidLoaded) return;
-  mermaidLoaded = true;
-  const script = document.createElement('script');
-  // v10.6.1: very stable, reliable throw-on-error behaviour
-  script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js';
-  script.onload = () => {
-    (window as any).mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'loose',
-      theme: 'dark',
-      suppressErrorRendering: true,   // disable Mermaid's own red error toast popup
-      themeVariables: {
-        primaryColor: '#1a2235',
-        primaryTextColor: '#e2e8f0',
-        primaryBorderColor: '#00c6a7',
-        lineColor: '#3b82f6',
-        secondaryColor: '#0d1423',
-        tertiaryColor: '#2a3a50',
-        fontFamily: "'DM Mono', monospace",
-        fontSize: '13px',
-      },
-    });
-    mermaidReady = true;
-    mermaidCallbacks.forEach(fn => fn());
-    mermaidCallbacks.length = 0;
-  };
-  script.onerror = () => {
-    // CDN failed — mark not loaded so next attempt can retry
-    mermaidLoaded = false;
-    mermaidReady = false;
-    mermaidCallbacks.forEach(fn => fn()); // will show fallback
-    mermaidCallbacks.length = 0;
-  };
-  document.head.appendChild(script);
-}
-
-let mermaidIdCounter = 0;
-
-/** Remove any DOM nodes Mermaid inserted (it uses body as scratch space) */
-function purgeMermaidDom(id: string) {
-  [`#${id}`, `#d${id}`, `#dmermaid`].forEach(sel => {
-    try { document.querySelectorAll(sel).forEach(el => el.remove()); } catch { /* ignore */ }
-  });
-}
 
 /** Sanitise AI-generated Mermaid code */
 function sanitizeMermaid(raw: string): string {
@@ -135,6 +72,7 @@ function sanitizeMermaid(raw: string): string {
 function MermaidBlock({ code, color }: { code: string; color: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const idRef = useRef(nextMermaidId());
 
   useEffect(() => {
     let cancelled = false;
@@ -142,39 +80,25 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
     setError(false);
 
     const safeCode = sanitizeMermaid(code);
-    const id = `mermaid-${++mermaidIdCounter}`;
+    const id = idRef.current;
 
     ensureMermaid(() => {
       if (cancelled) return;
 
       (async () => {
         try {
-          const merm = (window as any).mermaid;
-
-          // STEP 1: Pre-validate syntax — if this throws we NEVER call render
-          // so Mermaid never gets a chance to insert an error SVG into the body.
-          if (typeof merm.parse === 'function') {
-            await merm.parse(safeCode);
-          }
-
-          // STEP 2: Render (only reached when syntax is valid)
-          const result = await merm.render(id, safeCode);
-          const svgStr: string = result?.svg ?? (typeof result === 'string' ? result : '');
-
-          // STEP 3: Purge any body-level scratch nodes Mermaid left behind
-          purgeMermaidDom(id);
-
+          // render() only — no parse() to avoid Mermaid firing error toasts before our catch
+          const result = await window.mermaid!.render(id, safeCode);
+          const svgStr: string = result?.svg ?? '';
+          purgeMermaidScratch(id);
           if (cancelled) return;
-
-          // STEP 4: Final safety check on the returned string
           if (svgStr.includes('<svg') && !svgStr.includes('Syntax error') && !svgStr.includes('class="error"')) {
             setSvg(svgStr);
           } else {
             setError(true);
           }
         } catch {
-          // Parse or render threw — purge any partial DOM then show code fallback
-          purgeMermaidDom(id);
+          purgeMermaidScratch(id);
           if (!cancelled) setError(true);
         }
       })();
@@ -182,7 +106,7 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
 
     return () => {
       cancelled = true;
-      purgeMermaidDom(id);
+      purgeMermaidScratch(id);
     };
   }, [code]);
 
@@ -198,7 +122,7 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
           {error ? 'BLOCK DIAGRAM (source)' : 'BLOCK DIAGRAM \u2014 rendering...'}
         </div>
         <pre style={{
-          background: '#060a10', border: `1px solid ${color}22`,
+          background: 'var(--panel2)', border: `1px solid ${color}22`,
           borderRadius: '0 0 6px 6px', padding: '12px 14px', margin: 0,
           fontSize: 12, color, fontFamily: "'JetBrains Mono',monospace",
           overflowX: 'auto', lineHeight: 1.65, whiteSpace: 'pre-wrap',
@@ -220,7 +144,7 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
         &#128202; SYSTEM ARCHITECTURE DIAGRAM
       </div>
       <div style={{
-        background: '#060a10', border: `1px solid ${color}22`,
+        background: 'var(--panel2)', border: `1px solid ${color}22`,
         borderRadius: '0 0 6px 6px', padding: '16px', overflowX: 'auto',
       }}
         dangerouslySetInnerHTML={{ __html: svg }}
@@ -245,7 +169,7 @@ function renderMarkdown(text: string, color: string): React.ReactNode {
       if (p.startsWith('*') && p.endsWith('*'))
         return <em key={j} style={{ color: 'var(--text2)', fontStyle: 'italic' }}>{p.slice(1,-1)}</em>;
       if (p.startsWith('`') && p.endsWith('`'))
-        return <code key={j} style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, background: '#0d1a1a', color, padding: '1px 5px', borderRadius: 3 }}>{p.slice(1,-1)}</code>;
+        return <code key={j} style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 11, background: 'var(--panel2)', color, padding: '1px 5px', borderRadius: 3 }}>{p.slice(1,-1)}</code>;
       return p;
     });
   };
@@ -282,8 +206,8 @@ function renderMarkdown(text: string, color: string): React.ReactNode {
         elements.push(
           <div key={`code-${i}`} style={{ margin: '10px 0' }}>
             <pre style={{
-              background: '#060a10',
-              border: '1px solid #1e2d40',
+              background: 'var(--panel2)',
+              border: '1px solid var(--border2)',
               borderRadius: 6,
               padding: '12px 14px', margin: 0,
               fontSize: 12, color: 'var(--text2)',
@@ -353,6 +277,29 @@ function renderMarkdown(text: string, color: string): React.ReactNode {
   }
   return <>{elements}</>;
 }
+
+// ---- Memoized message row — skips re-render when only `streaming` state changes ----
+const ChatMessageItem = memo(function ChatMessageItem({ msg, color }: { msg: ChatMessage; color: string }) {
+  if (msg.role === 'user') {
+    return (
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <div style={{ maxWidth: '75%', padding: '10px 15px', borderRadius: 8, background: `${color}18`, border: `1px solid ${color}33`, fontSize: 13, color: 'var(--text)', lineHeight: 1.6, fontFamily: "'DM Mono',monospace", whiteSpace: 'pre-wrap' }}>
+            {msg.text}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--panel3)' }}>
+        <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
+        {renderMarkdown(msg.text, color)}
+      </div>
+    </div>
+  );
+});
 
 // ---- Welcome card ----
 function WelcomeCard({ color, onSuggestion }: { color: string; onSuggestion: (s: string) => void }) {
@@ -447,7 +394,39 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streaming, showApproveCard, phaseCompleted]);
+  // streaming intentionally excluded — scrolling every 16ms causes jank
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, showApproveCard, phaseCompleted]);
+
+  /** Silently finalize Phase 1 — no user bubble, no input echo */
+  const finalizePhase = async () => {
+    if (!project || loading) return;
+    setLoading(true);
+    setStreaming('');
+    try {
+      const result = await api.chat(project.id, '__FINALIZE__');
+      const rawText = result.text || 'Requirements finalized. Reviewing documents…';
+      const cleanText = cleanAiText(rawText);
+      let idx = 0;
+      const interval = setInterval(() => {
+        idx = Math.min(idx + 16, cleanText.length);
+        setStreaming(cleanText.slice(0, idx));
+        if (idx >= cleanText.length) {
+          clearInterval(interval);
+          onMessages([...messages, { role: 'ai', text: cleanText }]);
+          setStreaming('');
+          setLoading(false);
+          onStatusChange();
+          setPhaseCompleted(true);
+          setShowApproveCard(true);
+        }
+      }, 16);
+    } catch {
+      onMessages([...messages, { role: 'ai', text: 'Error connecting to backend. Make sure FastAPI is running on port 8000.' }]);
+      setStreaming('');
+      setLoading(false);
+    }
+  };
 
   const sendMessage = async (text: string) => {
     if (!project || !text.trim() || loading) return;
@@ -466,10 +445,12 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       // If the backend returned an empty response, show a helpful fallback
       const rawText = result.text || 'I processed your request. Check the Documents tab to see updated outputs, or try rephrasing your request.';
       const cleanText = cleanAiText(rawText);
-      // Typewriter animation — 16ms/6chars keeps it fast with fewer setState calls
+      // Typewriter animation — 16ms/16chars (~60fps, ~1000 chars/sec)
+      // Streaming div uses plain pre-wrap text (no markdown parsing per tick) for smooth rendering.
+      // Full markdown is only rendered once, when the message is committed to messages[].
       let idx = 0;
       const interval = setInterval(() => {
-        idx = Math.min(idx + 6, cleanText.length);
+        idx = Math.min(idx + 16, cleanText.length);
         setStreaming(cleanText.slice(0, idx));
         if (idx >= cleanText.length) {
           clearInterval(interval);
@@ -478,16 +459,11 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           setLoading(false);
           onStatusChange();
           if (result.phaseComplete) {
-            // Latch so "Generate Documents" button disappears permanently
             setPhaseCompleted(true);
-            // Show the approve card — user must click "Approve & Start Pipeline"
-            // before the pipeline kicks off. This gives them a chance to review
-            // the generated requirements or request changes first.
             setShowApproveCard(true);
-            // DO NOT call onPhaseComplete() here automatically.
           }
         }
-      }, 10);
+      }, 16);
     } catch {
       onMessages([...updated, { role: 'ai', text: 'Error connecting to backend. Make sure FastAPI is running on port 8000.' }]);
       setStreaming('');
@@ -496,33 +472,13 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   };
 
   return (
-    <div style={{ paddingTop: 20, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ paddingTop: 20, display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       {messages.length === 0 && !loading && historyLoaded && (
         <WelcomeCard color={color} onSuggestion={sendMessage} />
       )}
 
       {messages.map((msg, i) => (
-        <div key={i} style={{ marginBottom: 16 }}>
-          {msg.role === 'user' ? (
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              {/* Render __FINALIZE__ as a styled action chip, not raw text */}
-              {msg.text === '__FINALIZE__' ? (
-                <div style={{ padding: '7px 14px', borderRadius: 20, background: `${color}18`, border: `1px solid ${color}44`, fontSize: 11.5, color, fontFamily: "'DM Mono',monospace", letterSpacing: '0.04em' }}>
-                  &#9889; Generate Documents &amp; Complete Phase 1
-                </div>
-              ) : (
-                <div style={{ maxWidth: '75%', padding: '10px 15px', borderRadius: 8, background: `${color}18`, border: `1px solid ${color}33`, fontSize: 13, color: 'var(--text)', lineHeight: 1.6, fontFamily: "'DM Mono',monospace", whiteSpace: 'pre-wrap' }}>
-                  {msg.text}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--panel3)' }}>
-              <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
-              {renderMarkdown(msg.text, color)}
-            </div>
-          )}
-        </div>
+        <ChatMessageItem key={i} msg={msg} color={color} />
       ))}
 
       {loading && (
@@ -530,7 +486,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: `1px solid ${color}33` }}>
             <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
             {streaming
-              ? renderMarkdown(streaming, color)
+              /* Raw pre-wrap during typewriter — no markdown parsing per tick */
+              ? <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: 'var(--text2)', lineHeight: 1.65 }}>{streaming}</div>
               : <span style={{ color: 'var(--text4)', fontSize: 13 }}>Thinking<span style={{ animation: 'blink 1s step-end infinite' }}>...</span></span>
             }
           </div>
@@ -566,75 +523,33 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
             </div>
           ) : (
             /* ── Waiting for review & approval ── */
-            <div>
-              {/* Header */}
+            <div style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
               <div style={{
-                padding: '12px 18px', background: `${color}10`,
-                borderBottom: `1px solid ${color}30`,
-                display: 'flex', alignItems: 'center', gap: 10,
-              }}>
-                <div style={{
-                  width: 22, height: 22, borderRadius: '50%', background: `${color}25`,
-                  border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', fontSize: 11, color, flexShrink: 0,
-                }}>&#9711;</div>
-                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 800, color }}>
-                  Requirements Ready &#8212; Review &amp; Approve
+                width: 24, height: 24, borderRadius: '50%', background: `${color}20`,
+                border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center',
+                justifyContent: 'center', fontSize: 12, color, flexShrink: 0,
+              }}>&#9711;</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 800, color, marginBottom: 3 }}>
+                  Requirements ready &#8212; review above, then approve
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.5 }}>
+                  Use the chat below to request changes, then approve to run the full pipeline.
                 </div>
               </div>
-
-              {/* Generated files checklist */}
-              <div style={{ padding: '12px 18px', borderBottom: `1px solid ${color}20` }}>
-                <div style={{ fontSize: 10, color: 'var(--text4)', letterSpacing: '0.1em', fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>
-                  GENERATED DOCUMENTS
-                </div>
-                {[
-                  { icon: '◈', name: 'requirements.md', label: 'IEEE-style hardware requirements (REQ-HW-xxx)' },
-                  { icon: '○', name: 'block_diagram.md', label: 'System block diagram + signal flow' },
-                  { icon: '◆', name: 'architecture.md', label: 'Full architecture with Mermaid diagrams' },
-                  { icon: '▣', name: 'component_recommendations.md', label: 'BOM with 2-3 alternates per part' },
-                ].map(f => (
-                  <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                    <span style={{ fontSize: 13 }}>{f.icon}</span>
-                    <div>
-                      <span style={{ fontSize: 11.5, color, fontFamily: "'DM Mono',monospace" }}>{f.name}</span>
-                      <span style={{ fontSize: 11, color: 'var(--text4)', marginLeft: 6 }}>{f.label}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Instruction */}
-              <div style={{ padding: '10px 18px', borderBottom: `1px solid ${color}20` }}>
-                <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.65 }}>
-                  Review the requirements summary above. Use the chat to request any changes
-                  (e.g. <em style={{ color }}>&#34;increase output power to 45dBm&#34;</em>,
-                  <em style={{ color }}> &#34;add CAN bus interface&#34;</em>), then approve to run the full pipeline.
-                </div>
-              </div>
-
-              {/* Approve button */}
-              <div style={{ padding: '10px 18px', display: 'flex', alignItems: 'center', gap: 12 }}>
-                <button
-                  onClick={() => { setApproveClicked(true); onPhaseComplete(); }}
-                  style={{
-                    padding: '8px 18px', borderRadius: 6,
-                    border: 'none', background: color,
-                    color: '#070b14', fontSize: 12.5, fontFamily: "'Syne',sans-serif",
-                    fontWeight: 800, cursor: 'pointer', letterSpacing: '0.03em',
-                    transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center', gap: 6,
-                    flexShrink: 0,
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'none'; }}
-                >
-                  <span style={{ fontSize: 13 }}>&#10003;</span>
-                  Approve &amp; Start Pipeline (P2&#8594;P8c)
-                </button>
-                <div style={{ fontSize: 10.5, color: 'var(--text4)', fontFamily: "'DM Mono',monospace", lineHeight: 1.4 }}>
-                  Runs HRS &#x2022; Compliance &#x2022; Netlist &#x2022; GLR &#x2022; SRS &#x2022; SDD &#x2022; Code Review
-                </div>
-              </div>
+              <button
+                onClick={() => { setApproveClicked(true); onPhaseComplete(); }}
+                style={{
+                  padding: '9px 20px', borderRadius: 6, border: 'none', background: color,
+                  color: '#070b14', fontSize: 12, fontFamily: "'Syne',sans-serif",
+                  fontWeight: 800, cursor: 'pointer', letterSpacing: '0.03em',
+                  transition: 'all 0.15s', flexShrink: 0,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+                onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'none'; }}
+              >
+                &#10003; Approve &amp; Run
+              </button>
             </div>
           )}
         </div>
@@ -644,7 +559,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       {!phaseCompleted && !loading && messages.some(m => m.role === 'ai') && (
         <div style={{ marginTop: 12, marginBottom: 4 }}>
           <button
-            onClick={() => sendMessage('__FINALIZE__')}
+            onClick={() => finalizePhase()}
             disabled={loading}
             style={{
               width: '100%', padding: '11px 20px', borderRadius: 6,
@@ -663,8 +578,13 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
       <div ref={bottomRef} />
 
-      {/* Input — ALWAYS enabled; user can keep chatting even after approve card appears */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginTop: 8 }}>
+      {/* Input — sticky at the bottom of the viewport within the scrolling center panel */}
+      <div style={{
+        position: 'sticky', bottom: 0, zIndex: 10,
+        background: 'linear-gradient(to bottom, transparent 0%, var(--navy) 18px)',
+        paddingTop: 16, paddingBottom: 12, marginTop: 'auto',
+      }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
         <textarea
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -672,12 +592,13 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           placeholder={showApproveCard && !approveClicked ? 'Request changes to the requirements, or approve above...' : showApproveCard ? 'Keep chatting while pipeline runs...' : 'Describe your hardware design...'}
           disabled={loading}
           rows={3}
-          style={{ flex: 1, background: '#060a10', border: `1px solid ${showApproveCard ? color + '44' : 'var(--panel3)'}`, borderRadius: 6, padding: '10px 13px', fontSize: 13, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'none', transition: 'border-color 0.2s' }}
+          style={{ flex: 1, background: 'var(--panel)', border: `1px solid ${showApproveCard ? color + '44' : 'var(--panel3)'}`, borderRadius: 6, padding: '10px 13px', fontSize: 13, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'none', transition: 'border-color 0.2s' }}
         />
         <button onClick={() => sendMessage(input)} disabled={!input.trim() || loading || !project}
           style={{ padding: '10px 20px', borderRadius: 6, border: 'none', background: input.trim() && !loading ? color : 'var(--panel2)', color: input.trim() && !loading ? 'var(--navy)' : 'var(--text4)', fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: input.trim() && !loading ? 'pointer' : 'default', transition: 'all 0.15s', alignSelf: 'stretch' }}>
           Send
         </button>
+      </div>
       </div>
     </div>
   );

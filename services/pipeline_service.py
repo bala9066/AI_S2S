@@ -12,6 +12,7 @@ Key design decisions:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional
@@ -24,10 +25,11 @@ log = logging.getLogger(__name__)
 
 # Phase metadata: (phase_id, agent_module, agent_class, phase_name)
 AUTO_PHASES = [
-    ("P2", "agents.document_agent",    "DocumentAgent",    "HRS Document"),
-    ("P3", "agents.compliance_agent",  "ComplianceAgent",  "Compliance"),
-    ("P4", "agents.netlist_agent",     "NetlistAgent",     "Netlist"),
-    ("P6", "agents.glr_agent",         "GLRAgent",         "GLR"),
+    ("P2",  "agents.document_agent",   "DocumentAgent",    "HRS Document"),
+    ("P3",  "agents.compliance_agent", "ComplianceAgent",  "Compliance"),
+    ("P4",  "agents.netlist_agent",    "NetlistAgent",     "Netlist"),
+    ("P6",  "agents.glr_agent",        "GLRAgent",         "GLR"),
+    ("P7a", "agents.rdt_psq_agent",    "RdtPsqAgent",      "Register Map & Programming Sequence"),
     ("P8a", "agents.srs_agent",        "SRSAgent",         "SRS"),
     ("P8b", "agents.sdd_agent",        "SDDAgent",         "SDD"),
     ("P8c", "agents.code_agent",       "CodeAgent",        "Code + Review"),
@@ -125,11 +127,15 @@ class PipelineService:
                 written = self._storage.write_outputs(proj["name"], result["outputs"])
                 for fname, path in written.items():
                     prior_outputs[fname] = result["outputs"][fname]
+                    # Ensure content is always a string before writing to DB
+                    content_val = result["outputs"][fname]
+                    if not isinstance(content_val, str):
+                        content_val = json.dumps(content_val, indent=2)
                     await self._proj_svc.async_record_phase_output(
                         project_id=project_id,
                         phase_id=phase_id,
                         phase_name=phase_name,
-                        content=result["outputs"][fname],
+                        content=content_val,
                         output_type="markdown",
                         file_path=str(path),
                         model_used=result.get("model_used", ""),
@@ -138,8 +144,12 @@ class PipelineService:
                         duration_seconds=elapsed,
                     )
 
+            # Respect phase_complete flag — if agent signals failure, mark as failed
+            # rather than silently completing with no outputs (e.g. P4 tool not called)
+            phase_complete = result.get("phase_complete", True)
+            final_status = "completed" if phase_complete else "failed"
             await self._proj_svc.async_set_phase_status(
-                project_id, phase_id, "completed",
+                project_id, phase_id, final_status,
                 extra={"duration_seconds": round(elapsed, 2)},
             )
             log.info("phase.completed",

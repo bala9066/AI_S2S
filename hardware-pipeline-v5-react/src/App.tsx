@@ -14,6 +14,18 @@ import ChatView from './views/ChatView';
 import DocumentsView from './views/DocumentsView';
 
 export default function App() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('hw-pipeline-theme') as 'dark' | 'light') || 'dark';
+  });
+
+  // Apply data-theme to <html> so CSS vars cascade everywhere
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('hw-pipeline-theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
+
   const [mode, setMode] = useState<AppMode>('landing');
   const [modal, setModal] = useState<'create' | 'load' | null>(null);
   const [project, setProject] = useState<Project | null>(null);
@@ -26,8 +38,11 @@ export default function App() {
   // Raw status entries with updated_at timestamps — used for staleness detection
   const [statusesRaw, setStatusesRaw] = useState<StatusesRaw>({});
 
-  // Reactive polling speed — 2s when running, 5s when idle
+  // Reactive polling speed — 2s when running, 3s during active pipeline, 8s fully idle
   const [hasRunning, setHasRunning] = useState(false);
+  // True from the moment runPipeline is called until all auto phases are done.
+  // Keeps polling at 2s even in the brief gap between consecutive phases.
+  const pipelineActiveRef = useRef(false);
 
   // Refs to prevent duplicate pipeline starts
   const pipelineStartedRef = useRef(false);
@@ -92,31 +107,55 @@ export default function App() {
       const running = Object.values(s).some(v => v === 'in_progress');
       setHasRunning(running);
 
+      // Clear pipelineActive once all auto phases have a terminal status (completed / failed)
+      // and nothing is currently in_progress — this returns polling to idle speed.
+      if (pipelineActiveRef.current && !running) {
+        const autoPhases = PHASES.filter(p => p.auto && p.id !== 'P1');
+        const allDone = autoPhases.every(p => s[p.id] === 'completed' || s[p.id] === 'failed');
+        if (allDone) pipelineActiveRef.current = false;
+      }
+
       // NOTE: We no longer auto-start the pipeline from the status poll.
-      // The user must explicitly click "Approve & Start Pipeline" in ChatView.
-      // Auto-start only happens when loading an existing project (handleLoadProject).
+      // The user must explicitly click "Approve & Run" in ChatView.
     } catch (_) { /* silent */ }
   }, [project]);
 
-  // Reactive polling: re-creates interval when hasRunning changes
+  // Reactive polling:
+  //   2s  — while a phase is actively in_progress
+  //   2s  — while pipelineActive (brief gap between consecutive phases)
+  //   3s  — short idle (project loaded but pipeline not running)
   useEffect(() => {
     if (!project) return;
     refreshStatuses();
-    const interval = setInterval(refreshStatuses, hasRunning ? 2000 : 8000);
+    const isFast = hasRunning || pipelineActiveRef.current;
+    const interval = setInterval(refreshStatuses, isFast ? 2000 : 3000);
     return () => clearInterval(interval);
   }, [project, refreshStatuses, hasRunning]);
 
+  // Page Visibility API — when user comes back to Chrome after minimizing/switching,
+  // fire an immediate refresh so the UI catches up instantly instead of waiting
+  // for the next throttled timer tick (browsers slow background tabs to ~1 min).
+  useEffect(() => {
+    if (!project) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshStatuses();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [project, refreshStatuses]);
+
   // Auto-advance: when any phase becomes in_progress, jump to it in the left panel
-  // so the right panel shows live details for the running phase.
+  // and switch to Documents tab so the user sees live output immediately.
   useEffect(() => {
     if (!project) return;
     const runningIdx = PHASES.findIndex(p => statuses[p.id] === 'in_progress');
     if (runningIdx >= 0 && runningIdx !== selectedPhaseIdx) {
       setSelectedPhaseIdx(runningIdx);
+      setTab('documents');
     }
   }, [statuses]);
 
-  // Called by ChatView "Approve & Start Pipeline" button,
+  // Called by ChatView "Approve & Run" button,
   // AND by status-poll fallback via handleP1CompleteRef
   const handleP1Complete = useCallback(async () => {
     if (!project) return;
@@ -127,7 +166,9 @@ export default function App() {
       console.log('[Pipeline] Calling runPipeline for project', project.id);
       const resp = await api.runPipeline(project.id);
       console.log('[Pipeline] runPipeline response:', resp);
-      // Force fast polling immediately — don't wait 5s for the interval to notice
+      // Mark pipeline active — keeps polling at 2s throughout the full run
+      pipelineActiveRef.current = true;
+      // Force fast polling immediately — don't wait for the interval to notice
       setHasRunning(true);
       // Poll aggressively for first ~10s to catch the in_progress transition fast
       setTimeout(() => refreshStatuses(), 1000);
@@ -145,9 +186,13 @@ export default function App() {
     handleP1CompleteRef.current = handleP1Complete;
   }, [handleP1Complete]);
 
-  // Reset pipeline-started guard and status history when project changes
+  // Reset pipeline-started guard and status history when project changes.
+  // NOTE: pipelineStartedRef is intentionally NOT reset to false here —
+  // handleLoadProject sets it correctly after reading statuses from the DB.
+  // Resetting it here would race with the async status fetch and cause
+  // the guard to be false during the window where statuses haven't loaded yet.
   useEffect(() => {
-    pipelineStartedRef.current = false;
+    pipelineActiveRef.current = false;
     prevP1StatusRef.current = undefined;
     prevStatusesRef.current = {};
   }, [project]);
@@ -186,6 +231,7 @@ export default function App() {
     if (!project) return;
     try {
       await api.runPipeline(project.id);
+      pipelineActiveRef.current = true;
       setHasRunning(true);
       setTab('documents');
       showToast('Pipeline started — running P2 → P8c...');
@@ -222,7 +268,8 @@ export default function App() {
     setProject(p);
     setModal(null);
     setMode('pipeline');
-    pipelineStartedRef.current = false;
+    // pipelineStartedRef will be set correctly after statuses load below —
+    // do NOT reset it to false here yet (set at end of try block instead).
     prevP1StatusRef.current = undefined;
     try {
       // Restore P1 chat history from DB so F5 doesn't blank the conversation
@@ -250,11 +297,16 @@ export default function App() {
       const firstIncomplete = PHASES.findIndex(ph => !ph.manual && !done.includes(ph.id));
       const idx = firstIncomplete >= 0 ? firstIncomplete : 0;
       setSelectedPhaseIdx(idx);
-      setTab(PHASES[idx].id === 'P1' ? 'chat' : 'details');
+      setTab(PHASES[idx].id === 'P1' ? 'chat' : 'documents');
 
-      // NOTE: Do NOT auto-start the pipeline here. The user must explicitly click
-      // "Approve & Start Pipeline" in the P1 chat view. This gives them a chance to
-      // review the generated requirements and request changes before committing.
+      // IMPORTANT: restore pipelineStartedRef from DB state so "Approve & Run"
+      // cannot fire a second runPipeline call if the pipeline already ran.
+      // If ANY non-P1 AI phase has ever been touched (in_progress/completed/failed),
+      // the pipeline was already started — block the guard.
+      pipelineStartedRef.current = PHASES.some(
+        ph => !ph.manual && ph.id !== 'P1' &&
+          (s[ph.id] === 'in_progress' || s[ph.id] === 'completed' || s[ph.id] === 'failed')
+      );
     } catch (_) { setTab('documents'); }
   };
 
@@ -302,6 +354,8 @@ export default function App() {
         <LandingPage
           onCreate={() => setModal('create')}
           onLoad={() => setModal('load')}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
         {modal === 'create' && (
           <CreateProjectModal
@@ -343,7 +397,7 @@ export default function App() {
       />
 
       {/* Center Content */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#080c17' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--navy)' }}>
         <MiniTopbar
           project={project}
           phases={PHASES}
@@ -352,6 +406,8 @@ export default function App() {
           onRunPipeline={handleRunPipeline}
           onRerunStale={handleRerunStale}
           pipelineRunning={hasRunning}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <div className="fade-up" key={selectedPhaseIdx}>

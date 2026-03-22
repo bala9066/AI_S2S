@@ -45,12 +45,14 @@ class StorageAdapter:
     def write(self, project_name: str, filename: str, content: str) -> Path:
         """Write text content to a file in the project directory."""
         dest = self.project_dir(project_name) / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)  # create subdirs (e.g. qt_gui/, .github/workflows/)
         dest.write_text(content, encoding="utf-8")
         log.debug("storage.write", extra={"file": str(dest), "bytes": len(content)})
         return dest
 
     def write_bytes(self, project_name: str, filename: str, data: bytes) -> Path:
         dest = self.project_dir(project_name) / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         return dest
 

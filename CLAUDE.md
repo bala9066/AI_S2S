@@ -435,8 +435,7 @@ async def serve_frontend():
 
 ## Known Issues
 
-- **P4 Netlist:** phase status shows "Pending" even when output files exist — backend tracking bug
-- **P4 orchestrator bug:** `data must be str, not dict` error on some P4 runs
+*(none outstanding — all previously noted P4 bugs have been resolved)*
 
 ---
 

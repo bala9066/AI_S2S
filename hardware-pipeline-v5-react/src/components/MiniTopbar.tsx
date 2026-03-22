@@ -8,14 +8,19 @@ interface Props {
   onRunPipeline?: () => void;
   onRerunStale?: (staleIds: string[]) => void;
   pipelineRunning?: boolean;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
-export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = [], onRunPipeline, onRerunStale, pipelineRunning }: Props) {
+export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = [], onRunPipeline, onRerunStale, pipelineRunning, theme = 'dark', onToggleTheme }: Props) {
   const completedCount = phases.filter(p => statuses[p.id] === 'completed').length;
   const runningPhase = phases.find(p => statuses[p.id] === 'in_progress');
   const pct = Math.round((completedCount / phases.length) * 100);
   const p1Done = statuses['P1'] === 'completed';
   const allDone = completedCount === phases.length;
+  // All AI phases complete (excludes manual phases P5/P7)
+  const aiPhases = phases.filter(p => !p.manual);
+  const allAiDone = aiPhases.length > 0 && aiPhases.every(p => statuses[p.id] === 'completed');
   // Only show Run Pipeline when pipeline has already been started (P2+ has activity)
   // but is currently stopped — this is the recovery/restart case.
   // Hidden during initial Approve flow (user uses the Approve button in chat instead).
@@ -25,8 +30,8 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
 
   return (
     <div style={{
-      padding: '0 24px', borderBottom: '1px solid #1e2d40',
-      background: '#080c17', position: 'sticky', top: 0, zIndex: 5,
+      padding: '0 24px', borderBottom: '1px solid var(--border2)',
+      background: 'var(--navy)', position: 'sticky', top: 0, zIndex: 5,
       minHeight: 52, display: 'flex', alignItems: 'center', gap: 12,
     }}>
       {/* Project name + type */}
@@ -38,37 +43,7 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
         }}>
           {project?.name || 'No project'}
         </span>
-        {project?.design_type && (
-          <span style={{
-            fontSize: 10, color: 'var(--teal)', background: 'rgba(0,198,167,0.08)',
-            border: '1px solid rgba(0,198,167,0.25)', padding: '2px 8px', borderRadius: 3,
-            fontFamily: "'DM Mono', monospace", letterSpacing: '0.06em', flexShrink: 0,
-          }}>
-            {project.design_type.toUpperCase()}
-          </span>
-        )}
       </div>
-
-      {/* Run Pipeline button — shown when P1 done but pipeline not yet running */}
-      {showRunBtn && (
-        <button
-          onClick={onRunPipeline}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '5px 14px', borderRadius: 5,
-            background: 'rgba(0,198,167,0.12)',
-            border: '1px solid rgba(0,198,167,0.4)',
-            color: '#00c6a7', fontSize: 11,
-            fontFamily: "'DM Mono', monospace", fontWeight: 700,
-            cursor: 'pointer', letterSpacing: '0.05em',
-            transition: 'all 0.2s', flexShrink: 0,
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.22)'; e.currentTarget.style.boxShadow = '0 0 12px rgba(0,198,167,0.3)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.12)'; e.currentTarget.style.boxShadow = 'none'; }}
-        >
-          ▶ Run Pipeline
-        </button>
-      )}
 
       {/* Re-run stale phases button — amber, shown when requirements changed after some phases ran */}
       {onRerunStale && stalePhaseIds.length > 0 && !pipelineRunning && (
@@ -90,6 +65,22 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
         >
           ↺ Re-run {stalePhaseIds.length} stale
         </button>
+      )}
+
+      {/* Pipeline complete celebration */}
+      {allAiDone && !pipelineRunning && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0,
+          padding: '3px 12px', borderRadius: 20,
+          background: 'rgba(0,198,167,0.1)',
+          border: '1px solid rgba(0,198,167,0.35)',
+          animation: 'pulse 2.5s ease infinite',
+        }}>
+          <span style={{ fontSize: 13 }}>✓</span>
+          <span style={{ fontSize: 10, color: '#00c6a7', fontFamily: "'DM Mono', monospace", letterSpacing: '0.07em', fontWeight: 700 }}>
+            PIPELINE COMPLETE
+          </span>
+        </div>
       )}
 
       {/* Running indicator */}
@@ -130,7 +121,7 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
                     ? p.color
                     : isRunning
                     ? p.color + '77'
-                    : '#1e2d40',
+                    : 'var(--panel3)',
                   transition: 'background 0.4s',
                   boxShadow: isRunning ? `0 0 6px ${p.color}55` : 'none',
                   position: 'relative',
@@ -152,6 +143,35 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
           {completedCount}/{phases.length}
         </span>
       </div>
+
+      {/* Theme toggle */}
+      {onToggleTheme && (
+        <button
+          onClick={onToggleTheme}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 30, height: 30, borderRadius: 6,
+            background: 'var(--panel2)',
+            border: '1px solid var(--border)',
+            color: 'var(--text2)',
+            cursor: 'pointer', fontSize: 15,
+            transition: 'all 0.2s', flexShrink: 0,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'var(--panel3)';
+            e.currentTarget.style.color = 'var(--teal)';
+            e.currentTarget.style.borderColor = 'var(--teal-border)';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'var(--panel2)';
+            e.currentTarget.style.color = 'var(--text2)';
+            e.currentTarget.style.borderColor = 'var(--border)';
+          }}
+        >
+          {theme === 'dark' ? '☀' : '☽'}
+        </button>
+      )}
     </div>
   );
 }
