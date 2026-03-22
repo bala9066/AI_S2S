@@ -11,6 +11,17 @@
 
 ---
 
+### BUG-014 · Documents tab shows "Phase completed — no documents found" even though files exist
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** Critical
+**Root Cause (1 — backend):** `list_documents` API used `output_dir` from DB with no fallback. If `output_dir` was empty (projects created before field was reliably written, or path changed) the endpoint silently returned `[]` with no log. Additionally, the endpoint used `os.listdir()` (flat scan only) so subdirectory files like `qt_gui/*.cpp` were listed as the subdirectory entry (directory, not file) and skipped by the `isfile()` guard.
+**Root Cause (2 — frontend):** The "completed, no documents" empty state showed only a static error message with no way to retry. User had to reload the entire page.
+**Fix (backend):** Added `_resolve_output_dir(proj)` helper that: (a) checks DB `output_dir` first, (b) falls back to deriving the path from the project name using the same `StorageAdapter.project_dir` lowercase/underscore logic, (c) logs a warning with full context when neither works. Replaced `os.listdir` flat scan with `os.scandir` that also recurses one level into subdirectories, so `qt_gui/README.md`, `.github/workflows/hardware_pipeline_ci.yml` etc. are correctly listed.
+**Fix (frontend):** Changed "Phase completed — no documents found" message to "Output files may still be writing to disk. Try refreshing." and added `↺ REFRESH DOCUMENTS` button that calls `fetchList(false, phase.id)` to force a fresh non-silent fetch.
+**Commit:** pending
+
+---
+
 ### BUG-009 · TBD / TBA / TBC values in component table (requirements_agent)
 **Reported:** 2026-03-22 | **Resolved:** 2026-03-22
 **Severity:** High

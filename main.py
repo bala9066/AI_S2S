@@ -171,14 +171,52 @@ async def get_project(project_id: int):
     return proj
 
 
+def _resolve_output_dir(proj: dict) -> Optional[str]:
+    """
+    Return the output directory for a project, with fallback derivation.
+
+    Priority:
+    1. DB-stored output_dir (absolute or relative path that exists on disk)
+    2. Derived from project name using the same StorageAdapter logic
+       (handles projects created before output_dir was reliably written, or
+        where the DB column was left empty due to a failed project creation)
+    """
+    stored = (proj.get("output_dir") or "").strip()
+    if stored and os.path.isdir(stored):
+        return stored
+
+    # Fallback: derive from project name using StorageAdapter.project_dir logic
+    name = (proj.get("name") or "").strip()
+    if name:
+        safe = name.replace(" ", "_").lower()
+        # Try relative (server started from project root) and absolute via settings
+        candidates = [
+            os.path.join("output", safe),
+            str(settings.output_dir / safe),
+        ]
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                log.info(
+                    "documents.output_dir_derived",
+                    extra={"project_id": proj.get("id"), "derived": candidate, "stored": stored or "(empty)"},
+                )
+                return candidate
+
+    log.warning(
+        "documents.output_dir_missing",
+        extra={"project_id": proj.get("id"), "stored": stored or "(empty)", "name": proj.get("name")},
+    )
+    return None
+
+
 @app.get("/api/v1/projects/{project_id}/documents/{filename}", tags=["projects"])
 async def get_document(project_id: int, filename: str):
     proj = _project_svc().get(project_id)
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
-    output_dir = proj.get("output_dir")
+    output_dir = _resolve_output_dir(proj)
     if not output_dir:
-        raise HTTPException(404, "Project has no output directory yet")
+        raise HTTPException(404, "Project output directory not found — run Phase 1 first")
 
     file_path = os.path.join(output_dir, filename)
     if not os.path.exists(file_path):
@@ -189,19 +227,32 @@ async def get_document(project_id: int, filename: str):
 
 @app.get("/api/v1/projects/{project_id}/documents", tags=["projects"])
 async def list_documents(project_id: int):
-    """List all available output files for a project."""
+    """List all available output files for a project (flat + one level deep for qt_gui etc.)."""
     proj = _project_svc().get(project_id)
-    output_dir = proj.get("output_dir") if proj else None
+    if not proj:
+        return []
+
+    output_dir = _resolve_output_dir(proj)
     if not output_dir:
         return []
+
     try:
         files = []
-        for f in os.listdir(output_dir):
-            full = os.path.join(output_dir, f)
-            if os.path.isfile(full):
-                files.append({"name": f, "size": os.path.getsize(full)})
+        for entry in os.scandir(output_dir):
+            if entry.is_file():
+                files.append({"name": entry.name, "size": entry.stat().st_size})
+            elif entry.is_dir():
+                # Include one level of subdirectory files (e.g. qt_gui/, .github/workflows/)
+                try:
+                    for sub in os.scandir(entry.path):
+                        if sub.is_file():
+                            rel = f"{entry.name}/{sub.name}"
+                            files.append({"name": rel, "size": sub.stat().st_size})
+                except OSError:
+                    pass
         return sorted(files, key=lambda x: x["name"])
-    except Exception:
+    except OSError as exc:
+        log.warning("documents.list_failed", extra={"project_id": project_id, "error": str(exc)})
         return []
 
 

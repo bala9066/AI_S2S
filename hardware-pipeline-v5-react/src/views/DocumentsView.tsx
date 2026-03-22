@@ -572,9 +572,18 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
             <>
               <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.25 }}>📭</div>
               <div style={{ fontSize: 14, color: 'var(--text2)', marginBottom: 6 }}>Phase completed — no documents found</div>
-              <div style={{ fontSize: 12, color: 'var(--text4)' }}>
-                The phase ran but no output files were detected. Check the backend logs.
+              <div style={{ fontSize: 12, color: 'var(--text4)', marginBottom: 14 }}>
+                Output files may still be writing to disk. Try refreshing.
               </div>
+              <button
+                onClick={() => fetchList(false, phase.id)}
+                style={{
+                  padding: '7px 18px', background: `${phase.color}18`,
+                  border: `1px solid ${phase.color}55`, borderRadius: 6,
+                  color: phase.color, fontSize: 12, fontFamily: 'DM Mono, monospace',
+                  cursor: 'pointer', letterSpacing: '0.05em',
+                }}
+              >↺ REFRESH DOCUMENTS</button>
             </>
           ) : (
             <div style={{ fontSize: 13, color: 'var(--text3)' }}>No documents for {phase.code} yet.</div>
