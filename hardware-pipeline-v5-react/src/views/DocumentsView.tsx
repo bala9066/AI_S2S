@@ -515,6 +515,14 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     a.click();
   };
 
+  const triggerDocxDownload = (file: DocFile) => {
+    if (!project) return;
+    const a = document.createElement('a');
+    a.href = `/api/v1/projects/${project.id}/documents/${encodeURIComponent(file.name)}/docx`;
+    a.download = file.name.replace(/\.md$/i, '.docx');
+    a.click();
+  };
+
   // ── Render states ─────────────────────────────────────────────────────────
 
   if (loadingList) {
@@ -777,6 +785,28 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                       onMouseLeave={e => { if (!isOpen) { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; }}}
                     >
                       {isOpen ? '▲ Close' : '▼ Preview'}
+                    </button>
+                  )}
+
+                  {/* ↓ DOCX button — only for .md files */}
+                  {getExt(file.name) === 'md' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); triggerDocxDownload(file); }}
+                      title={`Convert ${file.name} to Word document (.docx)`}
+                      style={{
+                        fontSize: 12, color: 'var(--text3)',
+                        background: 'var(--panel2)',
+                        border: '1px solid var(--panel3)',
+                        borderRadius: 6, cursor: 'pointer',
+                        fontFamily: "'DM Mono', monospace",
+                        padding: '5px 12px', transition: 'all 0.15s',
+                        display: 'flex', alignItems: 'center', gap: 5,
+                        whiteSpace: 'nowrap',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f666'; e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; e.currentTarget.style.background = 'var(--panel2)'; }}
+                    >
+                      ↓ DOCX
                     </button>
                   )}
 

@@ -361,7 +361,7 @@ async def export_project_zip(project_id: int):
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
 
-    output_dir = proj.get("output_dir")
+    output_dir = _resolve_output_dir(proj)
     if not output_dir:
         raise HTTPException(404, "No output directory for this project")
 
@@ -369,10 +369,7 @@ async def export_project_zip(project_id: int):
     if not out_path.exists():
         raise HTTPException(404, "Output directory does not exist")
 
-    # Collect all files in output dir (non-recursive by default, recursive if nested)
-    files = list(out_path.rglob("*"))
-    doc_files = [f for f in files if f.is_file()]
-
+    doc_files = [f for f in out_path.rglob("*") if f.is_file()]
     if not doc_files:
         raise HTTPException(404, "No documents found to export")
 
@@ -390,6 +387,89 @@ async def export_project_zip(project_id: int):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.get("/api/v1/projects/{project_id}/documents/{filename}/docx", tags=["projects"])
+async def convert_document_to_docx(project_id: int, filename: str):
+    """
+    Convert a Markdown (.md) file to .docx and stream it for download.
+    Uses pandoc if available (installed in Docker image), falls back to python-docx.
+    """
+    import subprocess, tempfile, pathlib
+
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    output_dir = _resolve_output_dir(proj)
+    if not output_dir:
+        raise HTTPException(404, "Project output directory not found")
+
+    src_path = pathlib.Path(output_dir) / filename
+    if not src_path.exists():
+        raise HTTPException(404, f"File {filename} not found")
+
+    if src_path.suffix.lower() not in (".md", ".txt"):
+        raise HTTPException(400, "Only .md and .txt files can be converted to .docx")
+
+    stem = src_path.stem
+    out_filename = f"{stem}.docx"
+
+    # ── Try pandoc first (installed in Docker image) ───────────────────────────
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = pathlib.Path(tmpdir) / out_filename
+            result = subprocess.run(
+                ["pandoc", str(src_path), "-o", str(out_path),
+                 "--from=markdown", "--to=docx",
+                 "-V", "geometry:margin=2.5cm",
+                 "--standalone"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and out_path.exists():
+                data = out_path.read_bytes()
+                return StreamingResponse(
+                    iter([data]),
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+                )
+            log.warning("pandoc.failed", extra={"stderr": result.stderr, "file": filename})
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        log.warning("pandoc.unavailable", extra={"error": str(exc)})
+
+    # ── Fallback: python-docx heading/paragraph parser ────────────────────────
+    try:
+        from docx import Document as DocxDocument  # type: ignore
+
+        md_text = src_path.read_text(encoding="utf-8")
+        doc = DocxDocument()
+        for line in md_text.splitlines():
+            s = line.strip()
+            if s.startswith("#### "):
+                doc.add_heading(s[5:], level=4)
+            elif s.startswith("### "):
+                doc.add_heading(s[4:], level=3)
+            elif s.startswith("## "):
+                doc.add_heading(s[3:], level=2)
+            elif s.startswith("# "):
+                doc.add_heading(s[2:], level=1)
+            elif s:
+                doc.add_paragraph(s)
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            doc.save(tmp.name)
+            data = pathlib.Path(tmp.name).read_bytes()
+
+        return StreamingResponse(
+            iter([data]),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+        )
+    except ImportError:
+        raise HTTPException(500, "pandoc not found and python-docx not installed.")
+    except Exception as exc:
+        log.exception("docx.conversion_failed", extra={"file": filename})
+        raise HTTPException(500, f"Conversion failed: {exc}")
 
 
 # ── Phase status (polling endpoint for UI) ─────────────────────────────────────
