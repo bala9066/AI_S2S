@@ -103,6 +103,11 @@ class Settings:
         self.debug = _env_bool("DEBUG", True)
         self.log_level = _env("LOG_LEVEL", "INFO")
 
+        # --- Password Gate ---
+        # Set to enable a login page protecting the entire app.
+        # Leave empty to disable (useful for local dev and on-prem).
+        self.app_password = _env("APP_PASSWORD", "")
+
         # --- Server ---
         self.fastapi_host = _env("FASTAPI_HOST", "0.0.0.0")
         self.fastapi_port = _env_int("FASTAPI_PORT", 8000)

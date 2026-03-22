@@ -17,9 +17,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List
 
@@ -106,6 +107,136 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+# ── Password Gate (optional) ───────────────────────────────────────────────────
+# Set APP_PASSWORD env var to enable. Leave empty to disable (open access).
+# Uses a signed cookie — no database, no sessions library needed.
+# Protects all routes except /health and /login.
+
+_APP_PASSWORD = settings.app_password or os.environ.get("APP_PASSWORD", "")
+_COOKIE_NAME = "hp_auth"
+_COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+
+def _make_token(password: str) -> str:
+    """Simple HMAC token so the cookie can't be forged without knowing the password."""
+    import hmac, hashlib
+    return hmac.new(password.encode(), b"hardware-pipeline-auth", hashlib.sha256).hexdigest()
+
+_LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hardware Pipeline — Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #070b14;
+    color: #e2e8f0;
+    font-family: 'DM Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-image: radial-gradient(circle at 50% 50%, rgba(0,198,167,0.04) 0%, transparent 70%);
+  }
+  .card {
+    background: #1a2235;
+    border: 1px solid rgba(0,198,167,0.25);
+    border-radius: 12px;
+    padding: 48px 44px;
+    width: 100%;
+    max-width: 400px;
+    box-shadow: 0 0 40px rgba(0,198,167,0.08);
+    text-align: center;
+  }
+  .logo { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+  .logo span { color: #00c6a7; }
+  .sub { font-size: 10px; color: #00c6a7; letter-spacing: 0.15em; margin-bottom: 32px; }
+  label { display: block; font-size: 11px; color: #64748b; letter-spacing: 0.08em; margin-bottom: 8px; text-align: left; }
+  input[type=password] {
+    width: 100%; padding: 12px 14px;
+    background: #0d1220; border: 1px solid rgba(42,58,80,0.8);
+    border-radius: 6px; color: #e2e8f0; font-family: 'DM Mono', monospace;
+    font-size: 14px; outline: none; margin-bottom: 18px;
+    transition: border-color 0.2s;
+  }
+  input[type=password]:focus { border-color: #00c6a7; }
+  button {
+    width: 100%; padding: 12px;
+    background: #00c6a7; border: none; border-radius: 6px;
+    color: #070b14; font-family: 'Syne', sans-serif;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    letter-spacing: 0.05em; transition: opacity 0.2s;
+  }
+  button:hover { opacity: 0.88; }
+  .err { color: #ef4444; font-size: 12px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Hardware <span>Pipeline</span></div>
+  <div class="sub">DATA PATTERNS · CODE KNIGHTS</div>
+  <form method="POST" action="/login">
+    <label>ACCESS PASSWORD</label>
+    <input type="password" name="password" placeholder="Enter password" autofocus>
+    {error}
+    <button type="submit">ENTER →</button>
+  </form>
+</div>
+</body>
+</html>"""
+
+class PasswordGateMiddleware(BaseHTTPMiddleware):
+    """Block all routes behind a password if APP_PASSWORD is set."""
+
+    # Routes that bypass the gate entirely
+    _OPEN = {"/health", "/login"}
+
+    async def dispatch(self, request: Request, call_next):
+        if not _APP_PASSWORD:
+            return await call_next(request)  # gate disabled
+
+        path = request.url.path
+        if path in self._OPEN or path.startswith("/login"):
+            return await call_next(request)
+
+        # Check cookie
+        token = request.cookies.get(_COOKIE_NAME, "")
+        if token == _make_token(_APP_PASSWORD):
+            return await call_next(request)
+
+        # Not authenticated — redirect to login
+        return RedirectResponse(url=f"/login?next={path}", status_code=302)
+
+if _APP_PASSWORD:
+    app.add_middleware(PasswordGateMiddleware)
+    log.info("password_gate.enabled")
+
+
+@app.get("/login", response_class=HTMLResponse, tags=["ops"])
+async def login_page(next: str = "/app"):
+    return HTMLResponse(_LOGIN_PAGE.replace("{error}", ""))
+
+
+@app.post("/login", tags=["ops"])
+async def login_submit(request: Request, next: str = "/app"):
+    form = await request.form()
+    password = form.get("password", "")
+    if password == _APP_PASSWORD:
+        response = RedirectResponse(url=next, status_code=302)
+        response.set_cookie(
+            key=_COOKIE_NAME,
+            value=_make_token(_APP_PASSWORD),
+            max_age=_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+    error_html = '<div class="err">Incorrect password. Try again.</div>'
+    return HTMLResponse(_LOGIN_PAGE.replace("{error}", error_html), status_code=401)
 
 
 # ── Service singletons (created once per process) ─────────────────────────────
