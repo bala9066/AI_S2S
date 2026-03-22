@@ -8,9 +8,14 @@ interface Props {
   onExecute?: () => void;
   pipelineRunning?: boolean;
   isStale?: boolean;
+  /** True once the user has clicked "Approve & Run" at least once for this project.
+   *  The ▶ Execute button is hidden until pipelineStarted — forcing the user to
+   *  use the Approve & Run flow in the P1 Chat tab rather than accidentally
+   *  running an individual phase before the pipeline has been approved. */
+  pipelineStarted?: boolean;
 }
 
-export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute, pipelineRunning, isStale = false }: Props) {
+export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute, pipelineRunning, isStale = false, pipelineStarted = false }: Props) {
   const isComplete = status === 'completed';
   const isRunning = status === 'in_progress';
   const isFailed = status === 'failed';
@@ -136,8 +141,11 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               {phase.tagline}
             </div>
 
-            {/* Execute button — shown for non-P1, non-manual AI phases when pending or failed */}
-            {onExecute && !phase.manual && phase.id !== 'P1' && !pipelineRunning && (status === 'pending' || status === 'failed') && (
+            {/* Execute button — shown for non-P1, non-manual AI phases when pending/failed.
+                Requires pipelineStarted=true so the user must click "Approve & Run" in
+                the P1 Chat tab first — prevents accidentally running a phase before the
+                pipeline has been approved. */}
+            {onExecute && !phase.manual && phase.id !== 'P1' && !pipelineRunning && pipelineStarted && (status === 'pending' || status === 'failed') && (
               <button
                 onClick={onExecute}
                 style={{

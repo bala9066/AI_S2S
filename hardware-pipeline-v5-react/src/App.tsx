@@ -53,6 +53,11 @@ export default function App() {
   // Ref to handleP1Complete so refreshStatuses can call it without circular dep
   const handleP1CompleteRef = useRef<() => void>(() => {});
 
+  // Tracks which phase ID was last auto-advanced to, so we only jump once per
+  // new running phase. Without this, every 2-3s poll overrides the user's
+  // manual phase selection while the pipeline is running.
+  const autoAdvancedToRef = useRef<string | null>(null);
+
   // ── F5 / reload persistence ─────────────────────────────────────────────────
   // Restore last-used project from sessionStorage so F5 doesn't send the user
   // back to the landing page.
@@ -144,14 +149,25 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [project, refreshStatuses]);
 
-  // Auto-advance: when any phase becomes in_progress, jump to it in the left panel
-  // and switch to Documents tab so the user sees live output immediately.
+  // Auto-advance: when a NEW phase becomes in_progress, jump to it once.
+  // Uses a ref to remember the last auto-advanced phase so subsequent polls
+  // (every 2-3s) do NOT override the user's manual navigation.
+  // If the user manually moves to P1 while P2 is running, they stay there.
   useEffect(() => {
     if (!project) return;
-    const runningIdx = PHASES.findIndex(p => statuses[p.id] === 'in_progress');
-    if (runningIdx >= 0 && runningIdx !== selectedPhaseIdx) {
-      setSelectedPhaseIdx(runningIdx);
-      setTab('documents');
+    const runningPhase = PHASES.find(p => statuses[p.id] === 'in_progress');
+    if (runningPhase) {
+      // Only auto-jump on the FIRST time we detect this particular phase running
+      if (runningPhase.id !== autoAdvancedToRef.current) {
+        autoAdvancedToRef.current = runningPhase.id;
+        const idx = PHASES.findIndex(p => p.id === runningPhase.id);
+        setSelectedPhaseIdx(idx);
+        setTab('documents');
+      }
+      // If the same phase is still running, do nothing — user keeps their selection
+    } else {
+      // No phase running — reset so the next phase that starts can auto-advance
+      autoAdvancedToRef.current = null;
     }
   }, [statuses]);
 
@@ -419,6 +435,9 @@ export default function App() {
             onExecute={() => handleExecutePhase(selectedPhase.id)}
             pipelineRunning={hasRunning}
             isStale={stalePhaseIds.includes(selectedPhase?.id)}
+            pipelineStarted={Object.entries(statuses).some(
+              ([k, v]) => k !== 'P1' && (v === 'completed' || v === 'in_progress' || v === 'failed')
+            )}
           />
           </div>
           <div style={{ padding: '0 26px 26px' }}>

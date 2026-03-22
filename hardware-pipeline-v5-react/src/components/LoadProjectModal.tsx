@@ -46,7 +46,7 @@ export default function LoadProjectModal({ onSelect, onCancel }: Props) {
           )}
           {projects.map(p => (
             <div key={p.id} onClick={() => onSelect(p)} style={{
-              background: '#0a0e1a', border: '1px solid var(--panel2)',
+              background: 'var(--panel2)', border: '1px solid var(--panel3)',
               borderRadius: 8, padding: '13px 14px', marginBottom: 9,
               cursor: 'pointer', transition: 'border-color 0.15s',
             }}

@@ -312,6 +312,58 @@ function PhaseDetails({ phase, color, collapsed = false }: { phase: PhaseMeta; c
   );
 }
 
+// ── GeneratingState — shown when phase is in_progress but no files yet ─────────
+
+function GeneratingState({ phase, onRefresh }: { phase: PhaseMeta; onRefresh: () => void }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const elapsedStr = mins > 0
+    ? `${mins}m ${secs.toString().padStart(2, '0')}s`
+    : `${secs}s`;
+
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ width: 14, height: 14, borderRadius: '50%', border: `2.5px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
+        <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>AI agent running — generating documents...</div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, color: 'var(--text4)', fontFamily: "'DM Mono', monospace" }}>
+          Elapsed: <span style={{ color: phase.color }}>{elapsedStr}</span>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text4)', fontFamily: "'DM Mono', monospace" }}>
+          Estimated: <span style={{ color: phase.color }}>{phase.time}</span>
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto 16px', lineHeight: 1.7 }}>
+        Output files will appear here automatically. If stuck, use Refresh.
+      </div>
+      <button
+        onClick={onRefresh}
+        style={{
+          fontSize: 11, color: phase.color,
+          background: `${phase.color}10`,
+          border: `1px solid ${phase.color}40`,
+          borderRadius: 5, cursor: 'pointer',
+          fontFamily: "'DM Mono', monospace",
+          padding: '5px 14px', transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = `${phase.color}20`; }}
+        onMouseLeave={e => { e.currentTarget.style.background = `${phase.color}10`; }}
+      >
+        ↻ Refresh Now
+      </button>
+    </>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function DocumentsView({ project, phase, status, pipelineRunning }: Props) {
@@ -478,17 +530,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           textAlign: 'center', marginBottom: 20,
         }}>
           {status === 'in_progress' ? (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 10 }}>
-                <div style={{ width: 14, height: 14, borderRadius: '50%', border: `2.5px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
-                <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>AI agent running — generating documents...</div>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto', lineHeight: 1.7 }}>
-                Estimated time: <span style={{ color: phase.color }}>{phase.time}</span>
-                <br />
-                Output files will appear here automatically once the phase completes.
-              </div>
-            </>
+            <GeneratingState phase={phase} onRefresh={() => fetchList()} />
           ) : status === 'pending' ? (
             <>
               <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.25 }}>📁</div>

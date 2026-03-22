@@ -114,7 +114,7 @@ export default function LandingPage({ onCreate, onLoad, theme = 'dark', onToggle
           ].map((m, i) => (
             <div key={i} style={{
               padding: '10px 22px',
-              borderRight: i < 2 ? '1px solid #1e2d40' : 'none',
+              borderRight: i < 2 ? '1px solid var(--border2)' : 'none',
               textAlign: 'center',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', marginBottom: 4 }}>

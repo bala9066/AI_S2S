@@ -28,7 +28,7 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   };
 
   const inputStyle = {
-    width: '100%', background: '#060a10', border: '1px solid var(--panel3)',
+    width: '100%', background: 'var(--panel)', border: '1px solid var(--panel3)',
     borderRadius: 5, padding: '10px 13px', fontSize: 13,
     color: 'var(--text)', fontFamily: "'DM Mono', monospace",
     transition: 'border-color 0.2s',

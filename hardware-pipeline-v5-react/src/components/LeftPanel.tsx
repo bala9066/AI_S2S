@@ -152,9 +152,9 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                       : isComplete
                       ? phase.color + '80'
                       : phase.manual
-                      ? '#2a3a50'
+                      ? 'var(--panel3)'
                       : isLocked
-                      ? '#1e2d40'
+                      ? 'var(--border2)'
                       : phase.color + '35'
                   }`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -164,9 +164,9 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                     : isComplete
                     ? phase.color + 'cc'
                     : phase.manual
-                    ? '#475569'
+                    ? 'var(--text4)'
                     : isLocked
-                    ? '#2a3a50'
+                    ? 'var(--panel3)'
                     : phase.color + '70',
                   transition: 'all 0.2s',
                   boxShadow: isRunning ? `0 0 14px ${phase.color}55` : isActive ? `0 0 8px ${phase.color}25` : 'none',

@@ -67,6 +67,12 @@ class GitAgent:
 
         try:
             repo_path = self._ensure_repo(output_dir)
+
+            # Ensure the remote GitHub repo has a base branch before creating PRs.
+            # On first push to an empty GitHub repo, we push main first so PRs have a base.
+            if self._github_client and settings.github_repo:
+                self._ensure_remote_base_branch(repo_path)
+
             branch = self._make_branch_name(project_name)
             self._create_branch(repo_path, branch)
             commit_sha = self._stage_and_commit(repo_path, project_name)
@@ -100,37 +106,83 @@ class GitAgent:
     # ------------------------------------------------------------------ #
 
     def _ensure_repo(self, output_dir: Path) -> Path:
-        """Init a git repo in output_dir if one does not already exist."""
+        """
+        Init a git repo INSIDE output_dir (not a parent).
+        Uses output_dir/.git — never walks up to the project root repo.
+        """
         import git as gitlib
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if there's already a git repo here or in a parent
+        # Only look for a repo directly in output_dir — NOT parent directories.
+        # search_parent_directories=True would accidentally find the project root .git
+        # and commit generated artefacts there instead of the output repo.
         try:
-            repo = gitlib.Repo(str(output_dir), search_parent_directories=True)
-            return Path(repo.working_dir)
+            repo = gitlib.Repo(str(output_dir))  # strict: no parent search
+            logger.info(f"GitAgent: using existing output repo at {output_dir}")
         except gitlib.InvalidGitRepositoryError:
-            pass
-
-        # Initialise fresh repo
-        repo = gitlib.Repo.init(str(output_dir))
+            repo = gitlib.Repo.init(str(output_dir))
+            logger.info(f"GitAgent: initialized new output repo at {output_dir}")
 
         # Set minimal git config so commits don't fail
         with repo.config_writer() as cfg:
-            if not cfg.has_option("user", "email"):
-                cfg.set_value("user", "name", "Hardware Pipeline AI")
-                cfg.set_value("user", "email", "ai@hardware-pipeline.local")
+            cfg.set_value("user", "name", "Hardware Pipeline AI")
+            cfg.set_value("user", "email", "ai@hardware-pipeline.local")
 
-        # If a remote is configured, add it
+        # Set/update remote URL with embedded auth token
         if settings.github_repo and settings.github_token:
             remote_url = settings.github_repo_url or \
                 f"https://{settings.github_token}@github.com/{settings.github_repo}.git"
             try:
-                repo.create_remote("origin", remote_url)
-            except gitlib.GitCommandError:
-                pass  # remote already exists
+                repo.remote("origin").set_url(remote_url)
+                logger.info("GitAgent: updated origin remote URL")
+            except Exception:
+                try:
+                    repo.create_remote("origin", remote_url)
+                    logger.info("GitAgent: created origin remote")
+                except Exception as e:
+                    logger.warning(f"GitAgent: could not set remote: {e}")
 
         return output_dir
+
+    def _ensure_remote_base_branch(self, repo_path: Path) -> None:
+        """
+        If the GitHub repo has no branches (completely empty), push an initial commit
+        to 'main' so that subsequent feature-branch PRs have a base to target.
+        Only runs once — skipped if the remote already has branches.
+        """
+        import git as gitlib
+        try:
+            gh_repo = self._github_client.get_repo(settings.github_repo)
+            branches = list(gh_repo.get_branches())
+            if branches:
+                return  # Remote already has content — nothing to do
+
+            # Remote is empty: push whatever HEAD is (initial commit) to 'main'
+            repo = gitlib.Repo(str(repo_path))
+            if not repo.heads:
+                # Create the initial commit if it doesn't exist yet
+                repo.index.commit(
+                    "chore: init hardware pipeline output repo",
+                    author=gitlib.Actor("Hardware Pipeline AI", "ai@hardware-pipeline.local"),
+                    committer=gitlib.Actor("Hardware Pipeline AI", "ai@hardware-pipeline.local"),
+                )
+
+            # Ensure local branch is named 'main'
+            try:
+                main_branch = repo.create_head("main", repo.head.commit)
+            except gitlib.GitCommandError:
+                main_branch = repo.heads["main"] if "main" in [h.name for h in repo.heads] else repo.heads[0]
+
+            try:
+                origin = repo.remote("origin")
+                origin.push(refspec="main:main")
+                logger.info("GitAgent: pushed initial 'main' branch to remote GitHub repo")
+            except Exception as e:
+                logger.warning(f"GitAgent: initial main push failed: {e}")
+
+        except Exception as e:
+            logger.warning(f"GitAgent: _ensure_remote_base_branch failed: {e}")
 
     def _make_branch_name(self, project_name: str) -> str:
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", project_name).strip("-").lower()
@@ -257,7 +309,7 @@ class GitAgent:
             return pr.html_url
 
         except Exception as e:
-            logger.warning(f"GitAgent: PR creation failed: {e}")
+            logger.error(f"GitAgent: PR creation failed: {type(e).__name__}: {e}")
             return None
 
     # ------------------------------------------------------------------ #
