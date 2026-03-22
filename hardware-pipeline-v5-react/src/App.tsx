@@ -313,7 +313,13 @@ export default function App() {
       const firstIncomplete = PHASES.findIndex(ph => !ph.manual && !done.includes(ph.id));
       const idx = firstIncomplete >= 0 ? firstIncomplete : 0;
       setSelectedPhaseIdx(idx);
-      setTab(PHASES[idx].id === 'P1' ? 'chat' : 'documents');
+      // P1: chat if still pending, documents if already complete
+      const landingPhase = PHASES[idx];
+      if (landingPhase.id === 'P1') {
+        setTab(s['P1'] === 'completed' ? 'documents' : 'chat');
+      } else {
+        setTab('documents');
+      }
 
       // IMPORTANT: restore pipelineStartedRef from DB state so "Approve & Run"
       // cannot fire a second runPipeline call if the pipeline already ran.
@@ -345,7 +351,14 @@ export default function App() {
       return;
     }
     setSelectedPhaseIdx(idx);
-    setTab(phase.id === 'P1' ? 'chat' : 'documents');
+    // P1: go to Chat if pending (user still designing), Documents if complete (can review outputs)
+    // All other phases: always go to Documents
+    if (phase.id === 'P1') {
+      const p1Done = phaseStatus === 'completed';
+      setTab(p1Done ? 'documents' : 'chat');
+    } else {
+      setTab('documents');
+    }
   };
 
   const selectedPhase = PHASES[selectedPhaseIdx];

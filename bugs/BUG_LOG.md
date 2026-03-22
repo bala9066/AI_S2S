@@ -11,6 +11,51 @@
 
 ---
 
+### BUG-009 · TBD / TBA / TBC values in component table (requirements_agent)
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** High
+**Root Cause:** `requirements_agent.py` LLM outputs "TBD - STM32F4 or TI C2000 series" in `primary_part` fields when uncertain about components. No prompt instruction to forbid this pattern and no post-processing to clean it.
+**Fix:** (a) Added "NEVER prefix primary_part with 'TBD -', 'TBC -', 'TBA -'" to SYSTEM_PROMPT. (b) Added `_strip_tbd()` static method that strips "TBD - " prefixes and rewrites as "STM32F4 (alt: TI C2000 series)". (c) Added `_clean_component_data()` called before `_generate_output_files()` to apply strip to all component fields.
+**Commit:** pending (batch BUG-009 through BUG-013)
+
+---
+
+### BUG-010 · P1 Documents tab inaccessible before pipeline approval
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** High
+**Root Cause:** `handleSelectPhase()` in `App.tsx` always set tab to `'chat'` when selecting P1, even after P1 was completed. Users could not access generated requirements documents from the Documents tab to verify before approving the pipeline.
+**Fix:** Changed tab selection logic: if P1 is `completed`, default to `'documents'` tab; otherwise default to `'chat'`. Applied same logic to `handleLoadProject()` for consistency on browser refresh.
+**Commit:** pending
+
+---
+
+### BUG-011 · 5-second delay when switching between phases (CRITICAL — logic inversion)
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** Critical
+**Root Cause:** `DocumentsView.tsx` called `fetchList(!silent, phase.id)` — the `!` operator **inverted** the flag meaning. When `silent=true` (phase already loaded, revisiting) → `fetchList(false)` → showed full spinner. When `silent=false` (first load) → `fetchList(true)` → skipped spinner. Every phase switch showed the spinner because the loaded-phases cache was being ignored.
+**Fix:** Changed to `fetchList(silent, phase.id)` (removed the `!`). Already-loaded phases now switch instantly; only first-time loads show the spinner.
+**Commit:** pending
+
+---
+
+### BUG-012 · Execute button shows for pending phases during pipeline execution gap
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** Medium
+**Root Cause:** `PhaseHeader.tsx` Execute button condition included `status === 'pending'` when `pipelineStarted` was true. During the brief gap between phases (e.g., P6 complete → P7a about to start), phases in `pending` state incorrectly showed the Execute button, risking accidental manual trigger.
+**Fix:** Changed condition: when `pipelineStarted=true`, only show Execute for `failed` phases (retry). When `pipelineStarted=false` (standalone), show for both `pending` and `failed`. Running phases are always hidden.
+**Commit:** pending
+
+---
+
+### BUG-013 · CI/CD validation message misleads user about GitHub token
+**Reported:** 2026-03-22 | **Resolved:** 2026-03-22
+**Severity:** Low
+**Root Cause:** `code_agent.py` validation report header said "(local, no credentials)" implying the GitHub token provided by the user was being ignored. In reality the token IS used — for the `git push` and PR creation in the next step. The validation step itself is an offline YAML syntax check that doesn't need the token.
+**Fix:** Changed validation report header from "(local, no credentials)" to "offline YAML syntax check". Added a `> **Note:**` callout explaining "Your GitHub token IS used — for the git push and PR creation (next step). This step validates YAML syntax locally — no GitHub API call needed here."
+**Commit:** pending
+
+---
+
 ## Resolved Bugs
 
 ### BUG-001 · P04 FAILED status not reflected in left panel

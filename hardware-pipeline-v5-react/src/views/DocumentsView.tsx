@@ -427,8 +427,10 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   useEffect(() => {
     const alreadyLoaded = loadedPhaseIds.current.has(phase.id);
     // Silent if: visited this phase before, OR any files ever loaded (project-wide cache exists)
+    // BUG FIX: was fetchList(!silent) — the ! inverted the logic so already-loaded phases
+    // showed the spinner and first-load phases skipped it. Correct: pass silent directly.
     const silent = alreadyLoaded || hasAnyFiles.current;
-    fetchList(!silent, phase.id);
+    fetchList(silent, phase.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, phase.id]);
 

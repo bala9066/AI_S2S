@@ -73,7 +73,11 @@ Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compl
 - Prioritize RoHS-compliant components with long lifecycle status.
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
 - Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters.
-- Do NOT fabricate component part numbers. Flag uncertainties with "TBC" or "verify datasheet".
+- Always provide concrete part numbers in `primary_part`. NEVER prefix them with "TBD -", "TBC -",
+  or "TBA -". If you are uncertain, pick the most likely candidate from your knowledge and note
+  uncertainty in `selection_rationale` instead. e.g. use "STM32F446RE" not "TBD - STM32F4 series".
+- Do NOT fabricate part numbers you have no knowledge of — flag with "(verify availability)" in
+  `selection_rationale`, but still provide a real part number in `primary_part`.
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
 
@@ -334,6 +338,11 @@ class RequirementsAgent(BaseAgent):
         # call_llm_with_tools still had tool_calls in its final response).
         if generate_req_input:
             self.log("generate_requirements tool called — phase_complete=True", "info")
+            # Clean TBD/TBC/TBA prefixes from component part numbers before rendering
+            if "component_recommendations" in generate_req_input:
+                generate_req_input["component_recommendations"] = self._clean_component_data(
+                    generate_req_input["component_recommendations"]
+                )
             outputs = self._generate_output_files(
                 generate_req_input,
                 project_context.get("output_dir", "output"),
@@ -468,6 +477,43 @@ class RequirementsAgent(BaseAgent):
             "outputs": outputs,
             "parameters": {},
         }
+
+    @staticmethod
+    def _strip_tbd(value: str) -> str:
+        """Remove 'TBD -', 'TBC -', 'TBA -' prefixes the LLM sometimes adds to part numbers.
+        e.g. 'TBD - STM32F4 or TI C2000 series' → 'STM32F4 (or TI C2000 series)'
+        """
+        import re as _re
+        # Strip leading TBD/TBC/TBA with optional dash/colon/space
+        cleaned = _re.sub(r'^(?:TBD|TBC|TBA)\s*[-:/]?\s*', '', str(value), flags=_re.IGNORECASE).strip()
+        # If the remaining value contains " or " (multiple candidates), format nicely
+        if _re.search(r'\bor\b', cleaned, _re.IGNORECASE):
+            parts = _re.split(r'\s+or\s+', cleaned, flags=_re.IGNORECASE)
+            primary = parts[0].strip()
+            rest = ' / '.join(p.strip() for p in parts[1:])
+            return f"{primary} (alt: {rest})" if primary else cleaned
+        return cleaned if cleaned else value
+
+    @staticmethod
+    def _clean_component_data(comps: list) -> list:
+        """Sanitize component_recommendations from the LLM tool call.
+
+        Models sometimes prefix primary_part with 'TBD - ', 'TBC - ', etc.
+        This strips those prefixes so the UI shows real part numbers.
+        """
+        cleaned = []
+        for comp in comps:
+            c = dict(comp)
+            raw_part = c.get("primary_part", "")
+            if raw_part:
+                c["primary_part"] = RequirementsAgent._strip_tbd(raw_part)
+            # Also clean primary_description field
+            desc = c.get("primary_description", "")
+            if desc:
+                import re as _re2
+                c["primary_description"] = _re2.sub(r'\b(TBD|TBC|TBA)\b', '[derived from specs]', desc, flags=_re2.IGNORECASE)
+            cleaned.append(c)
+        return cleaned
 
     def _build_response_summary(self, tool_input: dict) -> str:
         """Build a full in-depth analysis from generate_requirements tool data.

@@ -141,11 +141,16 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               {phase.tagline}
             </div>
 
-            {/* Execute button — shown for non-P1, non-manual AI phases when pending/failed.
-                Requires pipelineStarted=true so the user must click "Approve & Run" in
-                the P1 Chat tab first — prevents accidentally running a phase before the
-                pipeline has been approved. */}
-            {onExecute && !phase.manual && phase.id !== 'P1' && !pipelineRunning && pipelineStarted && (status === 'pending' || status === 'failed') && (
+            {/* Execute button — shown ONLY for failed phases (retry) once the pipeline has
+                been started. We intentionally exclude 'pending' status here: when the full
+                pipeline is running, pending phases should not show Execute because the
+                pipeline will reach them automatically. Showing Execute during the brief
+                between-phase gap (P6 complete → P7a starting) would be confusing/dangerous.
+                Before pipelineStarted (standalone mode), both pending and failed are allowed. */}
+            {onExecute && !phase.manual && phase.id !== 'P1' && !pipelineRunning && (
+              (pipelineStarted && status === 'failed') ||
+              (!pipelineStarted && (status === 'pending' || status === 'failed'))
+            ) && (
               <button
                 onClick={onExecute}
                 style={{

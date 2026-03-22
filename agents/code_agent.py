@@ -365,7 +365,10 @@ class CodeAgent(BaseAgent):
 
         lines = ["# CI/CD Workflow Validation Report",
                  f"\n**File:** `.github/workflows/hardware_pipeline_ci.yml`",
-                 f"**Validated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (local, no credentials)\n",
+                 f"**Validated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — offline YAML syntax check",
+                 "> **Note:** Your GitHub token IS used — for the git push and PR creation (next step).",
+                 "> This step validates YAML syntax, job structure, and trigger keys locally.",
+                 "> No GitHub API call needed here. The token is applied when committing and opening the PR.\n",
                  "---\n"]
 
         errors: list = []
