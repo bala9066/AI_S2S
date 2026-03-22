@@ -58,6 +58,10 @@ class ChatService:
         proj = await self._proj_svc.async_get(project_id)
         history = proj.get("conversation_history", [])
 
+        # Detect whether P1 was already completed (enables refinement mode in agent)
+        phase_statuses = proj.get("phase_statuses", {})
+        p1_complete = phase_statuses.get("P1") == "completed"
+
         # Call the agent
         from agents.requirements_agent import RequirementsAgent
         agent = RequirementsAgent()
@@ -70,6 +74,7 @@ class ChatService:
                     "design_type": proj["design_type"],
                     "conversation_history": history,
                     "output_dir": proj["output_dir"],
+                    "p1_complete": p1_complete,
                 },
                 user_input=user_message,
             )

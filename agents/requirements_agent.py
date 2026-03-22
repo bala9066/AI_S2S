@@ -243,6 +243,14 @@ class RequirementsAgent(BaseAgent):
         """
         Execute Phase 1 — Direct Generation approach.
         """
+        # ── Refinement mode: P1 already complete, user asking a follow-up ─────
+        # When P1 is complete and the user message is NOT an approval or
+        # re-generation request, answer it as a targeted follow-up without
+        # re-calling generate_requirements (which would just replay the same output).
+        p1_complete = project_context.get("p1_complete", False)
+        if p1_complete and not _is_approval(user_input) and user_input.strip() != "__FINALIZE__":
+            return await self._handle_post_completion_chat(project_context, user_input)
+
         system = self.get_system_prompt(project_context)
 
         # Build message list from conversation history
@@ -385,6 +393,81 @@ class RequirementsAgent(BaseAgent):
             "parameters": {},
         }
 
+
+    async def _handle_post_completion_chat(self, project_context: dict, user_input: str) -> dict:
+        """Handle follow-up questions after Phase 1 is complete.
+
+        Instead of re-running generate_requirements, this answers the specific
+        question using the already-generated output files as context.
+        Examples: "add datasheet links", "what's the power budget?",
+                  "change the MCU to STM32H7", etc.
+        """
+        output_dir = Path(project_context.get("output_dir", "output"))
+        project_name = project_context.get("name", "Project")
+
+        # Load existing Phase 1 output files as context
+        components_md = self._load_file(output_dir / "component_recommendations.md")
+        requirements_md = self._load_file(output_dir / "requirements.md")
+
+        refinement_system = (
+            "You are a hardware design engineer. Phase 1 (requirements + component selection) "
+            "is already complete for this project. The user has a follow-up question or "
+            "refinement request.\n\n"
+            "## RULES:\n"
+            "- Answer the specific question directly and completely.\n"
+            "- If the user asks for datasheet links, provide the official manufacturer datasheet "
+            "URL for EACH component listed. Format as markdown links: [Datasheet](<url>). "
+            "Use well-known URLs (ti.com, analog.com, microchip.com, mouser.com, etc.).\n"
+            "- If the user asks to change a component, provide the new part number and rationale.\n"
+            "- If the user asks for more detail on any spec, provide it with engineering depth.\n"
+            "- Do NOT say 'I'll generate requirements' or invoke any tool — just answer directly.\n"
+            "- Format your answer in clean markdown with tables and links where helpful.\n"
+            "- Do NOT use TBD/TBA/TBC placeholders.\n"
+            "- NEVER use XML tags in your response.\n"
+        )
+
+        context_block = ""
+        if components_md:
+            context_block += f"\n## Existing Component Recommendations\n{components_md[:6000]}\n"
+        if requirements_md:
+            context_block += f"\n## Existing Requirements\n{requirements_md[:3000]}\n"
+
+        user_msg = (
+            f"{context_block}\n"
+            f"---\n"
+            f"**User follow-up question:** {user_input}"
+        )
+
+        response = await self.call_llm(
+            messages=[{"role": "user", "content": user_msg}],
+            system=refinement_system,
+        )
+
+        response_text = response.get("content", "").strip()
+
+        # If the response contains datasheet links or component updates,
+        # append them to component_recommendations.md for persistence
+        outputs = {}
+        if components_md and ("datasheet" in user_input.lower() or "link" in user_input.lower()):
+            # Append datasheet links section to the component file
+            updated = (
+                components_md.rstrip()
+                + "\n\n---\n\n## Datasheet Links\n\n"
+                + "_Added on follow-up request._\n\n"
+                + response_text
+            )
+            comp_file = output_dir / "component_recommendations.md"
+            comp_file.write_text(updated, encoding="utf-8")
+            outputs["component_recommendations.md"] = updated
+
+        return {
+            "response": response_text,
+            "phase_complete": True,   # P1 stays complete
+            "draft_pending": False,
+            "draft": {},
+            "outputs": outputs,
+            "parameters": {},
+        }
 
     def _build_response_summary(self, tool_input: dict) -> str:
         """Build a full in-depth analysis from generate_requirements tool data.
