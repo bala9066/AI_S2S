@@ -383,8 +383,12 @@ class CodeAgent(BaseAgent):
             return "\n".join(lines)
 
         # ── Check 2: Required top-level keys ─────────────────────────────
+        # NOTE: PyYAML (YAML 1.1) parses bare `on:` as boolean True, not string "on".
+        # We must check for both the string "on" AND boolean True when looking for the trigger key.
         for key in ("name", "on", "jobs"):
-            if key in workflow:
+            # Special case: `on:` in YAML 1.1 is parsed as boolean True by PyYAML
+            present = key in workflow or (key == "on" and True in workflow)
+            if present:
                 passes.append(f"Top-level key `{key}` — present")
             else:
                 errors.append(f"Missing required top-level key: `{key}`")

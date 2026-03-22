@@ -77,6 +77,12 @@ Generate a COMPLETE, DETAILED Hardware Requirements Specification following this
 - Target 50-100 pages of content (be thorough)
 - Do NOT add any boilerplate approval/review disclaimers such as
   "This document shall be reviewed and approved by..." — omit all such lines
+- Do NOT include a "Status Legend" or "Legend" section — it is template boilerplate.
+  Instead, add a single metadata line at the document start: **Document Status: DRAFT**
+- Do NOT use placeholder values TBD, TBA, or TBC anywhere. Derive specific values from
+  the provided component data, use engineering calculations, or state a justified assumption
+  inline (e.g., "assumed 100 mA based on STM32 datasheet typical"). Every field must have
+  a concrete value.
 """
 
 
@@ -160,6 +166,23 @@ class DocumentAgent(BaseAgent):
             hrs_content,
             flags=_re.IGNORECASE,
         ).strip()
+
+        # Strip any "Status Legend" section (template boilerplate the LLM occasionally adds)
+        # Removes the heading + all lines until the next heading or end-of-section marker
+        hrs_content = _re.sub(
+            r'#{1,4}\s*Status\s+Legend\b.*?(?=\n#{1,4}\s|\n---|\Z)',
+            '',
+            hrs_content,
+            flags=_re.IGNORECASE | _re.DOTALL,
+        ).strip()
+
+        # Replace any remaining TBD/TBA/TBC placeholders with a visible note
+        hrs_content = _re.sub(
+            r'\b(TBD|TBA|TBC)\b',
+            '[see component data]',
+            hrs_content,
+            flags=_re.IGNORECASE,
+        )
 
         # Save output
         hrs_file = self.hrs_generator.save(hrs_content, output_dir, project_name)

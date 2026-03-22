@@ -332,7 +332,10 @@ export default function App() {
       showToast(`Completed externally in ${phase.externalTool || 'external EDA tool'}`);
       return;
     }
-    if (!isUnlocked(phase, completedIds) && phase.id !== 'P1') {
+    const phaseStatus = statuses[phase.id] || 'pending';
+    // Always allow navigation to completed or failed phases (user may want to view docs or retry)
+    const alreadyRan = phaseStatus === 'completed' || phaseStatus === 'failed';
+    if (!alreadyRan && !isUnlocked(phase, completedIds) && phase.id !== 'P1') {
       // Find the actual blocking AI phase (skip manual phases in the chain)
       const blockingPhase = [...PHASES].slice(0, idx).reverse().find(p => !p.manual);
       const toastMsg = blockingPhase

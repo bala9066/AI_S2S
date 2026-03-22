@@ -373,6 +373,8 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const loadedPhaseIds = useRef<Set<string>>(new Set());
   // Track if we've ever successfully fetched any files — once true, phase switches are always silent
   const hasAnyFiles = useRef(false);
+  // Track previous status to detect transitions (in_progress → completed/failed)
+  const prevStatusRef = useRef<string>(status);
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
@@ -430,12 +432,30 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, phase.id]);
 
+  // Periodic refresh while phase is running
   useEffect(() => {
     const shouldRefresh = pipelineRunning || status === 'in_progress';
     if (!project || !shouldRefresh) return;
     const interval = setInterval(() => fetchList(true), 3000);
     return () => clearInterval(interval);
   }, [project, pipelineRunning, status, fetchList]);
+
+  // Critical: when a phase transitions from in_progress → completed/failed,
+  // do immediate re-fetches to catch files written in the final moments.
+  // Without this, the file list may be stale if the last periodic poll happened
+  // just before the backend flushed output files, leaving the spinner permanently.
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+    if (prev === 'in_progress' && (status === 'completed' || status === 'failed')) {
+      // Immediate fetch + two follow-ups to handle slow file writes
+      fetchList(true);
+      const t1 = setTimeout(() => fetchList(true), 1500);
+      const t2 = setTimeout(() => fetchList(true), 4000);
+      return () => { clearTimeout(t1); clearTimeout(t2); };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   // Background prefetch all viewable documents after file list loads
   // This makes "Preview" feel instant — no spinner on click

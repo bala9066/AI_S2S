@@ -52,6 +52,11 @@ for FPGA implementation. This document bridges Phase 4 (Netlist) and Phase 7 (FP
 
 Include Mermaid timing diagrams where appropriate.
 All signal names must be consistent with the netlist from Phase 4.
+
+IMPORTANT: Do NOT use TBD, TBA, or TBC placeholders. Derive specific values from the
+provided component data (datasheets, netlist), use engineering defaults, or state a
+justified assumption inline (e.g., "assumed 3.3V I/O based on FPGA bank default").
+Every register address, timing value, and signal specification must be concrete.
 """
 
 

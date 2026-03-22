@@ -64,6 +64,9 @@ SYSTEM_PROMPT = """You are a senior software architect generating an IEEE 830/29
 - Define driver API signatures (function prototypes)
 - Include Mermaid sequence diagrams for key interactions
 - Define error codes and error handling strategy
+- NEVER use TBD, TBA, or TBC placeholders. Derive concrete values from the hardware
+  requirements. Use engineering judgment or state assumptions inline. Every requirement
+  must specify actual measurable values (frequencies, voltages, timeouts, rates, etc.)
 """
 
 

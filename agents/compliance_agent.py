@@ -32,6 +32,10 @@ For each component, provide:
 
 Output as a structured markdown compliance report with tables.
 Include a summary compliance matrix at the top.
+
+IMPORTANT: Do NOT use TBD, TBA, or TBC placeholders. Derive specific values from the
+provided component data, use engineering judgment, or state a justified assumption inline.
+Every field must have a concrete value.
 """
 
 

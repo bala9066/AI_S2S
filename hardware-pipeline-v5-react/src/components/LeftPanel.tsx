@@ -73,12 +73,16 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
           const isComplete = completedIds.includes(phase.id);
           const isStale = stalePhaseIds.includes(phase.id);
           const unlocked = isUnlocked(phase, completedIds);
-          const isLocked = !phase.manual && !unlocked && phase.id !== 'P1';
           const status = statuses[phase.id] || 'pending';
           const isRunning = status === 'in_progress';
+          const isFailed = status === 'failed';
+          // Completed phases are always clickable even if downstream chain is locked
+          const isLocked = !phase.manual && !unlocked && phase.id !== 'P1' && !isComplete && !isFailed;
 
           const textColor = isActive
             ? 'var(--text)'
+            : isFailed
+            ? '#ef4444'
             : isComplete
             ? 'var(--text2)'
             : isLocked
@@ -87,6 +91,8 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
 
           const subTextColor = phase.manual
             ? '#475569'
+            : isFailed
+            ? '#ef444499'
             : isRunning
             ? phase.color
             : isComplete
@@ -141,13 +147,17 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                 {/* Circle icon */}
                 <div style={{
                   width: 30, height: 30, borderRadius: '50%', flexShrink: 0, marginTop: 1,
-                  background: isActive
+                  background: isFailed
+                    ? 'rgba(239,68,68,0.12)'
+                    : isActive
                     ? `${phase.color}22`
                     : isComplete
                     ? `${phase.color}14`
                     : 'var(--panel2)',
                   border: `2px solid ${
-                    isActive
+                    isFailed
+                      ? '#ef444480'
+                      : isActive
                       ? phase.color
                       : isComplete
                       ? phase.color + '80'
@@ -159,7 +169,9 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                   }`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontFamily: "'Syne', sans-serif", fontSize: 11, fontWeight: 800,
-                  color: isActive
+                  color: isFailed
+                    ? '#ef4444'
+                    : isActive
                     ? phase.color
                     : isComplete
                     ? phase.color + 'cc'
@@ -169,7 +181,7 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                     ? 'var(--panel3)'
                     : phase.color + '70',
                   transition: 'all 0.2s',
-                  boxShadow: isRunning ? `0 0 14px ${phase.color}55` : isActive ? `0 0 8px ${phase.color}25` : 'none',
+                  boxShadow: isFailed ? '0 0 10px rgba(239,68,68,0.3)' : isRunning ? `0 0 14px ${phase.color}55` : isActive ? `0 0 8px ${phase.color}25` : 'none',
                 }}>
                   {isRunning ? (
                     <div style={{
@@ -178,6 +190,8 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                       borderTopColor: 'transparent',
                       animation: 'spin 0.8s linear infinite',
                     }} />
+                  ) : isFailed ? (
+                    <span style={{ fontSize: 13 }}>✕</span>
                   ) : isComplete && !phase.manual ? (
                     <span style={{ fontSize: 13 }}>✓</span>
                   ) : phase.manual ? (
@@ -209,6 +223,8 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                     }}>
                       {phase.manual
                         ? 'MANUAL / EDA'
+                        : isFailed
+                        ? '✕ Failed — click to retry'
                         : isRunning
                         ? '⚡ Running...'
                         : isComplete

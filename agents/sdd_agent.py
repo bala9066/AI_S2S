@@ -74,6 +74,8 @@ SYSTEM_PROMPT = """You are a senior embedded software architect generating an IE
 - Include error handling architecture
 - Design for MISRA-C compliance in embedded C code
 - Each design element must trace to REQ-SW-xxx
+- NEVER use TBD, TBA, or TBC placeholders. Specify actual values for all addresses,
+  sizes, timeouts, and parameters. Use engineering defaults or state assumptions inline.
 """
 
 
