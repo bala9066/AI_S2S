@@ -125,8 +125,10 @@ class TestSettingsAirGap:
 
     def test_is_air_gapped_no_keys(self, mock_env_vars):
         """Test air-gapped when no API keys set."""
+        # Clear all LLM API keys that has_any_llm_key checks
         os.environ.pop("ANTHROPIC_API_KEY", None)
         os.environ.pop("GLM_API_KEY", None)
+        os.environ.pop("DEEPSEEK_API_KEY", None)
         s = Settings()
         assert s.is_air_gapped is True
 
