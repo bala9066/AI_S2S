@@ -27,7 +27,7 @@ jobs:
       - name: Lint (ruff)
         run: |
           pip install ruff
-          ruff check . --select=E,W,F --ignore=E501,W503 || true
+          ruff check . --select=E,W,F --ignore=E501,W503
 
       - name: Run unit tests
         env:
@@ -37,7 +37,7 @@ jobs:
           DEBUG: "false"
         run: |
           pip install pytest pytest-asyncio httpx
-          python -m pytest tests/ -q --tb=short --ignore=tests/integration 2>&1 || true
+          python -m pytest tests/ -q --tb=short --ignore=tests/integration
 
   # ── 2. Frontend Build ───────────────────────────────────────────────────────
   frontend:
@@ -63,6 +63,7 @@ jobs:
         run: npx vite build
 
       - name: Bundle into single HTML
+        working-directory: .
         run: python bundle_and_escape.py
 
       - name: Upload bundle artifact
