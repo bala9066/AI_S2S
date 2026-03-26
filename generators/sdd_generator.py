@@ -12,7 +12,7 @@ class SDDGenerator:
     """Generate IEEE 1016-2009 compliant Software Design Description."""
 
     def generate(self, project_name: str, modules: List[Dict], interfaces: List[Dict], state_machines: List[Dict], metadata: Dict = None) -> str:
-        meta = metadata or {}
+        _ = metadata or {}  # Reserved for future use
         sections = []
 
         sections.append(f"""# Software Design Description (SDD)

@@ -2,10 +2,6 @@
 Integration tests for the Orchestrator and full pipeline flow.
 """
 
-import json
-from datetime import datetime
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -34,7 +30,7 @@ def db_session(tmp_path):
     import os
     try:
         os.unlink(db_path)
-    except:
+    except FileNotFoundError:
         pass
 
 
@@ -319,7 +315,7 @@ class TestOrchestratorExecuteAll:
             else:
                 async def mock_execute(project_context, user_input):
                     return {
-                        "response": f"Phase completed",
+                        "response": "Phase completed",
                         "phase_complete": True,
                         "outputs": {},
                     }

@@ -10,8 +10,6 @@ Uses LLM to produce a runnable PySide6 application that:
 """
 
 import logging
-from pathlib import Path
-from typing import Optional
 
 from config import settings
 

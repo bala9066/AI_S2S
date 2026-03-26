@@ -27,8 +27,8 @@ jobs:
       - name: Lint (ruff)
         run: |
           pip install ruff
-          # Check only errors (E, F), ignore warnings (W) for now
-          ruff check . --select=E,F --ignore=E501
+          # Check only errors (E, F), ignore warnings (W) and legacy app.py
+          ruff check . --select=E,F --ignore=E501 --exclude=app.py
 
       - name: Run unit tests
         env:

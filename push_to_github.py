@@ -59,7 +59,7 @@ async def main():
         return
 
     # Show config
-    print(f"\nConfiguration:")
+    print("\nConfiguration:")
     print(f"  GitHub repo  : {settings.github_repo or '(not set)'}")
     print(f"  Token set    : {'Yes' if settings.github_token else 'No'}")
     print(f"  Git enabled  : {settings.git_enabled}")
@@ -86,14 +86,14 @@ async def main():
 
     print()
     if result.get("success"):
-        print(f"SUCCESS!")
+        print("SUCCESS!")
         print(f"  Commit SHA : {result.get('commit_sha')}")
         print(f"  Branch     : {result.get('branch')}")
         if result.get("pr_url"):
             print(f"  PR URL     : {result['pr_url']}")
         else:
-            print(f"  PR         : Not created (branch was pushed but PR creation failed)")
-            print(f"               You can create it manually at:")
+            print("  PR         : Not created (branch was pushed but PR creation failed)")
+            print("               You can create it manually at:")
             print(f"               https://github.com/{settings.github_repo}/compare/{result.get('branch')}")
     else:
         print(f"FAILED: {result.get('error') or result.get('reason')}")

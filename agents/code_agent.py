@@ -9,7 +9,7 @@ Post-processing: CycloneDX SBOM update + Git CI/CD workflow + Git commit + GitHu
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from agents.base_agent import BaseAgent
 from agents.static_analysis import StaticAnalysisRunner
@@ -364,7 +364,7 @@ class CodeAgent(BaseAgent):
         from datetime import datetime
 
         lines = ["# CI/CD Workflow Validation Report",
-                 f"\n**File:** `.github/workflows/hardware_pipeline_ci.yml`",
+                 "\n**File:** `.github/workflows/hardware_pipeline_ci.yml`",
                  f"**Validated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — offline YAML syntax check",
                  "> **Note:** Your GitHub token IS used — for the git push and PR creation (next step).",
                  "> This step validates YAML syntax, job structure, and trigger keys locally.",
@@ -431,7 +431,8 @@ class CodeAgent(BaseAgent):
         actionlint_result = None
         if shutil.which("actionlint"):
             try:
-                import tempfile, os
+                import tempfile
+                import os
                 with tempfile.NamedTemporaryFile(
                         mode="w", suffix=".yml",
                         delete=False, encoding="utf-8") as f:
@@ -760,8 +761,9 @@ jobs:
                 })
 
         # Pattern 3: Bit field definitions (for access type detection)
-        bitfield_pattern = r'(?:read|write|readonly|readwrite|ro|rw|wo)\s*(?:only|able)?[:\s]*([A-Za-z0-9_]+)'
-        bitfield_matches = re.findall(bitfield_pattern, content, re.IGNORECASE)
+        # Note: Pattern defined but matches not currently used in access type logic
+        # bitfield_pattern = r'(?:read|write|readonly|readwrite|ro|rw|wo)\s*(?:only|able)?[:\s]*([A-Za-z0-9_]+)'
+        # bitfield_matches = re.findall(bitfield_pattern, content, re.IGNORECASE)
 
         # Update access types if we find read/write patterns
         for i, reg in enumerate(registers):

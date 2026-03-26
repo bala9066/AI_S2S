@@ -4,7 +4,6 @@ Phase 8b: SDD (Software Design Document) Agent - IEEE 1016 Compliant
 Generates software architecture from SRS with Mermaid diagrams.
 """
 
-import json
 import logging
 from pathlib import Path
 

@@ -1,7 +1,7 @@
 """REACH Compliance Rules - Registration, Evaluation, Authorisation and Restriction of Chemicals."""
 
 import logging
-from typing import Dict, List
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 

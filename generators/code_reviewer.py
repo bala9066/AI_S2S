@@ -51,9 +51,12 @@ class CodeReviewer:
     def _calculate_score(self, findings: List[Dict], line_count: int) -> int:
         score = 100
         for f in findings:
-            if f["severity"] == "error": score -= 10
-            elif f["severity"] == "warning": score -= 5
-            elif f["severity"] == "info": score -= 1
+            if f["severity"] == "error":
+                score -= 10
+            elif f["severity"] == "warning":
+                score -= 5
+            elif f["severity"] == "info":
+                score -= 1
         return max(0, score)
 
     def _generate_summary(self, findings: List[Dict], score: int) -> str:

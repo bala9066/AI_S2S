@@ -7,7 +7,6 @@ Tests the complete hardware pipeline from P1 through P8c with actual agent execu
 
 import json
 from pathlib import Path
-from typing import Dict
 
 import pytest
 from sqlalchemy import create_engine
@@ -36,7 +35,7 @@ def e2e_db_session(tmp_path):
     import os
     try:
         os.unlink(db_path)
-    except:
+    except FileNotFoundError:
         pass
 
 
@@ -400,7 +399,7 @@ class TestE2EPipeline:
 
         # Track executed phases and outputs
         executed_phases = []
-        all_outputs = {}
+        # all_outputs = {}  # Reserved for future use
 
         # Create files directly for each phase to simulate outputs
         # Use a factory function to avoid closure issues
@@ -746,7 +745,7 @@ class TestE2EPipelineEdgeCases:
 
         # Mock P2 to fail without P1 outputs
         agent_p2 = orchestrator._get_agent("P2")
-        original_execute = agent_p2.execute
+        _ = agent_p2.execute  # Original execute stored but not restored in test
 
         async def mock_p2_execute(project_context, user_input):
             # Simulate missing prerequisites

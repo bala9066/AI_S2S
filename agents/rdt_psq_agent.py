@@ -204,7 +204,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
 
     def _build_rdt_md(self, data: dict, project_name: str) -> str:
         lines = [
-            f"# Register Description Table",
+            "# Register Description Table",
             f"## {project_name}",
             "",
             f"> **Total registers:** {len(data.get('registers', []))}",
@@ -215,7 +215,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
 
         for reg in data.get("registers", []):
             lines += [
-                f"---",
+                "---",
                 f"### `{reg.get('name', 'REG')}` — Address: `{reg.get('address', '0x??')}`",
                 f"**Reset value:** `{reg.get('reset_value', '0x00')}`",
                 "",
@@ -237,7 +237,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
     def _build_psq_md(self, data: dict, project_name: str) -> str:
         steps = data.get("programming_sequence", [])
         lines = [
-            f"# Programming Sequence (PSQ)",
+            "# Programming Sequence (PSQ)",
             f"## {project_name}",
             "",
             f"> **Total steps:** {len(steps)}",

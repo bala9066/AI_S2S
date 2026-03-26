@@ -2,10 +2,8 @@
 Tests for all phase agents - with proper call_llm mocking.
 """
 
-import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, Mock
-from typing import Any, Dict
+from unittest.mock import patch
 
 import pytest
 

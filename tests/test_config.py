@@ -3,9 +3,7 @@ Tests for config.py - Settings and configuration management.
 """
 
 import os
-from pathlib import Path
 
-import pytest
 
 from config import Settings, settings
 
@@ -176,7 +174,6 @@ class TestSettingsSingleton:
 
     def test_singleton_instance_exists(self):
         """Test settings singleton is importable."""
-        from config import settings
         assert isinstance(settings, Settings)
 
     def test_singleton_uses_env_vars(self, mock_env_vars):

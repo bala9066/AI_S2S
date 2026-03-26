@@ -12,11 +12,12 @@ For Postgres the async URL uses "+asyncpg".
 """
 
 from datetime import datetime
-from typing import Optional, AsyncGenerator
+import logging
+from typing import AsyncGenerator
 
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, JSON, Boolean, Float,
-    ForeignKey, create_engine, event, Enum as SQLEnum,
+    Column, Integer, String, Text, DateTime, JSON, Float,
+    ForeignKey, create_engine, event,
 )
 from sqlalchemy.orm import (
     DeclarativeBase, relationship, sessionmaker, Session,
@@ -145,8 +146,7 @@ class ComplianceRecordDB(Base):
 _engine = None
 _SessionLocal = None
 
-import logging as _logging
-_db_log = _logging.getLogger(__name__)
+_db_log = logging.getLogger(__name__)
 
 
 def _resolve_sqlite_url(url: str) -> str:
@@ -156,7 +156,10 @@ def _resolve_sqlite_url(url: str) -> str:
     files that make the DB unopenable.  If we detect that, copy the DB to
     /tmp and use it from there.
     """
-    import os, shutil, tempfile, sqlite3
+    import os
+    import shutil
+    import tempfile
+    import sqlite3
 
     # Extract file path from sqlite:///path
     prefix = "sqlite:///"

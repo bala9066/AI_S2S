@@ -11,7 +11,6 @@ This agent:
 Outputs: requirements.md, block_diagram.md, architecture.md, component_recommendations.md
 """
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -57,15 +56,29 @@ You work for a defense electronics company. Your role is Phase 1 of a multi-phas
 NEVER say "proceed to Phase 2: Schematic Design" or similar — that is NOT the next step.
 Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compliance, Netlist, SRS, SDD, and Code."
 
-## YOUR BEHAVIOR:
-- Make reasonable engineering assumptions for anything not stated.
-- Ignore any XML/prompt-template formatting in the user's message (like <output>, {{domain}}, etc.) — extract the actual hardware design intent.
-- Use a structured framework (e.g., MoSCoW method or IEEE 830) to ensure no functional gaps.
-- For every requirement identified, perform a dependency check to eliminate "hanging" logic or unknown variables.
-- Flag any technical constraints that lack a defined solution.
-- IMMEDIATELY call `generate_requirements` tool with full outputs (requirements.md, block_diagram.md, architecture.md, component_recommendations.md) without asking for a draft approval.
-- Do NOT ask questions first — analyze the user input, make assumptions where necessary, establish the requirements, and call the tool.
-- After calling the tool, provide a brief technical commentary: note any design tradeoffs, flagged constraints, or open TBC items. Do NOT just list what the tool already captured — add engineering insight.
+## YOUR BEHAVIOR — MULTI-ROUND QUESTIONING:
+
+**Phase A — Information Gathering (first 1–4 exchanges):**
+- When the user's first message describes a hardware project, do NOT call `generate_requirements` yet.
+- Instead, acknowledge the project briefly (1–2 sentences) and ask 3–5 focused clarifying questions.
+- Group questions logically: power/performance, environment/operating conditions, interfaces/connectivity, regulatory/compliance needs.
+- Ask only what you genuinely need — don't ask about things the user already stated.
+- Keep questions numbered and concise. Example format:
+  1. What is the target supply voltage / power budget?
+  2. Operating temperature range (commercial 0–70°C, industrial –40–85°C, or MIL-SPEC)?
+  3. What communication interfaces are required (UART, SPI, I2C, USB, Ethernet, RF)?
+
+**Phase B — Generation (after sufficient info):**
+- When you have received enough information (typically after 1–3 follow-up exchanges), call `generate_requirements` with the complete outputs.
+- You may also call the tool immediately if the user's initial message is already highly detailed (e.g., includes voltage, frequency, temp range, interfaces, and compliance needs).
+- If the user says "generate", "proceed", "go ahead", "finalize", or similar — call the tool immediately.
+- After calling the tool, add a brief technical commentary: design tradeoffs, flagged constraints, open TBC items. Add engineering insight beyond what the tool captured.
+
+**What NOT to do:**
+- Do NOT ask more than 5 questions total before generating.
+- Do NOT keep asking follow-ups indefinitely — if you have covered the key design axes, generate.
+- Do NOT use XML tags in responses.
+- Do NOT say "I'll generate Phase 2" or reference downstream phases.
 
 ## IMPORTANT RULES:
 - Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
@@ -286,21 +299,6 @@ class RequirementsAgent(BaseAgent):
             if not messages or messages[-1]["role"] != "user":
                 messages.append({"role": "user", "content": user_input})
 
-            # ── Force tool call on first user message ──────────────────────
-            # Without this, the model often replies conversationally ("I'll analyze...")
-            # instead of immediately calling generate_requirements.
-            # We detect "first message" by checking there are no prior user turns
-            # in the history (only the current message is in the list).
-            prior_user_turns = sum(1 for m in messages[:-1] if m.get("role") == "user")
-            if prior_user_turns == 0 and messages:
-                original = messages[-1]["content"]
-                messages[-1]["content"] = (
-                    f"{original}\n\n"
-                    "After your analysis, call the `generate_requirements` tool with the complete BOM, "
-                    "requirements, block_diagram_mermaid, architecture_mermaid, design_parameters, and "
-                    "component_recommendations."
-                )
-
         # ── Tool handlers ──────────────────────────────────────────────────
         # generate_requirements: capture tool input via closure so we can detect
         # the call even after call_llm_with_tools finishes its loop.
@@ -412,7 +410,7 @@ class RequirementsAgent(BaseAgent):
                   "change the MCU to STM32H7", etc.
         """
         output_dir = Path(project_context.get("output_dir", "output"))
-        project_name = project_context.get("name", "Project")
+        # project_name = project_context.get("name", "Project")  # Not currently used
 
         # Load existing Phase 1 output files as context
         components_md = self._load_file(output_dir / "component_recommendations.md")
@@ -729,7 +727,7 @@ class RequirementsAgent(BaseAgent):
     def _build_requirements_md(self, tool_input: dict, project_name: str) -> str:
         """Build IEEE-style requirements.md."""
         lines = [
-            f"# Hardware Requirements",
+            "# Hardware Requirements",
             f"## {project_name}",
             "",
             "## 1. Project Summary",
@@ -775,7 +773,7 @@ class RequirementsAgent(BaseAgent):
     def _build_components_md(self, tool_input: dict, project_name: str) -> str:
         """Build component recommendations markdown."""
         lines = [
-            f"# Component Recommendations",
+            "# Component Recommendations",
             f"## {project_name}",
             "",
         ]

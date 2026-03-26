@@ -16,7 +16,6 @@ Configuration (in .env):
 
 import logging
 import re
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -170,9 +169,9 @@ class GitAgent:
 
             # Ensure local branch is named 'main'
             try:
-                main_branch = repo.create_head("main", repo.head.commit)
+                _ = repo.create_head("main", repo.head.commit)
             except gitlib.GitCommandError:
-                main_branch = repo.heads["main"] if "main" in [h.name for h in repo.heads] else repo.heads[0]
+                _ = repo.heads["main"] if "main" in [h.name for h in repo.heads] else repo.heads[0]
 
             try:
                 origin = repo.remote("origin")

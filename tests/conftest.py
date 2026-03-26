@@ -7,11 +7,11 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import AsyncGenerator, Generator
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Generator
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import AsyncClient, Response
+from httpx import Response
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))

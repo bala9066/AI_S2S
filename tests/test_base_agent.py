@@ -2,7 +2,6 @@
 Tests for agents/base_agent.py - BaseAgent class with LLM fallback chain.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic

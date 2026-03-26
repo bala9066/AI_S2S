@@ -280,7 +280,7 @@ Generate the netlist using the generate_netlist tool. Include:
 
     def _build_visual_md(self, data: dict, project_name: str, mermaid: str) -> str:
         lines = [
-            f"# Logical Netlist",
+            "# Logical Netlist",
             f"## {project_name}",
             "",
             "## Block Diagram",

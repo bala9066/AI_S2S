@@ -8,7 +8,6 @@ Uses IEEE 29148:2018 section structure with requirement traceability.
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from agents.base_agent import BaseAgent
 from config import settings

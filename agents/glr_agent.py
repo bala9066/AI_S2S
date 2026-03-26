@@ -82,7 +82,7 @@ class GLRAgent(BaseAgent):
 
         # Load prior outputs
         requirements = self._load_file(output_dir / "requirements.md")
-        netlist_visual = self._load_file(output_dir / "netlist_visual.md")
+        # netlist_visual = self._load_file(output_dir / "netlist_visual.md")  # Not currently used
         netlist_json = self._load_file(output_dir / "netlist.json")
 
         # Parse netlist data for generator
@@ -121,7 +121,6 @@ class GLRAgent(BaseAgent):
             return []
 
         try:
-            import re
             # Simple extraction of requirement lines
             reqs = []
             for line in requirements_content.split('\n'):

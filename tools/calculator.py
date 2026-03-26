@@ -6,7 +6,7 @@ Provides power budget, thermal analysis, RF link budget, and other calculations.
 
 import logging
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)

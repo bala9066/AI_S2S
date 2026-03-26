@@ -8,12 +8,10 @@ Routes execution through phases: P1 -> P2 -> P3 -> P4 -> P6 -> P8a -> P8b -> P8c
 import json
 import logging
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from agents.base_agent import BaseAgent
-from config import settings
 from database.models import ProjectDB, PhaseOutputDB
 
 logger = logging.getLogger(__name__)

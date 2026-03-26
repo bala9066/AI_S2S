@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -119,7 +119,8 @@ _COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
 def _make_token(password: str) -> str:
     """Simple HMAC token so the cookie can't be forged without knowing the password."""
-    import hmac, hashlib
+    import hmac
+    import hashlib
     return hmac.new(password.encode(), b"hardware-pipeline-auth", hashlib.sha256).hexdigest()
 
 _LOGIN_PAGE = """<!DOCTYPE html>
@@ -340,8 +341,9 @@ def _resolve_output_dir(proj: dict) -> Optional[str]:
     return None
 
 
-@app.get("/api/v1/projects/{project_id}/documents/{filename}", tags=["projects"])
+@app.get("/api/v1/projects/{project_id}/documents/{filename:path}", tags=["projects"])
 async def get_document(project_id: int, filename: str):
+    # :path type captures slashes, so qt_gui/ControlPanel.cpp works as-is
     proj = _project_svc().get(project_id)
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
@@ -349,7 +351,11 @@ async def get_document(project_id: int, filename: str):
     if not output_dir:
         raise HTTPException(404, "Project output directory not found — run Phase 1 first")
 
-    file_path = os.path.join(output_dir, filename)
+    # Guard against path traversal
+    base = os.path.realpath(output_dir)
+    file_path = os.path.realpath(os.path.join(output_dir, filename))
+    if not file_path.startswith(base):
+        raise HTTPException(400, "Invalid filename")
     if not os.path.exists(file_path):
         raise HTTPException(404, f"Document {filename} not found")
 
@@ -486,7 +492,9 @@ async def export_project_zip(project_id: int):
     Stream all project output documents as a ZIP archive.
     Frontend uses this for the 'Download All Documents' button.
     """
-    import io, zipfile, pathlib
+    import io
+    import zipfile
+    import pathlib
 
     proj = _project_svc().get(project_id)
     if not proj:
@@ -520,13 +528,58 @@ async def export_project_zip(project_id: int):
     )
 
 
-@app.get("/api/v1/projects/{project_id}/documents/{filename}/docx", tags=["projects"])
+def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
+    """
+    Pre-render ```mermaid``` blocks to PNG via mermaid.ink API (runs in thread).
+    Each diagram is fetched with a short timeout; failures fall back to a code block.
+    """
+    import re as _re
+    import base64 as _b64
+    import urllib.request as _urlreq
+    import pathlib as _pl
+
+    MERMAID_TYPES = _re.compile(
+        r'^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph|mindmap|timeline)',
+        _re.IGNORECASE,
+    )
+    fence_re = _re.compile(r'```([a-z]*)\n([\s\S]*?)```', _re.IGNORECASE)
+    diagram_count = [0]
+    tmp = _pl.Path(tmp_dir)
+
+    def replace_block(m: _re.Match) -> str:
+        lang = m.group(1).lower()
+        body = m.group(2)
+        first_line = body.strip().split('\n')[0].strip()
+        is_mermaid = (lang == 'mermaid') or (lang == '' and MERMAID_TYPES.match(first_line))
+        if not is_mermaid:
+            return m.group(0)
+        try:
+            encoded = _b64.urlsafe_b64encode(body.strip().encode('utf-8')).decode('ascii')
+            url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=white"
+            req = _urlreq.Request(url, headers={"User-Agent": "HardwarePipeline/1.0"})
+            with _urlreq.urlopen(req, timeout=5) as resp:   # 5s max per diagram
+                png_data = resp.read()
+            diagram_count[0] += 1
+            img_path = tmp / f"diagram_{diagram_count[0]}.png"
+            img_path.write_bytes(png_data)
+            return f"\n![Diagram]({img_path})\n"
+        except Exception as e:
+            log.warning("mermaid.ink.failed", extra={"error": str(e)})
+            return f"\n**[Diagram — source]**\n\n```\n{body.strip()}\n```\n"
+
+    return fence_re.sub(replace_block, md_text)
+
+
+@app.get("/api/v1/projects/{project_id}/docx/{filename:path}", tags=["projects"])
 async def convert_document_to_docx(project_id: int, filename: str):
     """
     Convert a Markdown (.md) file to .docx and stream it for download.
-    Uses pandoc if available (installed in Docker image), falls back to python-docx.
+    Mermaid diagrams are pre-rendered to PNG via mermaid.ink before conversion.
+    Uses pandoc if available, falls back to python-docx.
     """
-    import subprocess, tempfile, pathlib
+    import subprocess
+    import tempfile
+    import pathlib
 
     proj = _project_svc().get(project_id)
     if not proj:
@@ -549,13 +602,27 @@ async def convert_document_to_docx(project_id: int, filename: str):
     # ── Try pandoc first (installed in Docker image) ───────────────────────────
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Pre-render Mermaid blocks → PNG images in a thread (non-blocking)
+            import asyncio
+            import functools
+            raw_md = src_path.read_text(encoding="utf-8")
+            loop = asyncio.get_event_loop()
+            processed_md = await loop.run_in_executor(
+                None, functools.partial(_render_mermaid_diagrams_sync, raw_md, tmpdir)
+            )
+
+            # Write the processed markdown to a temp file in the same tmpdir
+            # (so relative image paths resolve correctly for pandoc)
+            tmp_md = pathlib.Path(tmpdir) / f"{stem}_processed.md"
+            tmp_md.write_text(processed_md, encoding="utf-8")
+
             out_path = pathlib.Path(tmpdir) / out_filename
             result = subprocess.run(
-                ["pandoc", str(src_path), "-o", str(out_path),
+                ["pandoc", str(tmp_md), "-o", str(out_path),
                  "--from=markdown", "--to=docx",
                  "-V", "geometry:margin=2.5cm",
                  "--standalone"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=60,
             )
             if result.returncode == 0 and out_path.exists():
                 data = out_path.read_bytes()

@@ -3,7 +3,6 @@
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +11,7 @@ class GLRGenerator:
     """Generate Glue Logic Requirements document."""
 
     def generate(self, project_name: str, netlist: dict, requirements: list, metadata: dict = None) -> str:
-        meta = metadata or {}
+        _ = metadata or {}  # Reserved for future use
         return f"""# Glue Logic Requirements (GLR)
 
 **Project:** {project_name}

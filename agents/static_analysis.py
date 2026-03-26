@@ -5,7 +5,6 @@ Runs cppcheck (if available), lizard (complexity), and cpplint (style).
 Falls back gracefully — at minimum lizard always runs (pure Python).
 """
 
-import json
 import logging
 import re
 import shutil
@@ -13,7 +12,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -353,8 +352,8 @@ class StaticAnalysisRunner:
             "",
             "## Executive Summary",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| Quality Score | **{s['quality_score']}/100** |",
             f"| Tools Used | {s['tools_used']} |",
             f"| Total Issues | {s['total_issues']} |",

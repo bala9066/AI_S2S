@@ -1,7 +1,7 @@
 """FCC Compliance Rules - Part 15 Radio Frequency Devices."""
 
 import logging
-from typing import Dict, List
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
