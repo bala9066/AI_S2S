@@ -15,12 +15,15 @@ interface Props {
 export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = [], onRunPipeline, onRerunStale, pipelineRunning, theme = 'dark', onToggleTheme }: Props) {
   const completedCount = phases.filter(p => statuses[p.id] === 'completed').length;
   const runningPhase = phases.find(p => statuses[p.id] === 'in_progress');
-  const pct = Math.round((completedCount / phases.length) * 100);
-  const p1Done = statuses['P1'] === 'completed';
-  const allDone = completedCount === phases.length;
   // All AI phases complete (excludes manual phases P5/P7)
   const aiPhases = phases.filter(p => !p.manual);
   const allAiDone = aiPhases.length > 0 && aiPhases.every(p => statuses[p.id] === 'completed');
+  // Progress: when all AI phases are done, show 100% — manual phases don't block completion
+  const aiCompletedCount = aiPhases.filter(p => statuses[p.id] === 'completed').length;
+  const pct = allAiDone ? 100 : Math.round((aiCompletedCount / Math.max(aiPhases.length, 1)) * 100);
+  const p1Done = statuses['P1'] === 'completed';
+  // "All done" for gating purposes = all AI phases done (manual phases are external)
+  const allDone = allAiDone;
   // Only show Run Pipeline when pipeline has already been started (P2+ has activity)
   // but is currently stopped — this is the recovery/restart case.
   // Hidden during initial Approve flow (user uses the Approve button in chat instead).
@@ -140,7 +143,7 @@ export default function MiniTopbar({ project, phases, statuses, stalePhaseIds = 
           })}
         </div>
         <span style={{ fontSize: 10, color: 'var(--text4)', fontFamily: "'DM Mono', monospace", marginLeft: 4 }}>
-          {completedCount}/{phases.length}
+          {aiCompletedCount}/{aiPhases.length}
         </span>
       </div>
 

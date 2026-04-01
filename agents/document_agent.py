@@ -77,7 +77,7 @@ Generate a COMPLETE, DETAILED Hardware Requirements Specification following this
 - Do NOT add any boilerplate approval/review disclaimers such as
   "This document shall be reviewed and approved by..." — omit all such lines
 - Do NOT include a "Status Legend" or "Legend" section — it is template boilerplate.
-  Instead, add a single metadata line at the document start: **Document Status: DRAFT**
+  Instead, add a single metadata line at the document start: **Document Status: AI-GENERATED**
 - Do NOT use placeholder values TBD, TBA, or TBC anywhere. Derive specific values from
   the provided component data, use engineering calculations, or state a justified assumption
   inline (e.g., "assumed 100 mA based on STM32 datasheet typical"). Every field must have

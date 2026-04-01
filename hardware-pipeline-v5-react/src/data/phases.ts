@@ -246,8 +246,8 @@ export function isUnlocked(phase: PhaseMeta, completedIds: string[]): boolean {
 export const PHASE_DOCUMENTS: Record<string, string[]> = {
   'P1': ['requirements.md', 'block_diagram.md', 'architecture.md', 'component_recommendations.md'],
   'P2': ['HRS_{project_name}.md', 'HRS_{project_name}.docx', 'HRS_{project_name}.pdf'],
-  'P3': ['compliance_report.md', 'compliance_matrix.csv', 'sbom.json', 'sbom_summary.md'],
-  'P4': ['netlist.json', 'netlist_visual.md', 'drc_report.md'],
+  'P3': ['compliance_report.md', 'compliance_matrix.csv', 'sbom_summary.md'],
+  'P4': ['netlist_visual.md', 'drc_report.md'],
   'P5': [], // Manual phase - no AI-generated documents
   'P6': ['glr_specification.md', 'rtl_constraints.xdc', 'pin_assignments.csv'],
   'P7': [], // Manual phase - no AI-generated documents

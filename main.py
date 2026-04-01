@@ -435,7 +435,7 @@ async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
     return {"status": "pipeline_started", "project_id": project_id}
 
 
-VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6", "P8a", "P8b", "P8c"}
+VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7a", "P8a", "P8b", "P8c"}
 
 @app.post("/api/v1/projects/{project_id}/phases/{phase_id}/execute", tags=["pipeline"])
 async def execute_single_phase(project_id: int, phase_id: str, background_tasks: BackgroundTasks):
@@ -530,44 +530,68 @@ async def export_project_zip(project_id: int):
 
 def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     """
-    Pre-render ```mermaid``` blocks to PNG via mermaid.ink API (runs in thread).
-    Each diagram is fetched with a short timeout; failures fall back to a code block.
+    Pre-render ```mermaid``` blocks to PNG via mermaid.ink API.
+    All diagrams are fetched IN PARALLEL (ThreadPoolExecutor) with a 3s timeout each,
+    so a document with N diagrams takes ~3 s total, not N×3 s.
+    Failures fall back gracefully to a labelled code block.
     """
     import re as _re
     import base64 as _b64
     import urllib.request as _urlreq
     import pathlib as _pl
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    MERMAID_TYPES = _re.compile(
-        r'^(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|gitGraph|mindmap|timeline)',
-        _re.IGNORECASE,
-    )
-    fence_re = _re.compile(r'```([a-z]*)\n([\s\S]*?)```', _re.IGNORECASE)
-    diagram_count = [0]
+    MERMAID_RE = _re.compile(r'```mermaid\s*\n([\s\S]*?)```', _re.IGNORECASE)
     tmp = _pl.Path(tmp_dir)
 
-    def replace_block(m: _re.Match) -> str:
-        lang = m.group(1).lower()
-        body = m.group(2)
-        first_line = body.strip().split('\n')[0].strip()
-        is_mermaid = (lang == 'mermaid') or (lang == '' and MERMAID_TYPES.match(first_line))
-        if not is_mermaid:
-            return m.group(0)
+    # ── 1. Collect all mermaid blocks ─────────────────────────────────────────
+    blocks = []  # list of (match, code)
+    for m in MERMAID_RE.finditer(md_text):
+        blocks.append((m, m.group(1).strip()))
+
+    if not blocks:
+        return md_text
+
+    # ── 2. Fetch all diagrams in parallel ─────────────────────────────────────
+    def fetch_diagram(idx_code):
+        idx, code = idx_code
         try:
-            encoded = _b64.urlsafe_b64encode(body.strip().encode('utf-8')).decode('ascii')
+            encoded = _b64.urlsafe_b64encode(code.encode('utf-8')).decode('ascii')
             url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=white"
             req = _urlreq.Request(url, headers={"User-Agent": "HardwarePipeline/1.0"})
-            with _urlreq.urlopen(req, timeout=5) as resp:   # 5s max per diagram
-                png_data = resp.read()
-            diagram_count[0] += 1
-            img_path = tmp / f"diagram_{diagram_count[0]}.png"
-            img_path.write_bytes(png_data)
-            return f"\n![Diagram]({img_path})\n"
+            with _urlreq.urlopen(req, timeout=3) as resp:  # 3s max
+                data = resp.read()
+            if data and len(data) > 200:
+                img_path = tmp / f"diagram_{idx}.png"
+                img_path.write_bytes(data)
+                return idx, str(img_path)
         except Exception as e:
-            log.warning("mermaid.ink.failed", extra={"error": str(e)})
-            return f"\n**[Diagram — source]**\n\n```\n{body.strip()}\n```\n"
+            log.debug("mermaid.ink.skip idx=%d: %s", idx, e)
+        return idx, None
 
-    return fence_re.sub(replace_block, md_text)
+    results: dict[int, str | None] = {}
+    with ThreadPoolExecutor(max_workers=min(len(blocks), 6)) as pool:
+        futures = {pool.submit(fetch_diagram, (i + 1, code)): i for i, (_, code) in enumerate(blocks)}
+        for fut in as_completed(futures):
+            idx, path = fut.result()
+            results[idx] = path
+
+    # ── 3. Replace blocks in reverse order (preserves string offsets) ─────────
+    result_md = md_text
+    for i, (m, code) in reversed(list(enumerate(blocks))):
+        idx = i + 1
+        img_path = results.get(idx)
+        if img_path:
+            replacement = f"\n\n**System Architecture Diagram {idx}**\n\n![Diagram {idx}]({img_path})\n\n"
+        else:
+            replacement = (
+                f"\n\n**System Architecture Diagram {idx}** "
+                f"*(rendered in browser — source below)*\n\n"
+                f"```\n{code}\n```\n\n"
+            )
+        result_md = result_md[:m.start()] + replacement + result_md[m.end():]
+
+    return result_md
 
 
 @app.get("/api/v1/projects/{project_id}/docx/{filename:path}", tags=["projects"])

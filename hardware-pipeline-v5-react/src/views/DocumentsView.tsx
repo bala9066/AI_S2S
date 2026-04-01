@@ -192,14 +192,31 @@ function MarkdownRenderer({ content, color }: { content: string; color: string }
   // Normalise Windows line endings so the regex works regardless of how the
   // file was written (Python on Windows produces \r\n in write_text())
   const normalised = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const mermaidRe = /```mermaid\n([\s\S]*?)```/g;
+
+  // Match ```mermaid or any code block whose first non-blank line starts with
+  // a known Mermaid diagram type (handles agents that omit the language tag).
+  const MERMAID_TYPES = /^(flowchart|graph|sequencediagram|classdiagram|statediagram|erdiagram|gantt|pie\s|gitgraph|mindmap|timeline)/i;
+  // Regex captures: group 1 = optional lang tag (e.g. "mermaid"), group 2 = code body
+  const mermaidRe = /```([a-z]*)[ \t]*\n([\s\S]*?)```/gi;
   let lastIdx = 0;
   let m: RegExpExecArray | null;
 
   while ((m = mermaidRe.exec(normalised)) !== null) {
+    const lang = m[1].toLowerCase();
+    const body = m[2];
+    const firstLine = body.trimStart().split('\n')[0].trim();
+    // Accept if language tag is "mermaid" OR the code body starts with a known Mermaid type
+    const isMermaid = lang === 'mermaid' || (lang === '' && MERMAID_TYPES.test(firstLine));
+    if (!isMermaid) {
+      // Not a mermaid block — keep as markdown (include the full fenced block)
+      if (m.index > lastIdx) parts.push({ type: 'md', text: normalised.slice(lastIdx, m.index) });
+      parts.push({ type: 'md', text: m[0] });
+      lastIdx = m.index + m[0].length;
+      continue;
+    }
     if (m.index > lastIdx) parts.push({ type: 'md', text: normalised.slice(lastIdx, m.index) });
     // Run full sanitization: strip HTML, fix \n escapes, escape > < in labels
-    const cleanCode = sanitizeMermaidCode(m[1]);
+    const cleanCode = sanitizeMermaidCode(body);
     parts.push({ type: 'mermaid', text: cleanCode });
     lastIdx = m.index + m[0].length;
   }
@@ -314,7 +331,7 @@ function PhaseDetails({ phase, color, collapsed = false }: { phase: PhaseMeta; c
 
 // ── GeneratingState — shown when phase is in_progress but no files yet ─────────
 
-function GeneratingState({ phase, onRefresh }: { phase: PhaseMeta; onRefresh: () => void }) {
+function GeneratingState({ phase }: { phase: PhaseMeta }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -342,24 +359,9 @@ function GeneratingState({ phase, onRefresh }: { phase: PhaseMeta; onRefresh: ()
           Estimated: <span style={{ color: phase.color }}>{phase.time}</span>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto 16px', lineHeight: 1.7 }}>
-        Output files will appear here automatically. If stuck, use Refresh.
+      <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto', lineHeight: 1.7 }}>
+        Output files will appear here automatically once the phase completes.
       </div>
-      <button
-        onClick={onRefresh}
-        style={{
-          fontSize: 11, color: phase.color,
-          background: `${phase.color}10`,
-          border: `1px solid ${phase.color}40`,
-          borderRadius: 5, cursor: 'pointer',
-          fontFamily: "'DM Mono', monospace",
-          padding: '5px 14px', transition: 'all 0.15s',
-        }}
-        onMouseEnter={e => { e.currentTarget.style.background = `${phase.color}20`; }}
-        onMouseLeave={e => { e.currentTarget.style.background = `${phase.color}10`; }}
-      >
-        ↻ Refresh Now
-      </button>
     </>
   );
 }
@@ -378,13 +380,19 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
+  const [docxConverting, setDocxConverting] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
   const visibleFilenames = project
     ? new Set(getVisibleDocuments(phase.id, project.name))
     : new Set<string>();
 
-  const filteredFiles = files.filter(f => visibleFilenames.has(f.name));
+  // Pipeline-internal JSON files are kept on disk for agent use but hidden from the UI.
+  // Human-readable equivalents (netlist_visual.md, sbom_summary.md) cover them.
+  const HIDDEN_FILES = new Set(['netlist.json', 'netlist_validation.json', 'sbom.json']);
+  const filteredFiles = files.filter(f =>
+    visibleFilenames.has(f.name) && !HIDDEN_FILES.has(f.name)
+  );
 
   const fetchList = useCallback((silent = false, currentPhaseId?: string) => {
     if (!project) return;
@@ -510,17 +518,29 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const triggerDownload = (file: DocFile) => {
     if (!project) return;
     const a = document.createElement('a');
-    a.href = `/api/v1/projects/${project.id}/documents/${file.name}`;
+    a.href = `/api/v1/projects/${project.id}/documents/${encodeURIComponent(file.name)}`;
     a.download = file.name;
     a.click();
   };
 
-  const triggerDocxDownload = (file: DocFile) => {
-    if (!project) return;
-    const a = document.createElement('a');
-    a.href = `/api/v1/projects/${project.id}/documents/${encodeURIComponent(file.name)}/docx`;
-    a.download = file.name.replace(/\.md$/i, '.docx');
-    a.click();
+  const triggerDocxDownload = async (file: DocFile) => {
+    if (!project || docxConverting[file.name]) return;
+    setDocxConverting(prev => ({ ...prev, [file.name]: true }));
+    try {
+      const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name.replace(/\.md$/i, '.docx');
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      console.error('DOCX download failed:', err);
+    } finally {
+      setDocxConverting(prev => ({ ...prev, [file.name]: false }));
+    }
   };
 
   // ── Render states ─────────────────────────────────────────────────────────
@@ -560,7 +580,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           textAlign: 'center', marginBottom: 20,
         }}>
           {status === 'in_progress' ? (
-            <GeneratingState phase={phase} onRefresh={() => fetchList()} />
+            <GeneratingState phase={phase} />
           ) : status === 'pending' ? (
             <>
               <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.25 }}>📁</div>
@@ -580,18 +600,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
             <>
               <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.25 }}>📭</div>
               <div style={{ fontSize: 14, color: 'var(--text2)', marginBottom: 6 }}>Phase completed — no documents found</div>
-              <div style={{ fontSize: 12, color: 'var(--text4)', marginBottom: 14 }}>
-                Output files may still be writing to disk. Try refreshing.
+              <div style={{ fontSize: 12, color: 'var(--text4)' }}>
+                Output files will appear here automatically once the phase completes.
               </div>
-              <button
-                onClick={() => fetchList(false, phase.id)}
-                style={{
-                  padding: '7px 18px', background: `${phase.color}18`,
-                  border: `1px solid ${phase.color}55`, borderRadius: 6,
-                  color: phase.color, fontSize: 12, fontFamily: 'DM Mono, monospace',
-                  cursor: 'pointer', letterSpacing: '0.05em',
-                }}
-              >↺ REFRESH DOCUMENTS</button>
             </>
           ) : (
             <div style={{ fontSize: 13, color: 'var(--text3)' }}>No documents for {phase.code} yet.</div>
@@ -634,8 +645,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
         @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
       `}</style>
 
-      {/* Stale-status banner: phase is PENDING but previous outputs exist */}
-      {status === 'pending' && filteredFiles.length > 0 && (
+      {/* Stale-status banner: phase is PENDING but previous outputs exist.
+          Skip P1 — docs exist there because the user just chatted (awaiting approval), not a stale run. */}
+      {status === 'pending' && filteredFiles.length > 0 && phase.id !== 'P1' && (
         <div style={{
           marginBottom: 14,
           padding: '9px 14px',
@@ -694,20 +706,6 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
               ↓ Export ZIP
             </a>
           )}
-          <button
-            onClick={() => fetchList()}
-            style={{
-              fontSize: 11, color: 'var(--text4)', background: 'var(--panel)',
-              border: '1px solid var(--panel3)', borderRadius: 5,
-              cursor: 'pointer', fontFamily: "'DM Mono', monospace",
-              padding: '4px 10px', transition: 'all 0.15s',
-              display: 'flex', alignItems: 'center', gap: 5,
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = phase.color; e.currentTarget.style.borderColor = `${phase.color}55`; }}
-            onMouseLeave={e => { e.currentTarget.style.color = 'var(--text4)'; e.currentTarget.style.borderColor = 'var(--panel3)'; }}
-          >
-            ↻ Refresh
-          </button>
         </div>
       </div>
 
@@ -789,26 +787,37 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                   )}
 
                   {/* ↓ DOCX button — only for .md files */}
-                  {getExt(file.name) === 'md' && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); triggerDocxDownload(file); }}
-                      title={`Convert ${file.name} to Word document (.docx)`}
-                      style={{
-                        fontSize: 12, color: 'var(--text3)',
-                        background: 'var(--panel2)',
-                        border: '1px solid var(--panel3)',
-                        borderRadius: 6, cursor: 'pointer',
-                        fontFamily: "'DM Mono', monospace",
-                        padding: '5px 12px', transition: 'all 0.15s',
-                        display: 'flex', alignItems: 'center', gap: 5,
-                        whiteSpace: 'nowrap',
-                      }}
-                      onMouseEnter={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f666'; e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}
-                      onMouseLeave={e => { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; e.currentTarget.style.background = 'var(--panel2)'; }}
-                    >
-                      ↓ DOCX
-                    </button>
-                  )}
+                  {getExt(file.name) === 'md' && (() => {
+                    const isConverting = !!docxConverting[file.name];
+                    return (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); triggerDocxDownload(file); }}
+                        disabled={isConverting}
+                        title={isConverting ? 'Converting to Word document…' : `Convert ${file.name} to Word document (.docx)`}
+                        style={{
+                          fontSize: 12,
+                          color: isConverting ? '#3b82f6' : 'var(--text3)',
+                          background: isConverting ? 'rgba(59,130,246,0.08)' : 'var(--panel2)',
+                          border: `1px solid ${isConverting ? '#3b82f666' : 'var(--panel3)'}`,
+                          borderRadius: 6,
+                          cursor: isConverting ? 'not-allowed' : 'pointer',
+                          fontFamily: "'DM Mono', monospace",
+                          padding: '5px 12px', transition: 'all 0.15s',
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          whiteSpace: 'nowrap', opacity: isConverting ? 0.85 : 1,
+                        }}
+                        onMouseEnter={e => { if (!isConverting) { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f666'; e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}}
+                        onMouseLeave={e => { if (!isConverting) { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; e.currentTarget.style.background = 'var(--panel2)'; }}}
+                      >
+                        {isConverting ? (
+                          <>
+                            <span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #3b82f6', borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
+                            Converting…
+                          </>
+                        ) : '↓ DOCX'}
+                      </button>
+                    );
+                  })()}
 
                   <button
                     onClick={(e) => { e.stopPropagation(); triggerDownload(file); }}

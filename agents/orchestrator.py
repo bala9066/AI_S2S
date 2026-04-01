@@ -1,7 +1,7 @@
 """
 Orchestrator Agent - Master Controller for the Hardware Pipeline.
 
-Routes execution through phases: P1 -> P2 -> P3 -> P4 -> P6 -> P8a -> P8b -> P8c
+Routes execution through phases: P1 -> P2 -> P3 -> P4 -> P6 -> P7a -> P8a -> P8b -> P8c
 (P5 and P7 are manual phases, skipped in automation)
 """
 
@@ -17,7 +17,7 @@ from database.models import ProjectDB, PhaseOutputDB
 logger = logging.getLogger(__name__)
 
 # Phase execution order (automated phases only)
-PHASE_ORDER = ["P1", "P2", "P3", "P4", "P6", "P8a", "P8b", "P8c"]
+PHASE_ORDER = ["P1", "P2", "P3", "P4", "P6", "P7a", "P8a", "P8b", "P8c"]
 
 # Phase to agent mapping
 PHASE_AGENTS = {
@@ -26,6 +26,7 @@ PHASE_AGENTS = {
     "P3": "agents.compliance_agent.ComplianceAgent",
     "P4": "agents.netlist_agent.NetlistAgent",
     "P6": "agents.glr_agent.GLRAgent",
+    "P7a": "agents.rdt_psq_agent.RdtPsqAgent",
     "P8a": "agents.srs_agent.SRSAgent",
     "P8b": "agents.sdd_agent.SDDAgent",
     "P8c": "agents.code_agent.CodeAgent",

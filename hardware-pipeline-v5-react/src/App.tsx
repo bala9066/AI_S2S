@@ -426,6 +426,8 @@ export default function App() {
           pipelineStartedRef.current = false;
           prevP1StatusRef.current = undefined;
         }}
+        onNewProject={() => setModal('create')}
+        onLoadProject={() => setModal('load')}
       />
 
       {/* Center Content */}

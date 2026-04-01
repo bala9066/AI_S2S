@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef } from 'react';
 import type { PhaseMeta, Statuses } from '../types';
 import { isUnlocked } from '../data/phases';
 
@@ -9,6 +10,8 @@ interface Props {
   stalePhaseIds?: string[];
   onSelect: (idx: number) => void;
   onLanding: () => void;
+  onNewProject: () => void;
+  onLoadProject: () => void;
 }
 
 // Visual groups to add separators between sections
@@ -26,9 +29,23 @@ function getGroupLabel(phaseId: string): string | null {
   return null;
 }
 
-export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], onSelect, onLanding }: Props) {
+export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], onSelect, onLanding, onNewProject, onLoadProject }: Props) {
   const completedCount = completedIds.length;
   const totalAI = phases.filter(p => p.auto).length;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
 
   return (
     <div style={{
@@ -36,19 +53,106 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
       display: 'flex', flexDirection: 'column', flexShrink: 0,
       height: '100vh', position: 'sticky', top: 0,
     }}>
-      {/* Logo */}
-      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--border2)' }}>
-        <button onClick={onLanding} title="Back to home" style={{
-          background: 'transparent', border: 'none', cursor: 'pointer',
-          textAlign: 'left', width: '100%', padding: 0,
-        }}>
-          <div style={{ fontSize: 10, color: 'var(--teal)', letterSpacing: '0.14em', marginBottom: 4 }}>
-            DATA PATTERNS · CODE KNIGHTS
+      {/* Logo + menu icon */}
+      <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid var(--border2)', position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          {/* Clickable logo → home */}
+          <button onClick={onLanding} title="Back to home" style={{
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            textAlign: 'left', padding: 0, flex: 1,
+          }}>
+            <div style={{ fontSize: 10, color: 'var(--teal)', letterSpacing: '0.14em', marginBottom: 4 }}>
+              DATA PATTERNS · CODE KNIGHTS
+            </div>
+            <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>
+              Hardware <span style={{ color: 'var(--teal)' }}>Pipeline</span>
+            </div>
+          </button>
+
+          {/* Project menu icon */}
+          <div ref={menuRef} style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              onClick={() => setMenuOpen(o => !o)}
+              title="Project menu"
+              style={{
+                width: 28, height: 28, borderRadius: 6, border: `1px solid ${menuOpen ? 'var(--teal-border)' : 'var(--border2)'}`,
+                background: menuOpen ? 'rgba(0,198,167,0.12)' : 'var(--panel2)',
+                color: menuOpen ? 'var(--teal)' : 'var(--text3)',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 15, transition: 'all 0.15s', flexShrink: 0, marginTop: 2,
+              }}
+              onMouseEnter={e => { if (!menuOpen) { e.currentTarget.style.borderColor = 'var(--teal-border)'; e.currentTarget.style.color = 'var(--teal)'; e.currentTarget.style.background = 'rgba(0,198,167,0.08)'; } }}
+              onMouseLeave={e => { if (!menuOpen) { e.currentTarget.style.borderColor = 'var(--border2)'; e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.background = 'var(--panel2)'; } }}
+            >
+              &#9776;
+            </button>
+
+            {/* Dropdown */}
+            {menuOpen && (
+              <div style={{
+                position: 'absolute', top: 34, right: 0, zIndex: 100,
+                background: 'var(--panel)', border: '1px solid var(--border2)',
+                borderRadius: 8, padding: '5px',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                minWidth: 180,
+              }}>
+                <button
+                  onClick={() => { setMenuOpen(false); onNewProject(); }}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 5,
+                    background: 'transparent', border: 'none',
+                    color: 'var(--teal)', fontSize: 12.5,
+                    fontFamily: "'DM Mono',monospace", fontWeight: 600,
+                    cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    transition: 'background 0.12s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,198,167,0.10)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ fontSize: 15, lineHeight: 1 }}>+</span>
+                  New Project
+                </button>
+                <button
+                  onClick={() => { setMenuOpen(false); onLoadProject(); }}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 5,
+                    background: 'transparent', border: 'none',
+                    color: 'var(--text2)', fontSize: 12.5,
+                    fontFamily: "'DM Mono',monospace", fontWeight: 400,
+                    cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    transition: 'background 0.12s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--panel2)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ fontSize: 13 }}>&#8629;</span>
+                  Load Project
+                </button>
+                <div style={{ height: 1, background: 'var(--border2)', margin: '4px 0' }} />
+                <button
+                  onClick={() => { setMenuOpen(false); onLanding(); }}
+                  style={{
+                    width: '100%', padding: '8px 12px', borderRadius: 5,
+                    background: 'transparent', border: 'none',
+                    color: 'var(--text4)', fontSize: 11.5,
+                    fontFamily: "'DM Mono',monospace",
+                    cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    transition: 'background 0.12s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--panel2)'; e.currentTarget.style.color = 'var(--text3)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text4)'; }}
+                >
+                  <span>&#8592;</span>
+                  Exit to Home
+                </button>
+              </div>
+            )}
           </div>
-          <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 17, fontWeight: 800, color: 'var(--text)' }}>
-            Hardware <span style={{ color: 'var(--teal)' }}>Pipeline</span>
-          </div>
-        </button>
+        </div>
+
         {/* Mini progress bar */}
         <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ flex: 1, height: 3, background: 'var(--panel2)', borderRadius: 2, overflow: 'hidden' }}>

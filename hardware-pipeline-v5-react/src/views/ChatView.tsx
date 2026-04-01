@@ -301,6 +301,449 @@ const ChatMessageItem = memo(function ChatMessageItem({ msg, color }: { msg: Cha
   );
 });
 
+// ── QuickReplyPanel ───────────────────────────────────────────────────────────
+// Parses the last AI message for numbered questions and renders as a modal
+// popup with clickable chips + an "Other..." option per question.
+
+interface ParsedQuestion {
+  index: number;       // 1-based question number
+  label: string;       // short label e.g. "Supply voltage"
+  body: string;        // full question text
+  options: string[];   // extracted answer chips (empty = show only Other)
+}
+
+/**
+ * Split a question body containing multiple independent questions into sub-cards.
+ * Only splits on "? " followed by common English question-starter words so that
+ * inline option lists like "A, B, or C?" are never broken apart.
+ */
+function splitMultiBody(q: ParsedQuestion): ParsedQuestion[] {
+  if ((q.body.match(/\?/g) || []).length < 2) return [q];
+
+  // Only split before recognised question-opener words (not mid-option-list)
+  const parts = q.body.split(
+    /\?\s+(?=(?:Do|Does|Did|Is|Are|Was|Were|Will|Would|Can|Could|Should|Have|Has|What|Which|How|Where|When|Who|Please|Specify|Indicate|Select)\b)/
+  );
+  if (parts.length <= 1) return [q];
+
+  return parts
+    .map(p => p.trim())
+    .filter(p => p.length > 5)
+    .map(part => {
+      const body = part.endsWith('?') || part.endsWith('!') ? part : part + '?';
+      return { ...q, body, options: extractOptions(body) };
+    });
+}
+
+/** Expand multi-sentence questions and renumber the whole list 1, 2, 3… */
+function expandAndRenumber(questions: ParsedQuestion[]): ParsedQuestion[] {
+  const expanded: ParsedQuestion[] = [];
+  for (const q of questions) expanded.push(...splitMultiBody(q));
+  return expanded.map((q, i) => ({ ...q, index: i + 1 }));
+}
+
+function parseQuestionsFromText(text: string): ParsedQuestion[] {
+
+  // Helper: strip leading em-dash / dash that AIs emit after the label separator
+  // e.g. "**Label** — body" → body captured as "— body" → we strip to "body"
+  const stripLeadingDash = (s: string) => s.replace(/^[—–\-]\s+/, '').trim();
+
+  // ── Format A: "1. **Label**: body?" — label + body on same line ──────────
+  {
+    const questions: ParsedQuestion[] = [];
+    const lineRe = /^(\d+)\.\s+\*{0,2}([^:*\n]{2,50})\*{0,2}[:\s]+(.+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = lineRe.exec(text)) !== null) {
+      const idx = parseInt(m[1]);
+      const label = m[2].trim();
+      const body = stripLeadingDash(m[3]);
+      questions.push({ index: idx, label, body, options: extractOptions(body) });
+    }
+    if (questions.length > 0) return expandAndRenumber(questions);
+  }
+
+  // ── Format B: numbered section headers + bullet points underneath ─────────
+  // e.g.:  "1. **Application**\n• What is this driving?\n• Temp range?"
+  {
+    const questions: ParsedQuestion[] = [];
+    const lines = text.split('\n');
+    let sectionLabel = '';
+    let qIdx = 0;
+
+    for (const line of lines) {
+      // Section header: "1. **Label**" or "1. Label" (no colon body after)
+      const secM = line.match(/^\d+\.\s+\*{0,2}([^*\n:]{2,60})\*{0,2}\s*$/);
+      if (secM) { sectionLabel = secM[1].trim(); continue; }
+
+      // Bullet line under a section
+      if (sectionLabel) {
+        const bulletM = line.match(/^\s*[•\-\*]\s+(.+)$/);
+        if (bulletM) {
+          qIdx++;
+          const body = stripLeadingDash(bulletM[1]);
+          questions.push({ index: qIdx, label: sectionLabel, body, options: extractOptions(body) });
+        }
+      }
+    }
+    if (questions.length > 0) return expandAndRenumber(questions);
+  }
+
+  // ── Format C: standalone bold header + numbered questions below ───────────
+  // e.g.:  "**Power & Performance:**\n1. What is the max current?\n2. What frequency?"
+  {
+    const questions: ParsedQuestion[] = [];
+    const lines = text.split('\n');
+    let sectionLabel = '';
+
+    for (const line of lines) {
+      // Standalone bold-only line: "**Section Header:**" or "**Section Header**"
+      const boldM = line.match(/^\s*\*{2}([^*\n]{2,60})\*{2}:?\s*$/);
+      if (boldM) {
+        sectionLabel = boldM[1].replace(/:$/, '').trim();
+        continue;
+      }
+      // Numbered question under a bold header (plain "1. question?" — no inline label)
+      if (sectionLabel) {
+        const numM = line.match(/^\s*(\d+)\.\s+(.+)$/);
+        if (numM) {
+          const body = stripLeadingDash(numM[2]);
+          questions.push({ index: parseInt(numM[1]), label: sectionLabel, body, options: extractOptions(body) });
+        }
+        // Blank line between sections — reset so next bold header wins
+        else if (line.trim() === '' && questions.length > 0) {
+          sectionLabel = '';
+        }
+      }
+    }
+    if (questions.length > 0) return expandAndRenumber(questions);
+  }
+
+  // ── Format D: plain numbered questions "1. question?" — no labels ─────────
+  // Fallback: catch any remaining "1. some question?" patterns
+  {
+    const questions: ParsedQuestion[] = [];
+    const plainRe = /^(\d+)\.\s+(.{10,200}[?!])\s*$/gm;
+    let dm: RegExpExecArray | null;
+    while ((dm = plainRe.exec(text)) !== null) {
+      const idx = parseInt(dm[1]);
+      const body = stripLeadingDash(dm[2]);
+      // Derive a short label from the first 4 words of the question
+      const words = body.replace(/[?!.]/g, '').split(/\s+/);
+      const label = words.slice(0, 4).join(' ');
+      questions.push({ index: idx, label, body, options: extractOptions(body) });
+    }
+    if (questions.length > 0) return expandAndRenumber(questions);
+  }
+
+  return [];
+}
+
+function extractOptions(body: string): string[] {
+  // ── Normalise chip text ────────────────────────────────────────────────────
+  // Strip leading "— " / "– " / "- " that the AI adds after the label separator
+  const cleanBody = body.replace(/^[—–\-]\s+/, '').trim();
+
+  // Normalise a single chip: strip leading "or"/"and" and common articles,
+  // then capitalise first letter so chips look consistent.
+  const normalizeChip = (s: string): string => {
+    let t = s.trim()
+      .replace(/^(or|and)\s+/i, '')
+      .replace(/^(a|an|the|just|only)\s+/i, '')
+      .trim();
+    return t.length > 0 ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+  };
+
+  // Word-count check after normalization (articles stripped → fairer count)
+  const chipWords = (s: string) => normalizeChip(s).split(/\s+/).length;
+  const shortWords = (parts: string[]) => parts.every(p => chipWords(p) <= 4);
+
+  // ── Domain shortcuts (high-confidence, checked first) ──────────────────────
+
+  // Temperature / grade — triggered either by keyword OR by grade terms in the options
+  const tempKeyword = /\b(temperature|thermal|operating\s+temp|temp\s+range|grade)\b/i.test(cleanBody);
+  const tempGrades  = /\b(commercial|industrial|automotive|mil.?spec|military)\b/i.test(cleanBody) &&
+                      /(-\d+|°[CF]|ambient|outdoor)/i.test(cleanBody);
+  if (tempKeyword || tempGrades) {
+    const chips: string[] = [];
+    if (/commercial/i.test(cleanBody))          chips.push('Commercial (0–70°C)');
+    if (/industrial/i.test(cleanBody))          chips.push('Industrial (−40–85°C)');
+    if (/automotive/i.test(cleanBody))          chips.push('Automotive (−40–105°C)');
+    if (/mil.?spec|military/i.test(cleanBody))  chips.push('MIL-SPEC (−55–125°C)');
+    if (chips.length >= 2) return chips;
+    return ['Commercial (0–70°C)', 'Industrial (−40–85°C)', 'Automotive (−40–105°C)', 'MIL-SPEC (−55–125°C)'];
+  }
+
+  // Cooling / thermal management
+  if (/\b(forced\s+air|natural\s+convect|conduction.cool|heatsink|heat\s*sink)\b/i.test(cleanBody)) {
+    return ['Forced air (fan)', 'Natural convection', 'Conduction-cooled', 'Custom/TBD'];
+  }
+
+  // ── Strip ALL parentheticals for end-of-sentence option scanning ───────────
+  // e.g. "CAN (CANopen/J1939?), UART" → "CAN, UART"
+  // e.g. "(or expected gain range)? A 10W..." → "? A 10W..."
+  const bodyClean = cleanBody.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+
+  // Focus on the last clause after a colon or em-dash intro
+  const lastClause = bodyClean.split(/[:\u2014\u2013]/).pop()?.trim() ?? bodyClean;
+
+  // "A, B, or C?" / "A or B?" anchored to end of sentence
+  const endOrRe = /\b(\w[\w\s/\-]{0,28})(?:,\s*\w[\w\s/\-]{0,28})*(?:,?\s*or\s+\w[\w\s/\-]{0,28})\s*[?!.]?\s*$/i;
+  const endM = lastClause.match(endOrRe);
+  if (endM) {
+    const raw = endM[0].replace(/[?!.]\s*$/, '').trim();
+    const parts = raw
+      .split(/,\s*(?:or\s+)?|\s+or\s+/)
+      .map(s => normalizeChip(s))
+      .filter(s => s.length > 1 && s.length < 40);
+    if (parts.length >= 2 && shortWords(parts)) return parts.slice(0, 5);
+  }
+
+  // ── "e.g." / "i.e." parentheticals ONLY — avoids pulling in inline parens ──
+  // Only match explicit example lists, NOT parenthetical notes like (overtemp, VSWR)
+  const egParens = Array.from(cleanBody.matchAll(/\(\s*(?:e\.g\.|i\.e\.)[.,]?\s*([^)]{4,120})\)/gi));
+  for (const pm of egParens) {
+    const inner = pm[1].replace(/^(?:e\.g\.|i\.e\.)[.,]?\s*/i, '');
+    const parts = inner
+      .split(/[,/]/)
+      .map(s => normalizeChip(s))
+      .filter(s => s.length > 1 && s.length < 32);
+    if (parts.length >= 2 && shortWords(parts)) return parts.slice(0, 5);
+  }
+
+  // ── "whether X or Y" ───────────────────────────────────────────────────────
+  const whetherM = cleanBody.match(/whether\s+(?:you\s+(?:can|need|should|want|prefer)\s+)?(.{3,35}?)\s+or\s+(?:need\s+|use\s+)?(.{3,35}?)(?:\?|$|\s*\()/i);
+  if (whetherM) {
+    const a = normalizeChip(whetherM[1]);
+    const b = normalizeChip(whetherM[2]);
+    if (shortWords([a, b]) && a.length > 2 && b.length > 2) return [a, b];
+  }
+
+  // ── Yes / No (only when there's no "or" offering other choices) ────────────
+  if (/\?/.test(cleanBody) && !/\bor\b/i.test(cleanBody) &&
+      /\b(do you|is there|are there|will|should|does|can you|have you|is it|would you)\b/i.test(cleanBody)) {
+    return ['Yes', 'No'];
+  }
+
+  return [];
+}
+
+// Single question card inside the popup
+function QuestionCard({
+  q, color, selected, onSelect,
+}: {
+  q: ParsedQuestion;
+  color: string;
+  selected: string;
+  onSelect: (val: string) => void;
+}) {
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherText, setOtherText] = useState('');
+
+  const isOtherSelected = selected.startsWith('__other__:');
+  const otherValue = isOtherSelected ? selected.slice(10) : otherText;
+
+  const toggleOther = () => {
+    if (otherOpen) {
+      setOtherOpen(false);
+      if (isOtherSelected) onSelect('');
+    } else {
+      setOtherOpen(true);
+      onSelect('');
+    }
+  };
+
+  const commitOther = (val: string) => {
+    setOtherText(val);
+    if (val.trim()) onSelect('__other__:' + val.trim());
+    else onSelect('');
+  };
+
+  return (
+    <div style={{
+      background: 'var(--panel)', border: `1px solid ${color}22`,
+      borderRadius: 8, padding: '12px 14px',
+    }}>
+      <div style={{ fontSize: 11, color, fontFamily: "'DM Mono',monospace", letterSpacing: '0.06em', marginBottom: 4 }}>
+        Q{q.index}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--text)', marginBottom: 10, lineHeight: 1.5 }}>
+        {q.body}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {q.options.map(opt => {
+          const isSel = selected === opt;
+          return (
+            <button key={opt}
+              onClick={() => { setOtherOpen(false); onSelect(isSel ? '' : opt); }}
+              style={{
+                padding: '5px 13px', borderRadius: 20, fontSize: 12,
+                fontFamily: "'DM Mono',monospace", cursor: 'pointer',
+                border: `1px solid ${isSel ? color : `${color}40`}`,
+                background: isSel ? color : `${color}0a`,
+                color: isSel ? '#070b14' : 'var(--text2)',
+                fontWeight: isSel ? 700 : 400, transition: 'all 0.12s',
+              }}>
+              {opt}
+            </button>
+          );
+        })}
+        {/* Other chip */}
+        <button
+          onClick={toggleOther}
+          style={{
+            padding: '5px 13px', borderRadius: 20, fontSize: 12,
+            fontFamily: "'DM Mono',monospace", cursor: 'pointer',
+            border: `1px solid ${(otherOpen || isOtherSelected) ? color : `${color}40`}`,
+            background: (otherOpen || isOtherSelected) ? `${color}18` : 'transparent',
+            color: (otherOpen || isOtherSelected) ? color : 'var(--text3)',
+            fontWeight: 400, transition: 'all 0.12s',
+          }}>
+          {isOtherSelected ? `✎ ${otherValue}` : 'Other…'}
+        </button>
+      </div>
+      {/* Inline text input when Other is open */}
+      {otherOpen && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+          <input
+            autoFocus
+            value={otherText}
+            onChange={e => commitOther(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') toggleOther(); }}
+            placeholder="Type your answer…"
+            style={{
+              flex: 1, background: 'var(--panel2)', border: `1px solid ${color}55`,
+              borderRadius: 5, padding: '6px 10px', fontSize: 12,
+              color: 'var(--text)', fontFamily: "'DM Mono',monospace",
+              outline: 'none',
+            }}
+          />
+          {otherText.trim() && (
+            <button
+              onClick={() => setOtherOpen(false)}
+              style={{
+                padding: '6px 12px', borderRadius: 5, background: color,
+                color: '#070b14', border: 'none', fontSize: 11,
+                fontFamily: "'DM Mono',monospace", fontWeight: 700, cursor: 'pointer',
+              }}>
+              ✓
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuickReplyPanel({
+  text, color, onSend, disabled,
+}: { text: string; color: string; onSend: (msg: string) => void; disabled: boolean }) {
+  const questions = parseQuestionsFromText(text);
+  const [selected, setSelected] = useState<Record<number, string>>({});
+  const [open, setOpen] = useState(true);
+
+  // Reset when AI message changes
+  const questionKey = questions.map(q => q.index).join(',');
+  const prevKey = useRef('');
+  useEffect(() => {
+    if (prevKey.current !== questionKey) {
+      prevKey.current = questionKey;
+      setSelected({});
+      setOpen(true);
+    }
+  }, [questionKey]);
+
+  if (questions.length === 0 || !open) return null;
+
+  const allAnswered = questions.every(q => selected[q.index]);
+  const selectedCount = questions.filter(q => selected[q.index]).length;
+
+  const buildReply = () => {
+    return questions
+      .filter(q => selected[q.index])
+      .map(q => {
+        const val = selected[q.index];
+        const display = val.startsWith('__other__:') ? val.slice(10) : val;
+        return `${q.index}. ${q.label}: ${display}`;
+      })
+      .join('\n');
+  };
+
+  return (
+    /* Sticky popup anchored to bottom of chat scroll area */
+    <div style={{
+      position: 'sticky', bottom: 12, zIndex: 20,
+      marginBottom: 8,
+      background: 'var(--panel2)',
+      border: `1px solid ${color}44`,
+      borderRadius: 12,
+      boxShadow: `0 -4px 32px rgba(0,0,0,0.55), 0 0 0 1px ${color}18`,
+      overflow: 'hidden',
+    }}>
+      {/* Header bar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 14px',
+        background: `linear-gradient(90deg, ${color}18, transparent)`,
+        borderBottom: `1px solid ${color}22`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 14 }}>&#9889;</span>
+          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color, letterSpacing: '0.1em' }}>
+            QUICK ANSWERS — {selectedCount}/{questions.length} selected
+          </span>
+        </div>
+        <button
+          onClick={() => setOpen(false)}
+          style={{
+            background: 'none', border: 'none', color: 'var(--text4)',
+            fontSize: 16, cursor: 'pointer', lineHeight: 1, padding: '2px 6px',
+          }}
+          title="Dismiss">
+          ×
+        </button>
+      </div>
+
+      {/* Question cards */}
+      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
+        {questions.map(q => (
+          <QuestionCard
+            key={q.index}
+            q={q}
+            color={color}
+            selected={selected[q.index] ?? ''}
+            onSelect={val => setSelected(prev => ({ ...prev, [q.index]: val }))}
+          />
+        ))}
+      </div>
+
+      {/* Footer / send */}
+      <div style={{
+        padding: '10px 12px',
+        borderTop: `1px solid ${color}18`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+      }}>
+        <span style={{ fontSize: 11, color: 'var(--text4)', fontFamily: "'DM Mono',monospace" }}>
+          {allAnswered ? 'All questions answered' : `${questions.length - selectedCount} remaining`}
+        </span>
+        <button
+          onClick={() => { onSend(buildReply()); setOpen(false); }}
+          disabled={disabled || selectedCount === 0}
+          style={{
+            padding: '8px 20px', borderRadius: 6,
+            background: selectedCount > 0 ? color : 'var(--panel3)',
+            color: selectedCount > 0 ? '#070b14' : 'var(--text4)',
+            border: 'none', fontSize: 12,
+            fontFamily: "'DM Mono',monospace", fontWeight: 700,
+            cursor: disabled || selectedCount === 0 ? 'default' : 'pointer',
+            transition: 'all 0.15s',
+          }}>
+          Send {selectedCount > 0 ? `${selectedCount} answer${selectedCount > 1 ? 's' : ''}` : 'answers'} →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---- Welcome card ----
 function WelcomeCard({ color, onSuggestion }: { color: string; onSuggestion: (s: string) => void }) {
   const examples = [
@@ -480,6 +923,16 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       {messages.map((msg, i) => (
         <ChatMessageItem key={i} msg={msg} color={color} />
       ))}
+
+      {/* Quick-reply option chips — shown after last AI message when not loading/complete */}
+      {!loading && !approveClicked && messages.length > 0 && messages[messages.length - 1]?.role === 'ai' && (
+        <QuickReplyPanel
+          text={messages[messages.length - 1].text}
+          color={color}
+          onSend={sendMessage}
+          disabled={loading}
+        />
+      )}
 
       {loading && (
         <div style={{ marginBottom: 16 }}>

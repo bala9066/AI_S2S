@@ -104,7 +104,7 @@ export const api = {
     req(`/api/v1/projects/${id}/documents`),
 
   getDocumentText: async (id: number, filename: string): Promise<string> => {
-    const res = await fetch(`${BASE}/api/v1/projects/${id}/documents/${filename}`);
+    const res = await fetch(`${BASE}/api/v1/projects/${id}/documents/${encodeURIComponent(filename)}`);
     if (!res.ok) throw new Error(`${res.status}`);
     return res.text();
   },
