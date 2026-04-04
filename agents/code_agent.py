@@ -80,7 +80,7 @@ class CodeAgent(BaseAgent):
             phase_number="P8c",
             phase_name="Code Generation",
             model=settings.primary_model,
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for detailed code review reports
         )
         self.driver_generator = DriverGenerator()
         self.static_runner = StaticAnalysisRunner()

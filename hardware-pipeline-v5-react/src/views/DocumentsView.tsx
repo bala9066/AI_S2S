@@ -467,6 +467,25 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
+  // Safety net: if status is 'completed' but no files are visible yet (e.g. the
+  // initial silent fetch ran before files were written, or loadingList timed out),
+  // trigger one non-silent retry so the spinner shows and files load correctly.
+  const retriedRef = useRef<string>('');
+  useEffect(() => {
+    const key = `${project?.id}-${phase.id}`;
+    if (
+      !loadingList &&
+      filteredFiles.length === 0 &&
+      status === 'completed' &&
+      !error &&
+      retriedRef.current !== key
+    ) {
+      retriedRef.current = key;
+      fetchList(false, phase.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingList, filteredFiles.length, status, phase.id, project?.id]);
+
   // Background prefetch all viewable documents after file list loads
   // This makes "Preview" feel instant — no spinner on click
   useEffect(() => {

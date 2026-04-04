@@ -20,12 +20,23 @@ SYSTEM_PROMPT = """You are an expert PCB design engineer generating a logical ne
 ## KEY INNOVATION:
 You generate the netlist BEFORE PCB design (not extracted from schematics). This gives engineers a validated connectivity map before investing weeks in layout.
 
+## CRITICAL: TOOL CALL FIRST
+**IMPORTANT:** Call the `generate_netlist` tool IMMEDIATELY at the start of your response — BEFORE any prose or markdown. This is your primary output and must not be truncated.
+
+For complex designs with 15+ components (especially RF transceivers, MCUs with many peripherals, FPGAs, etc.), the tool call JSON can be very large. Generate the complete tool call with:
+- ALL components from the P1 BOM (every IC, passive, connector)
+- ALL interconnections between them
+- Complete mermaid diagram
+- Full validation notes
+
+Only AFTER the tool call completes should you add explanatory prose.
+
 ## YOUR TASK:
 Given requirements and selected components, generate:
 
 1. **Netlist JSON** - Machine-readable netlist with:
-   - Component instances (U1, R1, C1, etc.)
-   - Pin-to-pin connections (net names)
+   - Component instances (U1, R1, C1, etc.) — EVERY component from the BOM
+   - Pin-to-pin connections (net names) — ALL connections
    - Power nets and ground nets
    - Signal types (digital, analog, power, clock)
 
@@ -42,14 +53,12 @@ Given requirements and selected components, generate:
    - Power domain crossing issues
 
 ## OUTPUT FORMAT:
-Generate a markdown document with:
+Call `generate_netlist` tool first, then generate a markdown document with:
 - Netlist summary table
 - Mermaid diagram of connectivity
 - Detailed pin-to-pin connection table
 - Power budget table
 - Validation results (warnings/errors)
-
-Use the `generate_netlist` tool to output the structured data.
 
 IMPORTANT: Do NOT use TBD, TBA, or TBC placeholders. All component instances must have
 real reference designators (U1, R1, C1…), real part numbers from the P1 component data,
@@ -115,7 +124,7 @@ class NetlistAgent(BaseAgent):
             phase_name="Netlist Generation",
             model=settings.primary_model,  # Opus for complex reasoning
             tools=[GENERATE_NETLIST_TOOL],
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for complex RF designs with 15+ components
         )
         self.netlist_generator = NetlistGenerator()
 
@@ -223,7 +232,13 @@ Generate the netlist using the generate_netlist tool. Include:
         else:
             # LLM did not call the generate_netlist tool — synthesize a skeleton
             # netlist from the available text so the phase never hard-fails.
-            logger.warning("P4: generate_netlist tool not called — synthesizing skeleton netlist")
+            logger.warning("=" * 60)
+            logger.warning("P4 NETLIST AGENT: SKELETON FALLBACK TRIGGERED")
+            logger.warning("The LLM did NOT call the generate_netlist tool.")
+            logger.warning("This usually means max_tokens was too low for the design complexity.")
+            logger.warning("Returning minimal skeleton netlist (U1=MCU, U2=Power Mgmt).")
+            logger.warning("Re-run Phase 4 with increased max_tokens for full netlist.")
+            logger.warning("=" * 60)
 
             # Build a minimal skeleton netlist that downstream phases can consume
             netlist_data = {
@@ -268,6 +283,8 @@ Generate the netlist using the generate_netlist tool. Include:
             outputs["netlist.json"] = json.dumps(generator_netlist, indent=2)
             mermaid_diagram = self.netlist_generator.to_mermaid(generator_netlist)
             visual_content = self._build_visual_md(netlist_data, project_name, mermaid_diagram)
+            import re as _re
+            visual_content = _re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', visual_content, flags=_re.IGNORECASE)
             outputs["netlist_visual.md"] = visual_content
             validation = self._validate_netlist(netlist_data)
             outputs["netlist_validation.json"] = json.dumps(validation, indent=2)

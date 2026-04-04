@@ -77,7 +77,7 @@ class SRSAgent(BaseAgent):
             phase_number="P8a",
             phase_name="SRS Generation",
             model=settings.fast_model,  # Structured template doc — fast model sufficient
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for comprehensive SRS documents
         )
         self.srs_generator = SRSGenerator()
 
@@ -139,6 +139,10 @@ class SRSAgent(BaseAgent):
                 sw_features=sw_features,
                 metadata={"version": project_context.get("version", "1.0")},
             )
+
+        # Scrub any TBD/TBC/TBA the LLM wrote despite instructions
+        import re as _re
+        srs_content = _re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', srs_content, flags=_re.IGNORECASE)
 
         # Save output
         srs_file = self.srs_generator.save(srs_content, output_dir, project_name)

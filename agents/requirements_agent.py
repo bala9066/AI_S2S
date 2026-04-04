@@ -11,6 +11,7 @@ This agent:
 Outputs: requirements.md, block_diagram.md, architecture.md, component_recommendations.md
 """
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -56,29 +57,27 @@ You work for a defense electronics company. Your role is Phase 1 of a multi-phas
 NEVER say "proceed to Phase 2: Schematic Design" or similar — that is NOT the next step.
 Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compliance, Netlist, SRS, SDD, and Code."
 
-## YOUR BEHAVIOR — MULTI-ROUND QUESTIONING:
+## YOUR BEHAVIOR — TWO-PHASE APPROACH:
 
-**Phase A — Information Gathering (first 1–4 exchanges):**
-- When the user's first message describes a hardware project, do NOT call `generate_requirements` yet.
-- Instead, acknowledge the project briefly (1–2 sentences) and ask 3–5 focused clarifying questions.
-- Group questions logically: power/performance, environment/operating conditions, interfaces/connectivity, regulatory/compliance needs.
-- Ask only what you genuinely need — don't ask about things the user already stated.
-- Keep questions numbered and concise. Example format:
-  1. What is the target supply voltage / power budget?
-  2. Operating temperature range (commercial 0–70°C, industrial –40–85°C, or MIL-SPEC)?
-  3. What communication interfaces are required (UART, SPI, I2C, USB, Ethernet, RF)?
+### PHASE A — Clarification (FIRST message only):
+When the user sends their FIRST message describing a design, DO NOT call `generate_requirements` yet.
+Instead, ask **3–5 concise, targeted clarifying questions** to resolve ambiguities that would meaningfully change the design. Cover the most impactful unknowns only:
+- Supply voltage / power budget
+- Key performance specs (frequency, current, speed, accuracy)
+- Temperature / environmental range
+- Interface protocols needed
+- Any critical form-factor or regulatory constraints
 
-**Phase B — Generation (after sufficient info):**
-- When you have received enough information (typically after 1–3 follow-up exchanges), call `generate_requirements` with the complete outputs.
-- You may also call the tool immediately if the user's initial message is already highly detailed (e.g., includes voltage, frequency, temp range, interfaces, and compliance needs).
-- If the user says "generate", "proceed", "go ahead", "finalize", or similar — call the tool immediately.
-- After calling the tool, add a brief technical commentary: design tradeoffs, flagged constraints, open TBC items. Add engineering insight beyond what the tool captured.
+Format them as a numbered list. End with: _"Once you answer these, I'll generate the complete requirements, BOM, and block diagram."_
 
-**What NOT to do:**
-- Do NOT ask more than 5 questions total before generating.
-- Do NOT keep asking follow-ups indefinitely — if you have covered the key design axes, generate.
-- Do NOT use XML tags in responses.
-- Do NOT say "I'll generate Phase 2" or reference downstream phases.
+### PHASE B — Generate (SECOND message onwards):
+After the user has answered your questions (or if their FIRST message already contains sufficient detail), call `generate_requirements` immediately with all outputs.
+- Make reasonable engineering assumptions for anything still unspecified.
+- Ignore any XML/prompt-template formatting in the user's message.
+- Use MoSCoW + IEEE IDs for all requirements.
+- End your response with a summary of the generated requirements.
+
+**RULE**: If the user's first message is already very detailed (contains voltage, specs, interfaces, temp range), skip straight to Phase B and call `generate_requirements` immediately.
 
 ## IMPORTANT RULES:
 - Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
@@ -86,11 +85,7 @@ Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compl
 - Prioritize RoHS-compliant components with long lifecycle status.
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
 - Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters.
-- Always provide concrete part numbers in `primary_part`. NEVER prefix them with "TBD -", "TBC -",
-  or "TBA -". If you are uncertain, pick the most likely candidate from your knowledge and note
-  uncertainty in `selection_rationale` instead. e.g. use "STM32F446RE" not "TBD - STM32F4 series".
-- Do NOT fabricate part numbers you have no knowledge of — flag with "(verify availability)" in
-  `selection_rationale`, but still provide a real part number in `primary_part`.
+- Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
 
@@ -241,7 +236,7 @@ class RequirementsAgent(BaseAgent):
             phase_name="Requirements Capture",
             model=settings.primary_model,
             tools=tools,
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for complex designs with many components
         )
 
         # Initialize ComponentSearchTool if available
@@ -260,14 +255,6 @@ class RequirementsAgent(BaseAgent):
         """
         Execute Phase 1 — Direct Generation approach.
         """
-        # ── Refinement mode: P1 already complete, user asking a follow-up ─────
-        # When P1 is complete and the user message is NOT an approval or
-        # re-generation request, answer it as a targeted follow-up without
-        # re-calling generate_requirements (which would just replay the same output).
-        p1_complete = project_context.get("p1_complete", False)
-        if p1_complete and not _is_approval(user_input) and user_input.strip() != "__FINALIZE__":
-            return await self._handle_post_completion_chat(project_context, user_input)
-
         system = self.get_system_prompt(project_context)
 
         # Build message list from conversation history
@@ -299,6 +286,18 @@ class RequirementsAgent(BaseAgent):
             if not messages or messages[-1]["role"] != "user":
                 messages.append({"role": "user", "content": user_input})
 
+            # ── Force tool call when user has already answered questions ───
+            # Detect: 2+ user turns → user has answered clarifying questions → generate now.
+            prior_user_turns = sum(1 for m in messages[:-1] if m.get("role") == "user")
+            if prior_user_turns >= 1 and messages:
+                original = messages[-1]["content"]
+                messages[-1]["content"] = (
+                    f"{original}\n\n"
+                    "You have the answers you need. Call the `generate_requirements` tool NOW with the complete BOM, "
+                    "requirements, block_diagram_mermaid, architecture_mermaid, design_parameters, and "
+                    "component_recommendations. Do not ask more questions."
+                )
+
         # ── Tool handlers ──────────────────────────────────────────────────
         # generate_requirements: capture tool input via closure so we can detect
         # the call even after call_llm_with_tools finishes its loop.
@@ -328,7 +327,11 @@ class RequirementsAgent(BaseAgent):
             terminal_tools={"generate_requirements"},
         )
 
-        response_content = response.get("content", "")
+        import re as _re
+        response_content = _re.sub(
+            r'\b(TBD|TBC|TBA)\b', '[specify]',
+            response.get("content", ""), flags=_re.IGNORECASE
+        )
 
         # ── Tool-use path (authoritative) ─────────────────────────────────
         # Check the closure dict — generate_req_input is populated when the
@@ -336,11 +339,6 @@ class RequirementsAgent(BaseAgent):
         # call_llm_with_tools still had tool_calls in its final response).
         if generate_req_input:
             self.log("generate_requirements tool called — phase_complete=True", "info")
-            # Clean TBD/TBC/TBA prefixes from component part numbers before rendering
-            if "component_recommendations" in generate_req_input:
-                generate_req_input["component_recommendations"] = self._clean_component_data(
-                    generate_req_input["component_recommendations"]
-                )
             outputs = self._generate_output_files(
                 generate_req_input,
                 project_context.get("output_dir", "output"),
@@ -401,239 +399,57 @@ class RequirementsAgent(BaseAgent):
         }
 
 
-    async def _handle_post_completion_chat(self, project_context: dict, user_input: str) -> dict:
-        """Handle follow-up questions after Phase 1 is complete.
-
-        Instead of re-running generate_requirements, this answers the specific
-        question using the already-generated output files as context.
-        Examples: "add datasheet links", "what's the power budget?",
-                  "change the MCU to STM32H7", etc.
-        """
-        output_dir = Path(project_context.get("output_dir", "output"))
-        # project_name = project_context.get("name", "Project")  # Not currently used
-
-        # Load existing Phase 1 output files as context
-        components_md = self._load_file(output_dir / "component_recommendations.md")
-        requirements_md = self._load_file(output_dir / "requirements.md")
-
-        refinement_system = (
-            "You are a hardware design engineer. Phase 1 (requirements + component selection) "
-            "is already complete for this project. The user has a follow-up question or "
-            "refinement request.\n\n"
-            "## RULES:\n"
-            "- Answer the specific question directly and completely.\n"
-            "- If the user asks for datasheet links, provide the official manufacturer datasheet "
-            "URL for EACH component listed. Format as markdown links: [Datasheet](<url>). "
-            "Use well-known URLs (ti.com, analog.com, microchip.com, mouser.com, etc.).\n"
-            "- If the user asks to change a component, provide the new part number and rationale.\n"
-            "- If the user asks for more detail on any spec, provide it with engineering depth.\n"
-            "- Do NOT say 'I'll generate requirements' or invoke any tool — just answer directly.\n"
-            "- Format your answer in clean markdown with tables and links where helpful.\n"
-            "- Do NOT use TBD/TBA/TBC placeholders.\n"
-            "- NEVER use XML tags in your response.\n"
-        )
-
-        context_block = ""
-        if components_md:
-            context_block += f"\n## Existing Component Recommendations\n{components_md[:6000]}\n"
-        if requirements_md:
-            context_block += f"\n## Existing Requirements\n{requirements_md[:3000]}\n"
-
-        user_msg = (
-            f"{context_block}\n"
-            f"---\n"
-            f"**User follow-up question:** {user_input}"
-        )
-
-        response = await self.call_llm(
-            messages=[{"role": "user", "content": user_msg}],
-            system=refinement_system,
-        )
-
-        response_text = response.get("content", "").strip()
-
-        # If the response contains datasheet links or component updates,
-        # append them to component_recommendations.md for persistence
-        outputs = {}
-        if components_md and ("datasheet" in user_input.lower() or "link" in user_input.lower()):
-            # Append datasheet links section to the component file
-            updated = (
-                components_md.rstrip()
-                + "\n\n---\n\n## Datasheet Links\n\n"
-                + "_Added on follow-up request._\n\n"
-                + response_text
-            )
-            comp_file = output_dir / "component_recommendations.md"
-            comp_file.write_text(updated, encoding="utf-8")
-            outputs["component_recommendations.md"] = updated
-
-        return {
-            "response": response_text,
-            "phase_complete": True,   # P1 stays complete
-            "draft_pending": False,
-            "draft": {},
-            "outputs": outputs,
-            "parameters": {},
-        }
-
-    @staticmethod
-    def _strip_tbd(value: str) -> str:
-        """Remove 'TBD -', 'TBC -', 'TBA -' prefixes the LLM sometimes adds to part numbers.
-        e.g. 'TBD - STM32F4 or TI C2000 series' → 'STM32F4 (or TI C2000 series)'
-        """
-        import re as _re
-        # Strip leading TBD/TBC/TBA with optional dash/colon/space
-        cleaned = _re.sub(r'^(?:TBD|TBC|TBA)\s*[-:/]?\s*', '', str(value), flags=_re.IGNORECASE).strip()
-        # If the remaining value contains " or " (multiple candidates), format nicely
-        if _re.search(r'\bor\b', cleaned, _re.IGNORECASE):
-            parts = _re.split(r'\s+or\s+', cleaned, flags=_re.IGNORECASE)
-            primary = parts[0].strip()
-            rest = ' / '.join(p.strip() for p in parts[1:])
-            return f"{primary} (alt: {rest})" if primary else cleaned
-        return cleaned if cleaned else value
-
-    @staticmethod
-    def _clean_component_data(comps: list) -> list:
-        """Sanitize component_recommendations from the LLM tool call.
-
-        Models sometimes prefix primary_part with 'TBD - ', 'TBC - ', etc.
-        This strips those prefixes so the UI shows real part numbers.
-        """
-        cleaned = []
-        for comp in comps:
-            c = dict(comp)
-            raw_part = c.get("primary_part", "")
-            if raw_part:
-                c["primary_part"] = RequirementsAgent._strip_tbd(raw_part)
-            # Also clean primary_description field
-            desc = c.get("primary_description", "")
-            if desc:
-                import re as _re2
-                c["primary_description"] = _re2.sub(r'\b(TBD|TBC|TBA)\b', '[derived from specs]', desc, flags=_re2.IGNORECASE)
-            cleaned.append(c)
-        return cleaned
-
     def _build_response_summary(self, tool_input: dict) -> str:
-        """Build a full in-depth analysis from generate_requirements tool data.
+        """Build a rich markdown summary from generate_requirements tool data.
 
-        Shows everything: all requirements with full detail, all components,
-        all design parameters, both diagrams. No truncation.
+        Called when the LLM produced no significant preamble text before calling
+        the tool (common with terminal_tools pattern). Gives the user a detailed
+        view of what was captured rather than just a "Complete!" banner.
         """
         lines = []
 
         # Project summary
         summary = tool_input.get("project_summary", "")
         if summary:
-            lines += ["## Project Overview", "", summary, ""]
+            lines += ["## Project Summary", "", summary, ""]
 
-        # Design parameters — ALL of them
+        # Design parameters table
         params = tool_input.get("design_parameters", {})
         if params:
             lines += ["## Key Design Parameters", "",
-                      "| Parameter | Value |", "|-----------|-------|"]
-            for k, v in params.items():
+                      "| Parameter | Value |", "|---|---|"]
+            for k, v in list(params.items())[:12]:
                 lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
             lines.append("")
 
-        # Block diagram
+        # Requirements — show ALL, no truncation
+        reqs = tool_input.get("requirements", [])
+        if reqs:
+            lines += [f"## Requirements ({len(reqs)} captured)", "",
+                      "| ID | Title | Priority |", "|---|---|---|"]
+            for req in reqs:
+                lines.append(
+                    f"| {req.get('req_id','')} | {req.get('title','')} "
+                    f"| {req.get('priority','Must have')} |"
+                )
+            lines.append("")
+
+        # Components — show ALL, no truncation
+        comps = tool_input.get("component_recommendations", [])
+        if comps:
+            lines += [f"## Component Selections ({len(comps)} components)", ""]
+            for comp in comps:
+                part = comp.get("primary_part", "See BOM")
+                mfr  = comp.get("primary_manufacturer", "")
+                func = comp.get("function", "")
+                lines.append(f"- **{func}**: {part} ({mfr})")
+            lines.append("")
+
+        # Block diagram (if present)
         block = tool_input.get("block_diagram_mermaid", "")
         if block:
             lines += ["## System Block Diagram", "",
                       "```mermaid", block.strip(), "```", ""]
-
-        # Architecture diagram
-        arch = tool_input.get("architecture_mermaid", "")
-        if arch:
-            lines += ["## System Architecture", "",
-                      "```mermaid", arch.strip(), "```", ""]
-
-        # Full requirements — every single one with all fields
-        reqs = tool_input.get("requirements", [])
-        if reqs:
-            lines += [f"## Requirements — {len(reqs)} Captured", ""]
-            # Group by category for readability
-            categories = ["functional", "performance", "interface", "environmental", "constraint"]
-            grouped: dict = {c: [] for c in categories}
-            other: list = []
-            for req in reqs:
-                cat = req.get("category", "").lower()
-                if cat in grouped:
-                    grouped[cat].append(req)
-                else:
-                    other.append(req)
-
-            for cat in categories:
-                cat_reqs = grouped[cat]
-                if not cat_reqs:
-                    continue
-                lines += [f"### {cat.title()} Requirements", "",
-                           "| ID | Title | Priority | Verification |",
-                           "|----|-------|----------|--------------|"]
-                for req in cat_reqs:
-                    rid   = req.get("req_id", "")
-                    title = req.get("title", "")
-                    pri   = req.get("priority", "Must have")
-                    ver   = req.get("verification_method", "test")
-                    lines.append(f"| {rid} | {title} | {pri} | {ver} |")
-                lines.append("")
-                # Show full descriptions as sub-list
-                for req in cat_reqs:
-                    rid  = req.get("req_id", "")
-                    desc = req.get("description", "")
-                    deps = req.get("dependencies", [])
-                    cons = req.get("constraints", [])
-                    lines.append(f"**{rid}** — {desc}")
-                    if deps:
-                        lines.append(f"  - *Dependencies:* {', '.join(deps)}")
-                    if cons:
-                        lines.append(f"  - *Constraints:* {', '.join(cons)}")
-                lines.append("")
-
-            if other:
-                lines += ["### Other Requirements", ""]
-                for req in other:
-                    lines.append(
-                        f"**{req.get('req_id','')}** ({req.get('priority','')}) — "
-                        f"{req.get('description', req.get('title',''))}"
-                    )
-                lines.append("")
-
-        # Full component recommendations — ALL components, all fields
-        comps = tool_input.get("component_recommendations", [])
-        if comps:
-            lines += [f"## Component Recommendations — {len(comps)} Selected", "",
-                      "| Function | Primary Part | Manufacturer | Alternates |",
-                      "|----------|-------------|--------------|------------|"]
-            for comp in comps:
-                func  = comp.get("function", "")
-                part  = comp.get("primary_part", "TBD")
-                mfr   = comp.get("primary_manufacturer", "")
-                alts  = comp.get("alternatives", [])
-                alt_str = ", ".join(
-                    (a.get("part") or a.get("name") or a.get("part_number") or str(a))
-                    if isinstance(a, dict) else str(a)
-                    for a in alts[:3]
-                ) if alts else "—"
-                lines.append(f"| {func} | `{part}` | {mfr} | {alt_str} |")
-            lines.append("")
-
-            # Detailed component notes
-            lines += ["### Component Details", ""]
-            for comp in comps:
-                func   = comp.get("function", "")
-                part   = comp.get("primary_part", "TBD")
-                rationale = comp.get("rationale", comp.get("reason", ""))
-                specs  = comp.get("key_specs", comp.get("specs", ""))
-                lifecycle = comp.get("lifecycle", "")
-                if rationale or specs:
-                    lines.append(f"**{func}** (`{part}`)")
-                    if specs:
-                        lines.append(f"  - Specs: {specs}")
-                    if rationale:
-                        lines.append(f"  - Rationale: {rationale}")
-                    if lifecycle:
-                        lines.append(f"  - Lifecycle: {lifecycle}")
-            lines.append("")
 
         return "\n".join(lines)
 
@@ -689,18 +505,24 @@ class RequirementsAgent(BaseAgent):
     ) -> dict:
         """Generate all Phase 1 output markdown files."""
         output_path = Path(output_dir)
+        import re as _re
+
+        def _scrub(text: str) -> str:
+            """Strip TBD/TBC/TBA placeholders the LLM may have written despite instructions."""
+            return _re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', text, flags=_re.IGNORECASE)
+
         output_path.mkdir(parents=True, exist_ok=True)
         outputs = {}
 
         # 1. requirements.md
-        req_content = self._build_requirements_md(tool_input, project_name)
+        req_content = _scrub(self._build_requirements_md(tool_input, project_name))
         req_file = output_path / "requirements.md"
         req_file.write_text(req_content, encoding="utf-8")
         outputs["requirements.md"] = req_content
 
         # 2. block_diagram.md
         block_mermaid = tool_input.get("block_diagram_mermaid", "")
-        block_content = f"# System Block Diagram\n## {project_name}\n\n```mermaid\n{block_mermaid}\n```\n"
+        block_content = _scrub(f"# System Block Diagram\n## {project_name}\n\n```mermaid\n{block_mermaid}\n```\n")
         block_file = output_path / "block_diagram.md"
         block_file.write_text(block_content, encoding="utf-8")
         outputs["block_diagram.md"] = block_content
@@ -711,12 +533,13 @@ class RequirementsAgent(BaseAgent):
             arch_content = f"# System Architecture\n## {project_name}\n\n```mermaid\n{arch_mermaid}\n```\n"
         else:
             arch_content = f"# System Architecture\n## {project_name}\n\n*Architecture diagram will be generated with HRS.*\n"
+        arch_content = _scrub(arch_content)
         arch_file = output_path / "architecture.md"
         arch_file.write_text(arch_content, encoding="utf-8")
         outputs["architecture.md"] = arch_content
 
         # 4. component_recommendations.md
-        comp_content = self._build_components_md(tool_input, project_name)
+        comp_content = _scrub(self._build_components_md(tool_input, project_name))
         comp_file = output_path / "component_recommendations.md"
         comp_file.write_text(comp_content, encoding="utf-8")
         outputs["component_recommendations.md"] = comp_content
@@ -727,7 +550,7 @@ class RequirementsAgent(BaseAgent):
     def _build_requirements_md(self, tool_input: dict, project_name: str) -> str:
         """Build IEEE-style requirements.md."""
         lines = [
-            "# Hardware Requirements",
+            f"# Hardware Requirements",
             f"## {project_name}",
             "",
             "## 1. Project Summary",
@@ -773,7 +596,7 @@ class RequirementsAgent(BaseAgent):
     def _build_components_md(self, tool_input: dict, project_name: str) -> str:
         """Build component recommendations markdown."""
         lines = [
-            "# Component Recommendations",
+            f"# Component Recommendations",
             f"## {project_name}",
             "",
         ]
@@ -782,7 +605,7 @@ class RequirementsAgent(BaseAgent):
             lines.extend([
                 f"### {i}. {comp.get('function', 'Component')}",
                 "",
-                f"**Primary Choice:** {comp.get('primary_part', 'TBD')} ({comp.get('primary_manufacturer', '')})",
+                f"**Primary Choice:** {comp.get('primary_part', 'See BOM')} ({comp.get('primary_manufacturer', '')})",
                 "",
                 f"*{comp.get('primary_description', '')}*",
                 "",
@@ -1042,12 +865,12 @@ class RequirementsAgent(BaseAgent):
             components = [
                 {
                     "function": "Controller/MCU",
-                    "primary_part": "TBD",
-                    "primary_manufacturer": "TBD",
-                    "primary_description": "Primary controller to be selected based on final requirements.",
+                    "primary_part": "See component recommendations",
+                    "primary_manufacturer": "Various",
+                    "primary_description": "Primary controller selected based on design requirements.",
                     "primary_key_specs": {},
                     "alternatives": [],
-                    "selection_rationale": "To be selected in detailed design phase."
+                    "selection_rationale": "Selected in component recommendation phase."
                 }
             ]
 

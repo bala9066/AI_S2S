@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from config import settings
 from database.models import (
@@ -137,6 +138,7 @@ class ProjectService:
             statuses[phase_id] = entry
 
             p.phase_statuses = statuses
+            flag_modified(p, "phase_statuses")  # force SQLAlchemy to detect JSON column change
             if status == "completed" and phase_id == "P1":
                 p.current_phase = "P2"
             session.commit()
@@ -179,8 +181,10 @@ class ProjectService:
             history = list(p.conversation_history or [])
             history.append({"role": role, "content": content})
             p.conversation_history = history
+            flag_modified(p, "conversation_history")  # force SQLAlchemy to detect JSON column change
             if design_parameters:
                 p.design_parameters = {**(p.design_parameters or {}), **design_parameters}
+                flag_modified(p, "design_parameters")
             session.commit()
         except Exception:
             session.rollback()
@@ -259,6 +263,7 @@ class ProjectService:
                     entry.update(extra)
                 statuses[phase_id] = entry
                 p.phase_statuses = statuses
+                flag_modified(p, "phase_statuses")  # force SQLAlchemy to detect JSON column change
                 if status == "completed" and phase_id == "P1":
                     p.current_phase = "P2"
 
@@ -298,8 +303,10 @@ class ProjectService:
                 history = list(p.conversation_history or [])
                 history.append({"role": role, "content": content})
                 p.conversation_history = history
+                flag_modified(p, "conversation_history")  # force SQLAlchemy to detect JSON column change
                 if design_parameters:
                     p.design_parameters = {**(p.design_parameters or {}), **design_parameters}
+                    flag_modified(p, "design_parameters")
 
     async def async_record_phase_output(
         self,

@@ -68,7 +68,7 @@ class GLRAgent(BaseAgent):
             phase_number="P6",
             phase_name="GLR Generation",
             model=settings.primary_model,
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for complex FPGA/CPLD glue logic
         )
         self.glr_generator = GLRGenerator()
 
@@ -103,6 +103,10 @@ class GLRAgent(BaseAgent):
             requirements=structured_reqs,
             metadata={"date": requirements[:500] if requirements else ""},
         )
+
+        # Scrub any TBD/TBC/TBA the LLM wrote despite instructions
+        import re as _re
+        glr_content = _re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', glr_content, flags=_re.IGNORECASE)
 
         # Save using generator's save method
         glr_file = self.glr_generator.save(glr_content, output_dir, project_name)

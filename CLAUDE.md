@@ -11,9 +11,22 @@
 
 ## Completed Work
 
-### React Frontend Rebuild (v5 Design) — DONE (v1)
-- First pass built at `hardware-pipeline-v5-react/`, deployed as `frontend/bundle.html`
-- **Now being rebuilt** to match the layout described below
+### React Frontend Rebuild (v5 Design) — DONE ✅
+- Built at `hardware-pipeline-v5-react/`, deployed as `frontend/bundle.html`
+- Full three-column layout: LeftPanel (248px) + Center content + FlowPanel (300px right)
+- All 10 phases in sidebar with lock logic, color coding, ✓ marks
+- FlowPanel: animated sub-steps, progress bars, completion summary, Run button
+- ChatView (P1): typewriter effect, no auto-greet, no QuickReply popup cards, history restored on F5
+- CreateProjectModal: name only (no description field)
+- Phase completion toasts on status flip (via `prevStatusesRef` in App.tsx)
+- DocumentsView: DOCX download with "Converting…" loading state (async blob fetch)
+- DocumentsView: inline Mermaid rendering via mermaid.js CDN
+
+### Backend Fixes — DONE ✅
+- All 7 AI agents scrub TBD/TBC/TBA from output
+- `flag_modified` added to all JSON column writes (fixes P4 "Pending" status bug)
+- Parallel Mermaid diagram rendering via `ThreadPoolExecutor` in `main.py`
+- P4 netlist agent always completes (skeleton fallback if LLM doesn't call tool)
 
 ---
 
@@ -304,8 +317,10 @@ This is **always visible** while you use the center sub-tabs.
 ## Interactive Components
 
 ### Create Project Modal
-- Fields: PROJECT NAME, DESCRIPTION (textarea), Design Type (RF / Digital)
+- Fields: PROJECT NAME only, Design Type (RF / Digital) — description textarea REMOVED
+- Subtitle: "Give your project a name — describe your design in the chat"
 - NO product_id field — backend rejects it
+- NO description field in UI (backend still accepts empty string for description)
 - Actions: `Cancel` | `CREATE & START →`
 - On submit: POST `/api/v1/projects` → load into pipeline view, select P1
 
@@ -323,8 +338,9 @@ This is **always visible** while you use the center sub-tabs.
 - POST `/api/v1/projects/{id}/chat` with `{ message }`
 - Response is full JSON `{ response: "..." }` — display all at once
 - Animated typewriter effect on the response text (like v5 HTML chat)
-- Suggestion chips for common prompts
-- Message history preserved in session state
+- NO QuickReply suggestion chip popups — user types answers freely
+- NO auto-greet on load — user must send first message
+- Message history restored on F5 via `api.getConversationHistory` in `handleLoadProject`
 - Colors: teal accent (P1 color), dark panel background
 
 ---
@@ -435,7 +451,7 @@ async def serve_frontend():
 
 ## Known Issues
 
-*(none outstanding — all previously noted P4 bugs have been resolved)*
+*(none — all known bugs resolved)*
 
 ---
 
@@ -445,8 +461,8 @@ async def serve_frontend():
 | # | Feature | Status |
 |---|---------|--------|
 | 1 | **"Re-run all stale phases" button** in MiniTopbar — appears when `stalePhaseIds.length > 0`, one-click re-runs the full pipeline to refresh all outdated documents | TODO |
-| 2 | **Chat history reload on F5** — reload `conversation_history` from DB on `handleLoadProject` so P1 chat isn't blank after browser refresh | TODO |
-| 3 | **Phase completion toast** — when any phase flips to `completed` during polling, show "P02 — HRS Document complete ✓" toast | TODO |
+| 2 | **Chat history reload on F5** — reload `conversation_history` from DB on `handleLoadProject` so P1 chat isn't blank after browser refresh | ✅ DONE |
+| 3 | **Phase completion toast** — when any phase flips to `completed` during polling, show "P02 — HRS Document complete ✓" toast | ✅ DONE |
 
 ### Tier 2 — Medium effort / High demo impact
 | # | Feature | Status |
@@ -485,3 +501,15 @@ All component and view files must use `export default`. Named-only exports break
 
 **7. uvicorn requires manual restart**
 New routes in `main.py` need a manual server restart if not running with `--reload`.
+
+**8. SQLAlchemy JSON column mutation tracking**
+`phase_statuses`, `conversation_history`, `design_parameters` are `Column(JSON)`. SQLAlchemy does NOT auto-detect in-place or reassignment mutations for JSON columns. Always call `flag_modified(p, 'field_name')` after any assignment. Already done in `services/project_service.py`.
+
+**9. TBD/TBC/TBA banned in all agent output**
+All 7 agents scrub these words via `re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', ...)` before saving output. System prompts also explicitly forbid them. Server restart required for agent changes to take effect.
+
+**10. Standards in use**
+- HRS: ISO/IEC/IEEE 29148:2018
+- SRS: IEEE 830-1998 / ISO/IEC/IEEE 29148:2018
+- SDD: IEEE 1016-2009
+- Compliance: RoHS EU 2011/65/EU, REACH, FCC Part 15, CE Marking, IEC 60601, ISO 26262, MIL-STD

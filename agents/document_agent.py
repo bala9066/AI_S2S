@@ -93,7 +93,7 @@ class DocumentAgent(BaseAgent):
             phase_number="P2",
             phase_name="HRS Generation",
             model=settings.primary_model,  # Use primary model for quality document generation
-            max_tokens=8192,
+            max_tokens=16384,  # Increased for comprehensive document generation
         )
         self.hrs_generator = HRSGenerator()
 
@@ -146,7 +146,7 @@ class DocumentAgent(BaseAgent):
                 "version": project_context.get("version", "1.0"),
                 "author": project_context.get("author", "Hardware Pipeline AI"),
                 "input_voltage": project_context.get("design_parameters", {}).get("input_voltage", "12-24"),
-                "max_power": project_context.get("design_parameters", {}).get("max_power", "TBD"),
+                "max_power": project_context.get("design_parameters", {}).get("max_power", "per design spec"),
                 "temp_min": project_context.get("design_parameters", {}).get("temp_min", "-40"),
                 "temp_max": project_context.get("design_parameters", {}).get("temp_max", "+85"),
             }
@@ -175,10 +175,10 @@ class DocumentAgent(BaseAgent):
             flags=_re.IGNORECASE | _re.DOTALL,
         ).strip()
 
-        # Replace any remaining TBD/TBA/TBC placeholders with a visible note
+        # Replace any remaining TBD/TBA/TBC placeholders
         hrs_content = _re.sub(
             r'\b(TBD|TBA|TBC)\b',
-            '[see component data]',
+            '[specify]',
             hrs_content,
             flags=_re.IGNORECASE,
         )

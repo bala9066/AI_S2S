@@ -2,8 +2,15 @@ import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { Project, PhaseMeta } from '../types';
 import { api } from '../api';
 import { ensureMermaid, purgeMermaidScratch, nextMermaidId } from '../utils/mermaid';
+import { parseQuestionsFromAI, shouldShowQuestions, type QuestionCard as QuestionCardType } from '../data/questionSchema';
 
 export interface ChatMessage { role: 'user' | 'ai'; text: string; }
+
+/** Truncate long questions to fit in cards */
+function truncateQuestion(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength - 3) + '...';
+}
 
 /** Sanitise AI-generated Mermaid code */
 function sanitizeMermaid(raw: string): string {
@@ -322,7 +329,7 @@ function splitMultiBody(q: ParsedQuestion): ParsedQuestion[] {
 
   // Only split before recognised question-opener words (not mid-option-list)
   const parts = q.body.split(
-    /\?\s+(?=(?:Do|Does|Did|Is|Are|Was|Were|Will|Would|Can|Could|Should|Have|Has|What|Which|How|Where|When|Who|Please|Specify|Indicate|Select)\b)/
+    /\?\s+(?=(?:Do|Does|Did|Is|Are|Was|Were|Will|Would|Can|Could|Should|Have|Has|What|Which|How|Where|When|Who|Any|Please|Specify|Indicate|Select|If|For|In|With|Provide|List|Describe|Define|Confirm|Tell)\b)/
   );
   if (parts.length <= 1) return [q];
 
@@ -343,6 +350,10 @@ function expandAndRenumber(questions: ParsedQuestion[]): ParsedQuestion[] {
 }
 
 function parseQuestionsFromText(text: string): ParsedQuestion[] {
+  // Debug: log a sample of the text for troubleshooting
+  if (typeof window !== 'undefined' && (window as any).__debugQuickReply) {
+    console.log('[QuickReply] Parsing text:', text.substring(0, 200));
+  }
 
   // Helper: strip leading em-dash / dash that AIs emit after the label separator
   // e.g. "**Label** — body" → body captured as "— body" → we strip to "body"
@@ -351,7 +362,8 @@ function parseQuestionsFromText(text: string): ParsedQuestion[] {
   // ── Format A: "1. **Label**: body?" — label + body on same line ──────────
   {
     const questions: ParsedQuestion[] = [];
-    const lineRe = /^(\d+)\.\s+\*{0,2}([^:*\n]{2,50})\*{0,2}[:\s]+(.+)$/gm;
+    // More permissive regex: allows label to contain more chars, body can be shorter
+    const lineRe = /^(\d+)\.\s+\*{0,2}([^:*\n]{1,60})\*{0,2}[:\s]+(.{3,500})$/gm;
     let m: RegExpExecArray | null;
     while ((m = lineRe.exec(text)) !== null) {
       const idx = parseInt(m[1]);
@@ -359,31 +371,81 @@ function parseQuestionsFromText(text: string): ParsedQuestion[] {
       const body = stripLeadingDash(m[3]);
       questions.push({ index: idx, label, body, options: extractOptions(body) });
     }
-    if (questions.length > 0) return expandAndRenumber(questions);
+    if (questions.length > 0) {
+      if (typeof window !== 'undefined' && (window as any).__debugQuickReply) {
+        console.log('[QuickReply] Format A matched:', questions);
+      }
+      return expandAndRenumber(questions);
+    }
   }
 
   // ── Format B: numbered section headers + bullet points underneath ─────────
   // e.g.:  "1. **Application**\n• What is this driving?\n• Temp range?"
+  // FIX D: When a bullet ends with ":" it's an intro for sub-options.
+  // Collect following non-"?" bullets as chip options for that intro question.
   {
     const questions: ParsedQuestion[] = [];
     const lines = text.split('\n');
     let sectionLabel = '';
     let qIdx = 0;
+    let i = 0;
 
-    for (const line of lines) {
+    while (i < lines.length) {
+      const line = lines[i];
+
       // Section header: "1. **Label**" or "1. Label" (no colon body after)
       const secM = line.match(/^\d+\.\s+\*{0,2}([^*\n:]{2,60})\*{0,2}\s*$/);
-      if (secM) { sectionLabel = secM[1].trim(); continue; }
+      if (secM) { sectionLabel = secM[1].trim(); i++; continue; }
 
       // Bullet line under a section
       if (sectionLabel) {
         const bulletM = line.match(/^\s*[•\-\*]\s+(.+)$/);
         if (bulletM) {
-          qIdx++;
           const body = stripLeadingDash(bulletM[1]);
+
+          // FIX D: If this bullet ends with ":" or "Do you need:" — collect
+          // following non-"?" bullets as sub-options for this question
+          if (/:\s*$/.test(body) || /\b(need|want|choose|select|prefer)\s*:\s*$/i.test(body)) {
+            const subOptions: string[] = [];
+            let j = i + 1;
+            while (j < lines.length) {
+              const subM = lines[j].match(/^\s*[•\-\*]\s+(.+)$/);
+              if (!subM) break;
+              const subBody = stripLeadingDash(subM[1]).replace(/[?!,]+$/, '').trim();
+              // Sub-bullet that's a question itself (ends with ?) → stop merging
+              if (/\?\s*$/.test(subM[1])) break;
+              if (subBody.length > 2 && subBody.length < 60) {
+                // Strip trailing ", or" and clean up
+                const cleaned = subBody.replace(/,?\s*or\s*$/i, '').trim();
+                if (cleaned.length > 2) subOptions.push(cleaned);
+              }
+              j++;
+            }
+            if (subOptions.length >= 2) {
+              qIdx++;
+              questions.push({
+                index: qIdx, label: sectionLabel,
+                body: body.replace(/:\s*$/, '?'),
+                options: subOptions.slice(0, 5).map(s => {
+                  const t = s.charAt(0).toUpperCase() + s.slice(1);
+                  return t.split(/\s+/).length <= 5 ? t : t.split(/\s+/).slice(0, 5).join(' ');
+                }),
+              });
+              i = j; // skip past the sub-bullets we consumed
+              continue;
+            }
+          }
+
+          // Regular bullet — standalone question
+          // Skip horizontal rules and non-question content
+          if (/^-{2,}$/.test(body.trim()) || body.trim().length < 6) { i++; continue; }
+          qIdx++;
           questions.push({ index: qIdx, label: sectionLabel, body, options: extractOptions(body) });
+          i++;
+          continue;
         }
       }
+      i++;
     }
     if (questions.length > 0) return expandAndRenumber(questions);
   }
@@ -422,7 +484,8 @@ function parseQuestionsFromText(text: string): ParsedQuestion[] {
   // Fallback: catch any remaining "1. some question?" patterns
   {
     const questions: ParsedQuestion[] = [];
-    const plainRe = /^(\d+)\.\s+(.{10,200}[?!])\s*$/gm;
+    // More permissive: reduce minimum body length from 10 to 5 chars
+    const plainRe = /^(\d+)\.\s+(.{5,500}[?!])\s*$/gm;
     let dm: RegExpExecArray | null;
     while ((dm = plainRe.exec(text)) !== null) {
       const idx = parseInt(dm[1]);
@@ -432,82 +495,214 @@ function parseQuestionsFromText(text: string): ParsedQuestion[] {
       const label = words.slice(0, 4).join(' ');
       questions.push({ index: idx, label, body, options: extractOptions(body) });
     }
+    if (questions.length > 0) {
+      if (typeof window !== 'undefined' && (window as any).__debugQuickReply) {
+        console.log('[QuickReply] Format D matched:', questions);
+      }
+      return expandAndRenumber(questions);
+    }
+  }
+
+  // ── Format E: prose questions — bold headings + "Also/For" sentences ───────
+  // Catches AI responses that don't use numbered lists, e.g.:
+  //   "**Current sensing** — Do you want:\n• opt1\n• opt2?"
+  //   "Also, for position — Hall sensors, encoder, or sensorless?"
+  {
+    const questions: ParsedQuestion[] = [];
+    const lines = text.split('\n');
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i].trim();
+
+      // Bold standalone heading: "**Topic** — optional body text"
+      const boldM = line.match(/^\*{2}([^*\n]{3,60})\*{2}[—\-:\s]*(.*)$/);
+      if (boldM) {
+        const sectionLabel = boldM[1].replace(/:$/, '').trim();
+        // Collect body: rest of heading line + following lines until blank/next heading
+        const bodyLines: string[] = [];
+        if (boldM[2].trim()) bodyLines.push(boldM[2].trim());
+        i++;
+        while (i < lines.length && lines[i].trim() && !/^\*{2}/.test(lines[i])) {
+          bodyLines.push(lines[i].trim());
+          i++;
+        }
+        const body = bodyLines.join('\n');
+        if (body.length > 5 && (body.includes('?') || body.includes('•') || /\bor\b/i.test(body))) {
+          questions.push({ index: questions.length + 1, label: sectionLabel, body, options: extractOptions(body) });
+        }
+        continue;
+      }
+
+      // Inline prose question: sentence ending in "?" with "or" / question words
+      if (line.endsWith('?') && line.length > 15 &&
+          /\b(or|do you|what|which|how|any|is there|will|can you|hall|encoder|sensorless)\b/i.test(line)) {
+        const words = line.replace(/[?.,]/g, '').split(/\s+/);
+        const label = words.slice(0, 4).join(' ');
+        questions.push({ index: questions.length + 1, label, body: line, options: extractOptions(line) });
+      }
+
+      i++;
+    }
+
     if (questions.length > 0) return expandAndRenumber(questions);
   }
 
+  // ── Format F: ULTRA-PERMISSIVE CATCH-ALL ───────────────────────────────────
+  // Last resort: find ANY numbered pattern "1." followed by some text
+  // This catches edge cases where AI uses unusual formatting
+  {
+    const questions: ParsedQuestion[] = [];
+    const lines = text.split('\n');
+    let qIdx = 0;
+
+    for (const line of lines) {
+      // Match "1." or "1)" followed by any text (very permissive)
+      const numMatch = line.match(/^\s*(\d+)[\.)]\s+(.{5,500})\s*$/);
+      if (numMatch) {
+        qIdx++;
+        const body = stripLeadingDash(numMatch[2]);
+        // Extract label from first few words
+        const words = body.replace(/[?.,]/g, '').split(/\s+/);
+        const label = words.slice(0, 3).join(' ');
+        questions.push({ index: qIdx, label, body, options: extractOptions(body) });
+      }
+    }
+
+    if (questions.length >= 2) {
+      if (typeof window !== 'undefined' && (window as any).__debugQuickReply) {
+        console.log('[QuickReply] Format F (catch-all) matched:', questions);
+      }
+      return expandAndRenumber(questions);
+    }
+  }
+
+  if (typeof window !== 'undefined' && (window as any).__debugQuickReply) {
+    console.log('[QuickReply] No format matched, returning empty array');
+  }
   return [];
 }
 
 function extractOptions(body: string): string[] {
   // ── Normalise chip text ────────────────────────────────────────────────────
-  // Strip leading "— " / "– " / "- " that the AI adds after the label separator
   const cleanBody = body.replace(/^[—–\-]\s+/, '').trim();
 
-  // Normalise a single chip: strip leading "or"/"and" and common articles,
-  // then capitalise first letter so chips look consistent.
   const normalizeChip = (s: string): string => {
     let t = s.trim()
       .replace(/^(or|and)\s+/i, '')
       .replace(/^(a|an|the|just|only)\s+/i, '')
+      .replace(/[?!.]+$/, '')
       .trim();
     return t.length > 0 ? t.charAt(0).toUpperCase() + t.slice(1) : t;
   };
 
-  // Word-count check after normalization (articles stripped → fairer count)
+  // Per-part word-count guard — filter individually, never reject entire group
   const chipWords = (s: string) => normalizeChip(s).split(/\s+/).length;
-  const shortWords = (parts: string[]) => parts.every(p => chipWords(p) <= 4);
+  const isShortChip = (s: string) => chipWords(s) <= 4;
 
-  // ── Domain shortcuts (high-confidence, checked first) ──────────────────────
+  // ── Bullet list options — "• opt1\n• opt2\n• opt3?" ──────────────────────
+  const bulletMatches = Array.from(cleanBody.matchAll(/[•\-\*]\s+\*{0,2}([^\n•\-\*]{3,60})\*{0,2}/g));
+  if (bulletMatches.length >= 2) {
+    const parts = bulletMatches
+      .map(m => normalizeChip(m[1].replace(/\s*\([^)]*\).*$/, '').trim()))
+      .filter(s => s.length > 1 && s.length < 40 && isShortChip(s));
+    if (parts.length >= 2) return parts.slice(0, 5);
+  }
 
-  // Temperature / grade — triggered either by keyword OR by grade terms in the options
+  // ── Domain shortcuts (high-confidence) ─────────────────────────────────────
+
   const tempKeyword = /\b(temperature|thermal|operating\s+temp|temp\s+range|grade)\b/i.test(cleanBody);
   const tempGrades  = /\b(commercial|industrial|automotive|mil.?spec|military)\b/i.test(cleanBody) &&
                       /(-\d+|°[CF]|ambient|outdoor)/i.test(cleanBody);
   if (tempKeyword || tempGrades) {
     const chips: string[] = [];
-    if (/commercial/i.test(cleanBody))          chips.push('Commercial (0–70°C)');
-    if (/industrial/i.test(cleanBody))          chips.push('Industrial (−40–85°C)');
-    if (/automotive/i.test(cleanBody))          chips.push('Automotive (−40–105°C)');
-    if (/mil.?spec|military/i.test(cleanBody))  chips.push('MIL-SPEC (−55–125°C)');
+    if (/commercial/i.test(cleanBody))         chips.push('Commercial (0-70C)');
+    if (/industrial/i.test(cleanBody))         chips.push('Industrial (-40-85C)');
+    if (/automotive/i.test(cleanBody))         chips.push('Automotive (-40-105C)');
+    if (/mil.?spec|military/i.test(cleanBody)) chips.push('MIL-SPEC (-55-125C)');
     if (chips.length >= 2) return chips;
-    return ['Commercial (0–70°C)', 'Industrial (−40–85°C)', 'Automotive (−40–105°C)', 'MIL-SPEC (−55–125°C)'];
+    return ['Commercial (0-70C)', 'Industrial (-40-85C)', 'Automotive (-40-105C)', 'MIL-SPEC (-55-125C)'];
   }
 
-  // Cooling / thermal management
   if (/\b(forced\s+air|natural\s+convect|conduction.cool|heatsink|heat\s*sink)\b/i.test(cleanBody)) {
-    return ['Forced air (fan)', 'Natural convection', 'Conduction-cooled', 'Custom/TBD'];
+    return ['Forced air (fan)', 'Natural convection', 'Conduction-cooled'];
   }
 
-  // ── Strip ALL parentheticals for end-of-sentence option scanning ───────────
-  // e.g. "CAN (CANopen/J1939?), UART" → "CAN, UART"
-  // e.g. "(or expected gain range)? A 10W..." → "? A 10W..."
+  // ══════════════════════════════════════════════════════════════════════════
+  // FIX A: Try main body "A, B, or C" list BEFORE e.g. parens
+  // This ensures "CW tone, pulsed, or digitally modulated (e.g., QPSK, QAM)"
+  // extracts [CW tone, Pulsed, Digitally modulated] — not [QPSK, QAM]
+  // ══════════════════════════════════════════════════════════════════════════
   const bodyClean = cleanBody.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
-
-  // Focus on the last clause after a colon or em-dash intro
   const lastClause = bodyClean.split(/[:\u2014\u2013]/).pop()?.trim() ?? bodyClean;
 
-  // "A, B, or C?" / "A or B?" anchored to end of sentence
-  const endOrRe = /\b(\w[\w\s/\-]{0,28})(?:,\s*\w[\w\s/\-]{0,28})*(?:,?\s*or\s+\w[\w\s/\-]{0,28})\s*[?!.]?\s*$/i;
-  const endM = lastClause.match(endOrRe);
-  if (endM) {
-    const raw = endM[0].replace(/[?!.]\s*$/, '').trim();
+  const tryExtractOrList = (candidate: string): string[] | null => {
+    const endOrRe = /\b(\w[\w\s/\-]{0,28})(?:,\s*\w[\w\s/\-]{0,28})*(?:,?\s*or\s+\w[\w\s/\-]{0,28})\s*[?!.]?\s*$/i;
+    const m = candidate.match(endOrRe);
+    if (!m) return null;
+    const raw = m[0].replace(/[?!.]\s*$/, '').trim();
     const parts = raw
       .split(/,\s*(?:or\s+)?|\s+or\s+/)
       .map(s => normalizeChip(s))
-      .filter(s => s.length > 1 && s.length < 40);
-    if (parts.length >= 2 && shortWords(parts)) return parts.slice(0, 5);
+      .filter(s => s.length > 1 && s.length < 40 && isShortChip(s));
+    return parts.length >= 2 ? parts.slice(0, 5) : null;
+  };
+
+  const endResult = tryExtractOrList(lastClause);
+  if (endResult) return endResult;
+
+  const firstSentence = lastClause.split('?')[0];
+  if (firstSentence && firstSentence !== lastClause) {
+    const sentenceResult = tryExtractOrList(firstSentence + '?');
+    if (sentenceResult) return sentenceResult;
   }
 
-  // ── "e.g." / "i.e." parentheticals ONLY — avoids pulling in inline parens ──
-  // Only match explicit example lists, NOT parenthetical notes like (overtemp, VSWR)
+  // ── e.g./i.e. parentheticals — fallback when main body has no list ────────
   const egParens = Array.from(cleanBody.matchAll(/\(\s*(?:e\.g\.|i\.e\.)[.,]?\s*([^)]{4,120})\)/gi));
   for (const pm of egParens) {
     const inner = pm[1].replace(/^(?:e\.g\.|i\.e\.)[.,]?\s*/i, '');
     const parts = inner
-      .split(/[,/]/)
+      .split(/[,/]|\s+or\s+/)
       .map(s => normalizeChip(s))
-      .filter(s => s.length > 1 && s.length < 32);
-    if (parts.length >= 2 && shortWords(parts)) return parts.slice(0, 5);
+      .filter(s => s.length > 1 && s.length < 32 && isShortChip(s));
+    if (parts.length >= 2) return parts.slice(0, 5);
+  }
+
+  // ── Plain paren with 3+ comma-separated short options ────────────────────
+  const plainParens = Array.from(cleanBody.matchAll(/\(([^)]{6,120})\)/gi));
+  for (const pm of plainParens) {
+    const inner = pm[1].trim();
+    if (/\be\.g\b|\bi\.e\b/i.test(inner)) continue;
+    const parts = inner
+      .split(/[,/]|\s+or\s+/)
+      .map(s => normalizeChip(s))
+      .filter(s => s.length > 1 && s.length < 32 && isShortChip(s));
+    if (parts.length >= 2) return parts.slice(0, 5);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // FIX C: Binary "X or Y" mid-sentence — catches "isolated or non-isolated",
+  // "on-board PLL or external reference", "FCC/CE compliance or controlled env"
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    // Pattern: "need/want/use/prefer X or Y" where X,Y are 1-4 words
+    const binaryM = bodyClean.match(/\b(?:need|want|use|prefer|require|provide|have)?\s*(\w[\w\s/\-]{0,30}?)\s+or\s+(?:is\s+(?:this|it)\s+(?:a\s+|an\s+|for\s+(?:a\s+)?)?)?(\w[\w\s/\-]{0,30}?)(?:\s+(?:for|to|in|on|at|from|with|that|which|buck|boost|converter|design|board|module|environment|reference|provided)\b|\?|$)/i);
+    if (binaryM) {
+      const a = normalizeChip(binaryM[1]);
+      const b = normalizeChip(binaryM[2]);
+      if (a.length > 1 && b.length > 1 && isShortChip(a) && isShortChip(b) && a !== b) {
+        return [a, b];
+      }
+    }
+    // Simpler fallback: "X or Y?" at or near end of sentence
+    const simpleOr = bodyClean.match(/\b(\w[\w\s/\-]{0,20}?)\s+or\s+(\w[\w\s/\-]{0,20}?)\s*\?/i);
+    if (simpleOr) {
+      const a = normalizeChip(simpleOr[1]);
+      const b = normalizeChip(simpleOr[2]);
+      if (a.length > 1 && b.length > 1 && isShortChip(a) && isShortChip(b) && a !== b) {
+        return [a, b];
+      }
+    }
   }
 
   // ── "whether X or Y" ───────────────────────────────────────────────────────
@@ -515,14 +710,64 @@ function extractOptions(body: string): string[] {
   if (whetherM) {
     const a = normalizeChip(whetherM[1]);
     const b = normalizeChip(whetherM[2]);
-    if (shortWords([a, b]) && a.length > 2 && b.length > 2) return [a, b];
+    if (isShortChip(a) && isShortChip(b) && a.length > 2 && b.length > 2) return [a, b];
   }
 
-  // ── Yes / No (only when there's no "or" offering other choices) ────────────
-  if (/\?/.test(cleanBody) && !/\bor\b/i.test(cleanBody) &&
+  // ══════════════════════════════════════════════════════════════════════════
+  // FIX B: Yes/No — but NEVER for What/Which/How/Where/When questions
+  // ══════════════════════════════════════════════════════════════════════════
+  const isWh = /^\s*(what|which|how|where|when|describe|list|specify|name)\b/i.test(cleanBody);
+  if (!isWh && /\?/.test(cleanBody) && !/\bor\b/i.test(cleanBody) &&
       /\b(do you|is there|are there|will|should|does|can you|have you|is it|would you)\b/i.test(cleanBody)) {
     return ['Yes', 'No'];
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // FIX E: Domain shortcuts for common hardware quantities (last resort)
+  // Guarantees every question gets chips — never return empty.
+  // ══════════════════════════════════════════════════════════════════════════
+  if (/\b(bandwidth|modulation\s+bw|channel\s+bw)\b/i.test(cleanBody)) {
+    return ['Narrowband <1 MHz', '1-50 MHz', 'Wideband 50-500 MHz', '>500 MHz'];
+  }
+  if (/\b(data\s+rate|bit\s*rate|throughput|baud)\b/i.test(cleanBody)) {
+    return ['<1 Mbps', '1-100 Mbps', '100 Mbps - 1 Gbps', '>1 Gbps'];
+  }
+  if (/\b(frequency|freq)\b/i.test(cleanBody) && /\b(operating|center|carrier|lo)\b/i.test(cleanBody)) {
+    return ['<1 GHz', '1-6 GHz', '6-18 GHz', '>18 GHz'];
+  }
+  if (/\b(input\s+voltage|supply\s+voltage|bus\s+voltage|main\s+voltage)\b/i.test(cleanBody)) {
+    return ['5V', '12V', '24V', '48V', 'AC mains'];
+  }
+  if (/\b(max\s+current|output\s+current|load\s+current)\b/i.test(cleanBody)) {
+    return ['<1A', '1-10A', '10-50A', '>50A'];
+  }
+  if (/\b(output\s+power|transmit\s+power|pa\s+power)\b/i.test(cleanBody)) {
+    return ['<1W', '1-10W', '10-50W', '>50W'];
+  }
+  if (/\b(efficiency|pae|drain\s+efficiency)\b/i.test(cleanBody)) {
+    return ['<20%', '20-40%', '40-60%', '>60%'];
+  }
+  if (/\b(interface|protocol|bus)\b/i.test(cleanBody) && /\b(data|baseband|digital|fpga)\b/i.test(cleanBody)) {
+    return ['SPI', 'I2C', 'UART', 'JESD204B', 'Parallel'];
+  }
+  if (/\b(compliance|certification|regulatory|fcc|ce\b)/i.test(cleanBody)) {
+    return ['FCC/CE required', 'MIL-STD', 'Lab/R&D only'];
+  }
+  if (/\b(form.?factor|enclosure|size|rack|handheld)\b/i.test(cleanBody)) {
+    return ['1U rack-mount', 'Desktop', 'Handheld', 'PCB-only'];
+  }
+  if (/\b(gain|amplif)/i.test(cleanBody)) {
+    return ['Low (<10 dB)', 'Medium (10-30 dB)', 'High (>30 dB)'];
+  }
+  if (/\b(isolated|non.?isolated)\b/i.test(cleanBody)) {
+    return ['Isolated', 'Non-isolated'];
+  }
+  if (/\b(clock|reference|oscillator|pll|synthesizer)\b/i.test(cleanBody)) {
+    return ['On-board PLL', 'External reference', 'Crystal oscillator'];
+  }
+
+  // Ultimate fallback: if question ends with "?", return Yes/No
+  if (/\?\s*$/.test(cleanBody)) return ['Yes', 'No'];
 
   return [];
 }
@@ -587,18 +832,19 @@ function QuestionCard({
             </button>
           );
         })}
-        {/* Other chip */}
+        {/* Custom answer — small pencil icon, not "Other..." text */}
         <button
           onClick={toggleOther}
+          title="Type a custom answer"
           style={{
-            padding: '5px 13px', borderRadius: 20, fontSize: 12,
+            padding: '5px 10px', borderRadius: 20, fontSize: 12,
             fontFamily: "'DM Mono',monospace", cursor: 'pointer',
-            border: `1px solid ${(otherOpen || isOtherSelected) ? color : `${color}40`}`,
+            border: `1px solid ${(otherOpen || isOtherSelected) ? color : `${color}25`}`,
             background: (otherOpen || isOtherSelected) ? `${color}18` : 'transparent',
-            color: (otherOpen || isOtherSelected) ? color : 'var(--text3)',
+            color: (otherOpen || isOtherSelected) ? color : 'var(--text4)',
             fontWeight: 400, transition: 'all 0.12s',
           }}>
-          {isOtherSelected ? `✎ ${otherValue}` : 'Other…'}
+          {isOtherSelected ? otherValue : '+'}
         </button>
       </div>
       {/* Inline text input when Other is open */}
@@ -634,36 +880,156 @@ function QuestionCard({
   );
 }
 
-function QuickReplyPanel({
-  text, color, onSend, disabled,
-}: { text: string; color: string; onSend: (msg: string) => void; disabled: boolean }) {
-  const questions = parseQuestionsFromText(text);
-  const [selected, setSelected] = useState<Record<number, string>>({});
-  const [open, setOpen] = useState(true);
+// ── SchemaQuestionCard ──────────────────────────────────────────────────────
+// Question card using pre-defined schema (QuestionCardType from questionSchema)
+function SchemaQuestionCard({
+  question, color, selected, onSelect,
+}: {
+  question: QuestionCardType;
+  color: string;
+  selected: string;
+  onSelect: (val: string) => void;
+}) {
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherText, setOtherText] = useState('');
 
-  // Reset when AI message changes
-  const questionKey = questions.map(q => q.index).join(',');
+  const isOtherSelected = selected.startsWith('__other__:');
+  const otherValue = isOtherSelected ? selected.slice(10) : otherText;
+
+  const toggleOther = () => {
+    if (otherOpen) {
+      setOtherOpen(false);
+      if (isOtherSelected) onSelect('');
+    } else {
+      setOtherOpen(true);
+      onSelect('');
+    }
+  };
+
+  const commitOther = (val: string) => {
+    setOtherText(val);
+    if (val.trim()) onSelect('__other__:' + val.trim());
+    else onSelect('');
+  };
+
+  return (
+    <div style={{
+      background: 'var(--panel)', border: `1px solid ${color}22`,
+      borderRadius: 8, padding: '12px 14px',
+    }}>
+      <div style={{ fontSize: 11, color, fontFamily: "'DM Mono',monospace", letterSpacing: '0.06em', marginBottom: 4 }}>
+        {question.label.toUpperCase()}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--text)', marginBottom: 10, lineHeight: 1.5 }}>
+        {truncateQuestion(question.question, 80)}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {question.options.map(opt => {
+          const isSel = selected === opt;
+          return (
+            <button key={opt}
+              onClick={() => { setOtherOpen(false); onSelect(isSel ? '' : opt); }}
+              style={{
+                padding: '5px 13px', borderRadius: 20, fontSize: 12,
+                fontFamily: "'DM Mono',monospace", cursor: 'pointer',
+                border: `1px solid ${isSel ? color : `${color}40`}`,
+                background: isSel ? color : `${color}0a`,
+                color: isSel ? '#070b14' : 'var(--text2)',
+                fontWeight: isSel ? 700 : 400, transition: 'all 0.12s',
+              }}>
+              {opt}
+            </button>
+          );
+        })}
+        {/* Other... button if allowOther is true */}
+        {question.allowOther !== false && (
+          <button
+            onClick={toggleOther}
+            style={{
+              padding: '5px 13px', borderRadius: 20, fontSize: 12,
+              fontFamily: "'DM Mono',monospace", cursor: 'pointer',
+              border: `1px solid ${(otherOpen || isOtherSelected) ? color : `${color}40`}`,
+              background: (otherOpen || isOtherSelected) ? `${color}18` : 'transparent',
+              color: (otherOpen || isOtherSelected) ? color : 'var(--text3)',
+              fontWeight: 400, transition: 'all 0.12s',
+            }}>
+            {isOtherSelected ? `✎ ${otherValue}` : 'Other…'}
+          </button>
+        )}
+      </div>
+      {/* Inline text input when Other is open */}
+      {otherOpen && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+          <input
+            autoFocus
+            value={otherText}
+            onChange={e => commitOther(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') toggleOther(); }}
+            placeholder="Type your answer…"
+            style={{
+              flex: 1, background: 'var(--panel2)', border: `1px solid ${color}55`,
+              borderRadius: 5, padding: '6px 10px', fontSize: 12,
+              color: 'var(--text)', fontFamily: "'DM Mono',monospace",
+              outline: 'none',
+            }}
+          />
+          {otherText.trim() && (
+            <button
+              onClick={() => setOtherOpen(false)}
+              style={{
+                padding: '6px 12px', borderRadius: 5, background: color,
+                color: '#070b14', border: 'none', fontSize: 11,
+                fontFamily: "'DM Mono',monospace", fontWeight: 700, cursor: 'pointer',
+              }}>
+              ✓
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuickReplyPanel({
+  aiMessage, designDescription, color, onSend, disabled,
+}: {
+  aiMessage: string;
+  designDescription: string;
+  color: string;
+  onSend: (msg: string) => void;
+  disabled: boolean;
+}) {
+  // Parse AI's questions to extract labels and options dynamically
+  const questions = parseQuestionsFromAI(aiMessage);
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const [dismissed, setDismissed] = useState(false);
+
+  // Check if we should show questions at all
+  if (questions.length === 0 || dismissed || !shouldShowQuestions(aiMessage, designDescription)) {
+    return null;
+  }
+
+  // Reset when AI message changes (simple heuristic: check first 100 chars)
+  const questionKey = questions.map(q => q.id).join(',') + aiMessage.slice(0, 100);
   const prevKey = useRef('');
   useEffect(() => {
     if (prevKey.current !== questionKey) {
       prevKey.current = questionKey;
       setSelected({});
-      setOpen(true);
+      setDismissed(false);
     }
   }, [questionKey]);
 
-  if (questions.length === 0 || !open) return null;
-
-  const allAnswered = questions.every(q => selected[q.index]);
-  const selectedCount = questions.filter(q => selected[q.index]).length;
+  const allAnswered = questions.every(q => selected[q.id]);
+  const selectedCount = questions.filter(q => selected[q.id]).length;
 
   const buildReply = () => {
     return questions
-      .filter(q => selected[q.index])
+      .filter(q => selected[q.id])
       .map(q => {
-        const val = selected[q.index];
+        const val = selected[q.id];
         const display = val.startsWith('__other__:') ? val.slice(10) : val;
-        return `${q.index}. ${q.label}: ${display}`;
+        return `${q.label}: ${display}`;
       })
       .join('\n');
   };
@@ -693,7 +1059,7 @@ function QuickReplyPanel({
           </span>
         </div>
         <button
-          onClick={() => setOpen(false)}
+          onClick={() => setDismissed(true)}
           style={{
             background: 'none', border: 'none', color: 'var(--text4)',
             fontSize: 16, cursor: 'pointer', lineHeight: 1, padding: '2px 6px',
@@ -704,14 +1070,14 @@ function QuickReplyPanel({
       </div>
 
       {/* Question cards */}
-      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
+      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 500, overflowY: 'auto' }}>
         {questions.map(q => (
-          <QuestionCard
-            key={q.index}
-            q={q}
+          <SchemaQuestionCard
+            key={q.id}
+            question={q}
             color={color}
-            selected={selected[q.index] ?? ''}
-            onSelect={val => setSelected(prev => ({ ...prev, [q.index]: val }))}
+            selected={selected[q.id] ?? ''}
+            onSelect={val => setSelected(prev => ({ ...prev, [q.id]: val }))}
           />
         ))}
       </div>
@@ -726,7 +1092,7 @@ function QuickReplyPanel({
           {allAnswered ? 'All questions answered' : `${questions.length - selectedCount} remaining`}
         </span>
         <button
-          onClick={() => { onSend(buildReply()); setOpen(false); }}
+          onClick={() => { onSend(buildReply()); setDismissed(true); }}
           disabled={disabled || selectedCount === 0}
           style={{
             padding: '8px 20px', borderRadius: 6,
@@ -788,6 +1154,18 @@ function cleanAiText(text: string): string {
     .trim();
 }
 
+// ---- Props ----
+interface Props {
+  project: Project | null;
+  phase: PhaseMeta;
+  phaseStatus: string;
+  pipelineStarted: boolean;
+  messages: ChatMessage[];
+  onMessages: (msgs: ChatMessage[]) => void;
+  onStatusChange: () => void;
+  onPhaseComplete: () => void;
+}
+
 // ---- Main ChatView ----
 export default function ChatView({ project, phase, phaseStatus, pipelineStarted, messages, onMessages, onStatusChange, onPhaseComplete }: Props) {
   const [input, setInput] = useState('');
@@ -806,15 +1184,25 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
+    console.log('[ChatView] phaseStatus changed:', phaseStatus);
     if (phaseStatus === 'completed') {
       setPhaseCompleted(true);
       setShowApproveCard(true);
+      console.log('[ChatView] Setting showApproveCard = true');
+    } else {
+      setShowApproveCard(false);
     }
   }, [phaseStatus]);
 
   useEffect(() => {
     if (pipelineStarted) setApproveClicked(true);
   }, [pipelineStarted]);
+
+  // Debug: log when showApproveCard changes
+  useEffect(() => {
+    console.log('[ChatView] showApproveCard changed to:', showApproveCard, 'phaseStatus:', phaseStatus);
+  }, [showApproveCard, phaseStatus]);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const color = phase.color;
 
@@ -914,145 +1302,159 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     }
   };
 
+  // Derive last AI message text for QuickReplyPanel
+  const lastAiText = messages.length > 0 && messages[messages.length - 1].role === 'ai'
+    ? messages[messages.length - 1].text
+    : '';
+
   return (
-    <div style={{ paddingTop: 20, display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
-      {messages.length === 0 && !loading && historyLoaded && (
-        <WelcomeCard color={color} onSuggestion={sendMessage} />
-      )}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
+      {/* Scrollable messages area */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 80px 0' }}>
+        {/* Welcome card — show only when no messages */}
+        {messages.length === 0 && !loading && (
+          <WelcomeCard color={color} onSuggestion={sendMessage} />
+        )}
 
-      {messages.map((msg, i) => (
-        <ChatMessageItem key={i} msg={msg} color={color} />
-      ))}
+        {/* Message history */}
+        {messages.map((msg, i) => (
+          <ChatMessageItem key={i} msg={msg} color={color} />
+        ))}
 
-      {/* Quick-reply option chips — shown after last AI message when not loading/complete */}
-      {!loading && !approveClicked && messages.length > 0 && messages[messages.length - 1]?.role === 'ai' && (
-        <QuickReplyPanel
-          text={messages[messages.length - 1].text}
-          color={color}
-          onSend={sendMessage}
-          disabled={loading}
-        />
-      )}
-
-      {loading && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: `1px solid ${color}33` }}>
-            <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
-            {streaming
-              /* Raw pre-wrap during typewriter — no markdown parsing per tick */
-              ? <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: 'var(--text2)', lineHeight: 1.65 }}>{streaming}</div>
-              : <span style={{ color: 'var(--text4)', fontSize: 13 }}>Thinking<span style={{ animation: 'blink 1s step-end infinite' }}>...</span></span>
-            }
-          </div>
-        </div>
-      )}
-
-      {/* Approve card — shown when requirements are ready */}
-      {showApproveCard && (
-        <div className="fade-up" style={{
-          marginBottom: 16, borderRadius: 10,
-          border: `1px solid ${color}${approveClicked ? '40' : '70'}`,
-          overflow: 'hidden',
-        }}>
-          {approveClicked ? (
-            /* ── Pipeline is running ── */
-            <div style={{
-              padding: '13px 18px', display: 'flex', alignItems: 'center', gap: 12,
-              background: `linear-gradient(135deg, ${color}08, transparent)`,
-            }}>
-              <div style={{
-                width: 26, height: 26, borderRadius: '50%', background: `${color}20`,
-                border: `2px solid ${color}`, display: 'flex', alignItems: 'center',
-                justifyContent: 'center', fontSize: 13, color, flexShrink: 0,
-              }}>&#10003;</div>
-              <div>
-                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 800, color, marginBottom: 2 }}>
-                  Phase 1 complete &#8212; pipeline running P2 &#8594; P8
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--text3)' }}>
-                  Documents generated. You can keep chatting while the pipeline runs.
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* ── Waiting for review & approval ── */
-            <div style={{ padding: '16px 18px', display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{
-                width: 24, height: 24, borderRadius: '50%', background: `${color}20`,
-                border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center',
-                justifyContent: 'center', fontSize: 12, color, flexShrink: 0,
-              }}>&#9711;</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 13, fontWeight: 800, color, marginBottom: 3 }}>
-                  Requirements ready &#8212; review above, then approve
-                </div>
-                <div style={{ fontSize: 11.5, color: 'var(--text3)', lineHeight: 1.5 }}>
-                  Use the chat below to request changes, then approve to run the full pipeline.
-                </div>
-              </div>
-              <button
-                onClick={() => { setApproveClicked(true); onPhaseComplete(); }}
-                style={{
-                  padding: '9px 20px', borderRadius: 6, border: 'none', background: color,
-                  color: '#070b14', fontSize: 12, fontFamily: "'Syne',sans-serif",
-                  fontWeight: 800, cursor: 'pointer', letterSpacing: '0.03em',
-                  transition: 'all 0.15s', flexShrink: 0,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-                onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'none'; }}
-              >
-                &#10003; Approve &amp; Run
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Generate Documents button — shown after AI replies, hidden once phase is complete */}
-      {!phaseCompleted && !loading && messages.some(m => m.role === 'ai') && (
-        <div style={{ marginTop: 12, marginBottom: 4 }}>
-          <button
-            onClick={() => finalizePhase()}
+        {/* QuickReplyPanel — shows after last AI message with questions */}
+        {lastAiText && !loading && !streaming && (
+          <QuickReplyPanel
+            aiMessage={lastAiText}
+            designDescription={project?.description || project?.name || ''}
+            color={color}
+            onSend={sendMessage}
             disabled={loading}
+          />
+        )}
+
+        {/* Streaming / loading indicator */}
+        {(loading || streaming) && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--panel3)' }}>
+              <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
+              {streaming ? (
+                <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.65, whiteSpace: 'pre-wrap', fontFamily: "'DM Mono',monospace" }}>
+                  {streaming}
+                  <span style={{ display: 'inline-block', width: 7, height: 14, background: color, marginLeft: 2, animation: 'blink 1s step-end infinite' }} />
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, animation: 'pulse 1s ease-in-out infinite' }} />
+                  <span style={{ fontSize: 12, color: 'var(--text3)' }}>Thinking...</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Approve & Run card */}
+        {showApproveCard && !approveClicked && (
+          <div style={{
+            background: `${color}0d`, border: `1px solid ${color}33`,
+            borderRadius: 10, padding: '16px 20px', marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              Requirements captured! Ready to run the full pipeline?
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 12 }}>
+              This will generate HRS, compliance matrix, netlist, GLR, SRS, SDD, and code review.
+            </div>
+            <button
+              onClick={() => { setApproveClicked(true); onPhaseComplete(); }}
+              style={{
+                padding: '10px 24px', borderRadius: 6, cursor: 'pointer',
+                fontSize: 13, fontFamily: "'DM Mono', monospace", fontWeight: 700,
+                background: color, border: 'none', color: '#070b14',
+                boxShadow: `0 0 20px ${color}40`, transition: 'all 0.2s',
+              }}>
+              Approve &amp; Run Pipeline →
+            </button>
+          </div>
+        )}
+
+        {/* Pipeline running card */}
+        {showApproveCard && approveClicked && (
+          <div style={{
+            background: `${color}0d`, border: `1px solid ${color}22`,
+            borderRadius: 10, padding: '14px 18px', marginBottom: 16,
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, animation: 'pulse 1s ease-in-out infinite' }} />
+            <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+              Pipeline is running — check <strong style={{ color }}>Documents</strong> tab for generated outputs
+            </span>
+          </div>
+        )}
+
+        {/* Generate Documents button — only before approval */}
+        {!phaseCompleted && messages.length >= 2 && !loading && (
+          <div style={{ textAlign: 'center', marginBottom: 16 }}>
+            <button
+              onClick={finalizePhase}
+              style={{
+                padding: '10px 24px', borderRadius: 6, cursor: 'pointer',
+                fontSize: 12, fontFamily: "'DM Mono', monospace", fontWeight: 600,
+                background: 'transparent', border: `1px solid ${color}55`,
+                color, transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = `${color}18`; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+              Generate Documents →
+            </button>
+          </div>
+        )}
+
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Sticky input area */}
+      <div style={{
+        position: 'sticky', bottom: 0, left: 0, right: 0,
+        background: 'linear-gradient(transparent, var(--navy) 20%)',
+        padding: '16px 0 4px',
+      }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <textarea
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
+            placeholder="Describe your hardware requirement or ask anything..."
+            rows={1}
             style={{
-              width: '100%', padding: '11px 20px', borderRadius: 6,
-              border: `1px solid ${color}66`,
-              background: `${color}18`, color: color, fontSize: 12.5,
-              fontFamily: "'DM Mono',monospace", fontWeight: 600, cursor: 'pointer',
-              letterSpacing: '0.04em', transition: 'all 0.15s',
+              flex: 1, background: 'var(--panel)', border: `1px solid var(--panel3)`,
+              borderRadius: 6, padding: '11px 14px', fontSize: 13,
+              color: 'var(--text)', fontFamily: "'DM Mono', monospace",
+              resize: 'none', outline: 'none', lineHeight: 1.5,
+              transition: 'border-color 0.2s',
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = `${color}30`; e.currentTarget.style.borderColor = color; }}
-            onMouseLeave={e => { e.currentTarget.style.background = `${color}18`; e.currentTarget.style.borderColor = `${color}66`; }}
-          >
-            &#9889; Generate Documents &amp; Complete Phase 1 &rarr;
+            onFocus={e => { e.target.style.borderColor = color; }}
+            onBlur={e => { e.target.style.borderColor = 'var(--panel3)'; }}
+          />
+          <button
+            onClick={() => sendMessage(input)}
+            disabled={!input.trim() || loading}
+            style={{
+              padding: '0 18px', borderRadius: 6, cursor: input.trim() && !loading ? 'pointer' : 'default',
+              fontSize: 12, fontFamily: "'DM Mono', monospace", fontWeight: 700,
+              background: input.trim() && !loading ? color : 'var(--panel2)',
+              border: 'none',
+              color: input.trim() && !loading ? '#070b14' : 'var(--text4)',
+              transition: 'all 0.15s', whiteSpace: 'nowrap',
+            }}>
+            Send →
           </button>
         </div>
-      )}
-
-      <div ref={bottomRef} />
-
-      {/* Input — sticky at the bottom of the viewport within the scrolling center panel */}
-      <div style={{
-        position: 'sticky', bottom: 0, zIndex: 10,
-        background: 'linear-gradient(to bottom, transparent 0%, var(--navy) 18px)',
-        paddingTop: 16, paddingBottom: 12, marginTop: 'auto',
-      }}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
-          placeholder={showApproveCard && !approveClicked ? 'Request changes to the requirements, or approve above...' : showApproveCard ? 'Keep chatting while pipeline runs...' : 'Describe your hardware design...'}
-          disabled={loading}
-          rows={3}
-          style={{ flex: 1, background: 'var(--panel)', border: `1px solid ${showApproveCard ? color + '44' : 'var(--panel3)'}`, borderRadius: 6, padding: '10px 13px', fontSize: 13, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'none', transition: 'border-color 0.2s' }}
-        />
-        <button onClick={() => sendMessage(input)} disabled={!input.trim() || loading || !project}
-          style={{ padding: '10px 20px', borderRadius: 6, border: 'none', background: input.trim() && !loading ? color : 'var(--panel2)', color: input.trim() && !loading ? 'var(--navy)' : 'var(--text4)', fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 500, cursor: input.trim() && !loading ? 'pointer' : 'default', transition: 'all 0.15s', alignSelf: 'stretch' }}>
-          Send
-        </button>
       </div>
-      </div>
+
+      <style>{`
+        @keyframes blink { 50% { opacity: 0; } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+      `}</style>
     </div>
   );
 }

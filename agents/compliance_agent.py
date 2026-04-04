@@ -99,7 +99,9 @@ Generate a complete compliance report with:
             system=self.get_system_prompt(project_context),
         )
 
+        import re as _re
         report_content = response.get("content", "")
+        report_content = _re.sub(r'\b(TBD|TBC|TBA)\b', '[specify]', report_content, flags=_re.IGNORECASE)
 
         # Save compliance report
         report_file = output_dir / "compliance_report.md"

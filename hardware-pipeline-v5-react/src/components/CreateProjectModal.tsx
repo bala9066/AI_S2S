@@ -5,9 +5,9 @@ interface Props {
   onCancel: () => void;
 }
 
-/** Infer RF vs Digital from the project name/description — no need to ask the user */
-function inferDesignType(name: string, desc: string): string {
-  const text = (name + ' ' + desc).toLowerCase();
+/** Infer RF vs Digital from the project name — no need to ask the user */
+function inferDesignType(name: string): string {
+  const text = name.toLowerCase();
   const rfKeywords = ['rf', 'radio', 'antenna', 'ghz', 'mhz', 'frequency', 'amplifier', 'pa ', 'lna',
     'filter', 'mixer', 'oscillator', 'transmit', 'receiv', 'wireless', 'ism', 'radar', 'microwave'];
   if (rfKeywords.some(k => text.includes(k))) return 'rf';
@@ -16,14 +16,13 @@ function inferDesignType(name: string, desc: string): string {
 
 export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('');
-  const [desc, setDesc] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setLoading(true);
-    const dtype = inferDesignType(name, desc);
-    await onConfirm(name.trim(), desc.trim(), dtype);
+    const dtype = inferDesignType(name);
+    await onConfirm(name.trim(), '', dtype);
     setLoading(false);
   };
 
@@ -52,32 +51,19 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
           New Project
         </div>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 24 }}>
-          Describe your hardware design — the pipeline handles the rest
+          Give your project a name — describe your design in the chat
         </div>
 
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 28 }}>
           <label style={labelStyle}>PROJECT NAME</label>
           <input
             style={inputStyle}
-            placeholder="e.g. BLDC Motor Driver v2"
+            placeholder="e.g. 2.4GHz RF Transceiver Board"
             value={name}
             onChange={e => setName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
             autoFocus
           />
-        </div>
-
-        <div style={{ marginBottom: 28 }}>
-          <label style={labelStyle}>DESCRIPTION</label>
-          <textarea
-            style={{ ...inputStyle, minHeight: 90, resize: 'vertical' }}
-            placeholder="e.g. 3-phase BLDC motor controller, 10kW, 48V bus, GaN switches, CAN bus interface"
-            value={desc}
-            onChange={e => setDesc(e.target.value)}
-          />
-          <div style={{ fontSize: 10.5, color: 'var(--text4)', marginTop: 6, fontFamily: "'DM Mono',monospace" }}>
-            Design type is auto-detected from your description.
-          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
