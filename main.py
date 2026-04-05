@@ -13,6 +13,7 @@ Design principles applied here:
 import functools
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -48,13 +49,16 @@ async def lifespan(app: FastAPI):
     # 3. Ensure output directory exists
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 4. Seed ChromaDB component index (idempotent)
-    try:
-        from tools.seed_components import seed_if_empty
-        seed_if_empty()
-        log.info("startup.chroma_ready")
-    except Exception as exc:
-        log.debug("startup.chroma_seed_skipped: %s (optional)", exc)
+    # 4. Seed ChromaDB component index in background — non-blocking
+    def _seed_chroma():
+        try:
+            from tools.seed_components import seed_if_empty
+            seed_if_empty()
+            log.info("startup.chroma_ready")
+        except Exception as exc:
+            log.debug("startup.chroma_seed_skipped: %s (optional)", exc)
+
+    threading.Thread(target=_seed_chroma, daemon=True, name="chroma-seed").start()
 
     log.info("startup.complete", extra={"air_gapped": settings.is_air_gapped})
     yield
