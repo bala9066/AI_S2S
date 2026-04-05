@@ -29,14 +29,43 @@ function cleanChip(raw: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
+// Words that are filler/meta — never valid as answer chips
+const NOISE_WORDS = new Set([
+  // filler terminators
+  'etc', 'etcetera', 'etc.',
+  // availability/identity
+  'n/a', 'na', 'tbd', 'tbc', 'tba', 'tbh',
+  // vague catch-alls
+  'other', 'others', 'none', 'varies', 'various', 'different',
+  'custom', 'similar', 'typical', 'standard', 'general', 'specific',
+  'based', 'depending', 'optional', 'required', 'relevant', 'applicable',
+  // quantity fragments
+  'more', 'less', 'any', 'some', 'both', 'either', 'neither', 'all',
+  // bare comparatives (meaningless without context)
+  'wider', 'narrower', 'higher', 'lower', 'larger', 'smaller',
+  'bigger', 'faster', 'slower', 'cheaper', 'better', 'worse',
+  // bare structural words
+  'above', 'below', 'between', 'within', 'around', 'about', 'yes', 'no',
+]);
+
 function isGoodChip(s: string): boolean {
   const c = cleanChip(s);
-  if (c.length < 3) return false;           // too short (kills "3V", "5V", "V")
-  if (c.length > 45) return false;
-  if (c.includes('?')) return false;         // never a question fragment
-  if (c.split(/\s+/).length > 5) return false;
-  // reject pure-digit or unit-only tokens like "12V", "48V", "3V" (<=3 chars or just a number+unit)
+  if (c.length < 3) return false;           // too short
+  if (c.length > 45) return false;          // too long
+  if (c.includes('?')) return false;         // question fragment
+  if (c.split(/\s+/).length > 5) return false; // too many words
+  // reject pure-digit or unit-only tokens like "12V", "48V", "3V" (≤4 chars)
   if (/^\d+\.?\d*\s*[VAWM]?$/.test(c) && c.length <= 4) return false;
+  // noise / filler / meta words
+  if (NOISE_WORDS.has(c.toLowerCase())) return false;
+  // meta-note phrases: "Any size constraints", "Any specific requirement"
+  if (/^any\s+/i.test(c)) return false;
+  // sentence fragments that are notes not values
+  if (/\b(constraint|consideration|specification|parameter|requirement|question|note)\b/i.test(c)) return false;
+  // pure comparative/superlative adjectives with -er/-est suffix (wider, highest, etc.)
+  if (/^(wid|narrow|high|low|larg|small|fast|slow|cheap|big)(er|est)$/i.test(c)) return false;
+  // fragments that start with verbs/connectives — sign of a sentence extraction, not a value
+  if (/^(do|does|is|are|has|have|will|would|can|could|should|may|might|please|specify|choose|select|indicate|describe)\b/i.test(c)) return false;
   return true;
 }
 
