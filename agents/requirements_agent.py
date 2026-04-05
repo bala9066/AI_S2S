@@ -88,6 +88,7 @@ After the user has answered your questions (or if their FIRST message already co
 - Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
 - **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use the real manufacturer datasheet URL (e.g., `https://www.ti.com/lit/ds/symlink/...`, `https://www.analog.com/media/en/.../DS.pdf`). If you are not certain of the exact URL, use the manufacturer product page URL (e.g., `https://www.st.com/en/microcontrollers-microprocessors/stm32f4-series.html`). Never leave `datasheet_url` empty.
 - Include `digikey_url` where known (e.g., `https://www.digikey.com/en/products/detail/texas-instruments/...`).
+- **FOR RF DESIGNS**: Always populate the `gain_loss_budget` array. Every stage in the RF signal chain (antenna/input → LNA/driver → PA stages → filters → output) must be a row. Use real datasheet values for gain, P1dB, NF. Calculate cumulative gain and cascaded NF (Friis formula) correctly. Include system-level parameters (center_freq_mhz, bandwidth_mhz, input_power_dbm, target_output_dbm).
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
 
@@ -201,6 +202,39 @@ GENERATE_REQUIREMENTS_TOOL = {
                         "selection_rationale": {"type": "string"},
                     },
                     "required": ["function", "primary_part", "primary_manufacturer"],
+                },
+            },
+            "gain_loss_budget": {
+                "type": "object",
+                "description": (
+                    "RF Gain-Loss Budget. Populate for ALL RF / microwave designs. "
+                    "Leave empty object {} for purely digital/power designs."
+                ),
+                "properties": {
+                    "center_freq_mhz": {"type": "number", "description": "Centre frequency in MHz"},
+                    "bandwidth_mhz":   {"type": "number", "description": "RF bandwidth in MHz"},
+                    "input_power_dbm": {"type": "number", "description": "System input signal level in dBm"},
+                    "target_output_dbm": {"type": "number", "description": "Required output power in dBm"},
+                    "stages": {
+                        "type": "array",
+                        "description": "One entry per RF stage, in signal-flow order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "stage_name":          {"type": "string",  "description": "e.g. 'Input Matching Network', 'Driver Amp', 'Final PA'"},
+                                "component":           {"type": "string",  "description": "Part number or value (e.g. GVA-123+, 10 nH, SMA connector)"},
+                                "gain_db":             {"type": "number",  "description": "Gain (positive) or insertion loss (negative) in dB"},
+                                "noise_figure_db":     {"type": "number",  "description": "Stage noise figure in dB (0 for passive with known loss = loss value)"},
+                                "p1db_out_dbm":        {"type": "number",  "description": "Output-referred 1 dB compression point in dBm (use 99 if not applicable)"},
+                                "oip3_dbm":            {"type": "number",  "description": "Output-referred IP3 in dBm (use 99 if not applicable)"},
+                                "output_power_dbm":    {"type": "number",  "description": "Signal power at OUTPUT of this stage in dBm"},
+                                "cumulative_gain_db":  {"type": "number",  "description": "Total gain from system input to output of this stage"},
+                                "cumulative_nf_db":    {"type": "number",  "description": "Cascaded noise figure up to and including this stage (Friis)"},
+                                "notes":               {"type": "string",  "description": "Brief note, e.g. 'bias tee required', 'temperature-compensated'"},
+                            },
+                            "required": ["stage_name", "component", "gain_db", "output_power_dbm", "cumulative_gain_db"],
+                        },
+                    },
                 },
             },
         },
@@ -593,6 +627,12 @@ class RequirementsAgent(BaseAgent):
         power_file.write_text(power_content, encoding="utf-8")
         outputs["power_calculation.md"] = power_content
 
+        # 6. gain_loss_budget.md — generated for all designs; non-RF designs get header-only file
+        glb_content = _scrub(self._build_gain_loss_budget_md(tool_input, project_name))
+        glb_file = output_path / "gain_loss_budget.md"
+        glb_file.write_text(glb_content, encoding="utf-8")
+        outputs["gain_loss_budget.md"] = glb_content
+
         self.log(f"Generated {len(outputs)} Phase 1 output files in {output_path}")
         return outputs
 
@@ -813,6 +853,135 @@ class RequirementsAgent(BaseAgent):
             "",
             "> Note: Power values are estimated from component datasheets and design parameters.",
             "> Actual measurements should be taken during hardware bring-up and updated in this table.",
+        ]
+
+        return "\n".join(lines)
+
+    def _build_gain_loss_budget_md(self, tool_input: dict, project_name: str) -> str:
+        """Build RF Gain-Loss Budget markdown from tool_input['gain_loss_budget']."""
+        from datetime import datetime
+        glb = tool_input.get("gain_loss_budget") or {}
+        stages = glb.get("stages", [])
+
+        lines = [
+            f"# RF Gain-Loss Budget",
+            f"## {project_name}",
+            "",
+            f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%d')}  ",
+            f"**Document Status:** AI-GENERATED — verify against final component datasheets",
+            "",
+        ]
+
+        # --- System parameters table ---
+        freq   = glb.get("center_freq_mhz")
+        bw     = glb.get("bandwidth_mhz")
+        p_in   = glb.get("input_power_dbm")
+        p_out  = glb.get("target_output_dbm")
+
+        if any(v is not None for v in [freq, bw, p_in, p_out]):
+            lines += [
+                "## 1. System Parameters",
+                "",
+                "| Parameter | Value | Unit |",
+                "|-----------|-------|------|",
+            ]
+            if freq   is not None: lines.append(f"| Centre Frequency    | {freq}   | MHz  |")
+            if bw     is not None: lines.append(f"| RF Bandwidth        | {bw}     | MHz  |")
+            if p_in   is not None: lines.append(f"| Input Signal Level  | {p_in}   | dBm  |")
+            if p_out  is not None: lines.append(f"| Target Output Power | {p_out}  | dBm  |")
+            if p_in is not None and p_out is not None:
+                req_gain = round(p_out - p_in, 1)
+                lines.append(f"| Required System Gain | {req_gain} | dB   |")
+            lines.append("")
+
+        if not stages:
+            lines += [
+                "## 2. Stage Budget",
+                "",
+                "> No stage data provided — re-run Phase 1 for an RF design to populate this table.",
+                "",
+            ]
+            return "\n".join(lines)
+
+        # --- Stage-by-stage table ---
+        lines += [
+            "## 2. Stage-by-Stage Gain / Loss Budget",
+            "",
+            "| # | Stage | Component | Gain/Loss (dB) | Cum. Gain (dB) | Output Power (dBm) | NF (dB) | Cum. NF (dB) | P1dB Out (dBm) | OIP3 (dBm) | Notes |",
+            "|---|-------|-----------|---------------|----------------|-------------------|---------|-------------|---------------|-----------|-------|",
+        ]
+
+        for i, st in enumerate(stages, 1):
+            name     = st.get("stage_name", "—")
+            comp     = st.get("component", "—")
+            gain     = st.get("gain_db", "—")
+            cum_gain = st.get("cumulative_gain_db", "—")
+            p_out_st = st.get("output_power_dbm", "—")
+            nf       = st.get("noise_figure_db", "—")
+            cum_nf   = st.get("cumulative_nf_db", "—")
+            p1db     = st.get("p1db_out_dbm", "—")
+            oip3     = st.get("oip3_dbm", "—")
+            notes    = st.get("notes", "")
+
+            # Format gain with sign
+            if isinstance(gain, (int, float)):
+                gain_str = f"+{gain:.1f}" if gain >= 0 else f"{gain:.1f}"
+            else:
+                gain_str = str(gain)
+
+            # Hide 99 placeholder values (means "N/A")
+            p1db_str = "N/A" if p1db == 99 else (f"{p1db:.1f}" if isinstance(p1db, (int, float)) else str(p1db))
+            oip3_str = "N/A" if oip3 == 99 else (f"{oip3:.1f}" if isinstance(oip3, (int, float)) else str(oip3))
+
+            nf_str     = f"{nf:.2f}"     if isinstance(nf,     (int, float)) else str(nf)
+            cum_nf_str = f"{cum_nf:.2f}" if isinstance(cum_nf, (int, float)) else str(cum_nf)
+            cum_gain_s = f"{cum_gain:.1f}" if isinstance(cum_gain, (int, float)) else str(cum_gain)
+            p_out_s    = f"{p_out_st:.1f}" if isinstance(p_out_st, (int, float)) else str(p_out_st)
+
+            lines.append(
+                f"| {i} | {name} | {comp} | {gain_str} | {cum_gain_s} | {p_out_s} | {nf_str} | {cum_nf_str} | {p1db_str} | {oip3_str} | {notes} |"
+            )
+
+        lines.append("")
+
+        # --- Summary ---
+        if stages:
+            last = stages[-1]
+            total_gain = last.get("cumulative_gain_db")
+            sys_nf     = stages[0].get("cumulative_nf_db") if stages else None  # first stage NF dominates
+            final_nf   = last.get("cumulative_nf_db")
+            final_pout = last.get("output_power_dbm")
+
+            lines += [
+                "## 3. Budget Summary",
+                "",
+                "| Metric | Value | Unit |",
+                "|--------|-------|------|",
+            ]
+            if total_gain is not None:
+                lines.append(f"| Total System Gain     | {total_gain:.1f}  | dB  |")
+            if final_pout is not None:
+                lines.append(f"| Final Output Power    | {final_pout:.1f}  | dBm |")
+            if final_nf is not None:
+                lines.append(f"| Cascaded System NF    | {final_nf:.2f} | dB  |")
+            if p_in is not None and p_out is not None and total_gain is not None:
+                margin = round(p_out - (p_in + total_gain), 1)
+                margin_str = f"{'+' if margin >= 0 else ''}{margin}"
+                lines.append(f"| Output Power Margin   | {margin_str} | dB  |")
+            lines.append("")
+
+        # --- Friis formula reminder ---
+        lines += [
+            "## 4. Cascade Noise Figure — Friis Formula",
+            "",
+            "$$F_{sys} = F_1 + \\frac{F_2 - 1}{G_1} + \\frac{F_3 - 1}{G_1 G_2} + \\cdots$$",
+            "",
+            "Where *F* = linear noise factor (not dB), *G* = linear gain.",
+            "The first stage NF dominates — minimise LNA/driver NF for best system sensitivity.",
+            "",
+            "---",
+            "> **Note:** All values are estimated from component datasheets at 25 °C nominal.",
+            "> Verify with bench measurements (spectrum analyser + noise source) during hardware bring-up.",
         ]
 
         return "\n".join(lines)
