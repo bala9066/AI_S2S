@@ -1,6 +1,13 @@
 import { Project, Statuses, StatusesRaw } from './types';
 
-const BASE = (window.location.port === '8000' || window.location.port === '') ? '' : 'http://localhost:8000';
+// Same-origin when served by FastAPI (port 8000 or behind a proxy).
+// Fall back to explicit localhost:8000 when opened directly as file:// or via Vite dev server.
+const BASE = (
+  window.location.protocol === 'file:' ||
+  (window.location.port !== '8000' && window.location.port !== '')
+)
+  ? 'http://localhost:8000'
+  : '';
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, {

@@ -10,11 +10,12 @@ interface Props {
 export default function LoadProjectModal({ onSelect, onCancel }: Props) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [connErr, setConnErr] = useState(false);
 
   useEffect(() => {
     api.listProjects()
       .then(ps => { setProjects(ps); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch(() => { setLoading(false); setConnErr(true); });
   }, []);
 
   return (
@@ -39,7 +40,14 @@ export default function LoadProjectModal({ onSelect, onCancel }: Props) {
           {loading && (
             <div style={{ fontSize: 13, color: 'var(--text4)', textAlign: 'center', padding: 28 }}>Loading...</div>
           )}
-          {!loading && !projects.length && (
+          {!loading && connErr && (
+            <div style={{ fontSize: 13, color: 'var(--danger)', textAlign: 'center', padding: 24, lineHeight: 1.6 }}>
+              ⚠️ <strong>Cannot reach the backend server.</strong><br />
+              Double-click <code>run.bat</code> (or <code>INSTALL.bat</code> on first use)<br />
+              in the project folder, then try again.
+            </div>
+          )}
+          {!loading && !connErr && !projects.length && (
             <div style={{ fontSize: 13, color: 'var(--text4)', textAlign: 'center', padding: 28 }}>
               No saved projects. Create one first.
             </div>

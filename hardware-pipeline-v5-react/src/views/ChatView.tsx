@@ -1253,7 +1253,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
         }
       }, 16);
     } catch {
-      onMessages([...messages, { role: 'ai', text: 'Error connecting to backend. Make sure FastAPI is running on port 8000.' }]);
+      onMessages([...messages, { role: 'ai', text: '⚠️ Cannot reach the backend server.\n\n**To fix:** Double-click `run.bat` (or `INSTALL.bat` on first use) in the project folder, wait for the "Backend is healthy" message, then try again.\n\nIf already running, check that nothing else is using port 8000.' }]);
       setStreaming('');
       setLoading(false);
     }
