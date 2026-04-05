@@ -544,6 +544,12 @@ class RequirementsAgent(BaseAgent):
         comp_file.write_text(comp_content, encoding="utf-8")
         outputs["component_recommendations.md"] = comp_content
 
+        # 5. power_calculation.md
+        power_content = _scrub(self._build_power_calc_md(tool_input, project_name))
+        power_file = output_path / "power_calculation.md"
+        power_file.write_text(power_content, encoding="utf-8")
+        outputs["power_calculation.md"] = power_content
+
         self.log(f"Generated {len(outputs)} Phase 1 output files in {output_path}")
         return outputs
 
@@ -590,6 +596,181 @@ class RequirementsAgent(BaseAgent):
                     f"{deps} | {constraints} |"
                 )
             lines.append("")
+
+        return "\n".join(lines)
+
+    def _build_power_calc_md(self, tool_input: dict, project_name: str) -> str:
+        """Build a per-component, per-rail power budget table matching the CSV template format."""
+        from datetime import datetime
+        comps = tool_input.get("component_recommendations", [])
+        date = datetime.now().strftime("%d-%m-%Y")
+
+        # Helper: try to extract a numeric value from a string like "3.3V", "100mA", "500mW"
+        def parse_num(s: str, unit: str = "") -> float:
+            import re as _re
+            if not s:
+                return 0.0
+            s = str(s)
+            m = _re.search(r'[\d.]+', s)
+            if not m:
+                return 0.0
+            val = float(m.group())
+            if "m" + unit.lower() in s.lower():  # mA, mW
+                val /= 1000.0
+            return val
+
+        # Determine the primary supply rail for a component given its specs
+        def infer_rail(comp: dict) -> float:
+            specs = comp.get("primary_key_specs", {}) or {}
+            for key in ("supply_voltage", "voltage", "vcc", "vdd", "operating_voltage"):
+                v = specs.get(key, "")
+                if v:
+                    val = parse_num(v, "V")
+                    if val > 0:
+                        return val
+            # Infer from function name
+            func = comp.get("function", "").lower()
+            if any(k in func for k in ("5v", "five", "usb")):
+                return 5.0
+            if any(k in func for k in ("2.5", "ddr")):
+                return 2.5
+            if any(k in func for k in ("1.8", "core")):
+                return 1.8
+            return 3.3  # default
+
+        def infer_current(comp: dict) -> float:
+            specs = comp.get("primary_key_specs", {}) or {}
+            for key in ("supply_current", "current", "icc", "idd", "quiescent_current",
+                        "operating_current", "typical_current"):
+                v = specs.get(key, "")
+                if v:
+                    val = parse_num(v, "A")
+                    if val > 0:
+                        return val
+            # Rough defaults by component function
+            func = comp.get("function", "").lower()
+            if "fpga" in func:
+                return 0.500
+            if any(k in func for k in ("mcu", "microcontroller", "processor")):
+                return 0.150
+            if any(k in func for k in ("transceiver", "rf", "amplifier", "pa")):
+                return 0.300
+            if any(k in func for k in ("adc", "dac")):
+                return 0.050
+            if any(k in func for k in ("flash", "memory", "eeprom")):
+                return 0.030
+            if any(k in func for k in ("regulator", "power", "ldo", "dc-dc")):
+                return 0.010
+            if any(k in func for k in ("resistor", "capacitor", "inductor", "passive")):
+                return 0.001
+            return 0.050  # generic IC default
+
+        # Rails we track
+        RAILS = [5.0, 3.3, 2.5, 1.8]
+        RAIL_LABELS = ["5V", "3.3V", "2.5V", "1.8V"]
+
+        rows = []
+        rail_totals_typ = [0.0] * len(RAILS)
+        rail_totals_max = [0.0] * len(RAILS)
+
+        for i, comp in enumerate(comps, 1):
+            func = comp.get("function", f"Component {i}")
+            part = comp.get("primary_part", "—")
+            specs = comp.get("primary_key_specs", {}) or {}
+            pkg = specs.get("package", specs.get("Package", "—"))
+
+            rail_v = infer_rail(comp)
+            i_typ = infer_current(comp)
+            i_max = i_typ * 1.30  # 30% margin for max
+
+            p_typ = round(rail_v * i_typ, 3)
+            p_max = round(rail_v * i_max, 3)
+
+            # Find closest rail index
+            closest = min(range(len(RAILS)), key=lambda idx: abs(RAILS[idx] - rail_v))
+
+            # Build per-rail cells; only the matching rail gets values
+            cells = []
+            for idx in range(len(RAILS)):
+                if idx == closest:
+                    cells += [p_typ, p_max, p_typ, p_max]
+                    rail_totals_typ[idx] += p_typ
+                    rail_totals_max[idx] += p_max
+                else:
+                    cells += ["", "", "", ""]
+
+            row = {
+                "si": i,
+                "desc": func,
+                "pkg": pkg,
+                "part": part,
+                "qty": 1,
+                "cells": cells,
+                "tot_typ": p_typ,
+                "tot_max": p_max,
+            }
+            rows.append(row)
+
+        # Build markdown table
+        h1 = "| SI NO | DESCRIPTION | Package | PART NO | QTY"
+        h2 = "|-------|-------------|---------|---------|----"
+        for label in RAIL_LABELS:
+            h1 += f" | {label} TYP (W) | {label} MAX (W) | {label} TOT TYP (W) | {label} TOT MAX (W)"
+            h2 += " |-----------|-----------|--------------|--------------|"
+        h1 += " | TOT MAX POW (W) | TOT TYP POW (W) |"
+        h2 += "-----------------|-----------------|"
+
+        table_lines = [h1, h2]
+        for row in rows:
+            line = f"| {row['si']} | {row['desc']} | {row['pkg']} | {row['part']} | {row['qty']}"
+            for c in row["cells"]:
+                line += f" | {c}"
+            line += f" | {row['tot_max']} | {row['tot_typ']} |"
+            table_lines.append(line)
+
+        # Totals row
+        tot_line = f"| | **TOTAL** | | | "
+        for idx in range(len(RAILS)):
+            t_typ = round(rail_totals_typ[idx], 3)
+            t_max = round(rail_totals_max[idx], 3)
+            tot_line += f" | | | {t_typ} | {t_max}"
+        grand_max = round(sum(rail_totals_max), 3)
+        grand_typ = round(sum(rail_totals_typ), 3)
+        tot_line += f" | **{grand_max}** | **{grand_typ}** |"
+        table_lines.append(tot_line)
+
+        lines = [
+            f"# Power Calculation",
+            f"## {project_name}",
+            "",
+            f"**Date:** {date}",
+            "",
+            "## Power Budget — Per Component Per Rail",
+            "",
+            "> All values in Watts (W). TYP = typical operating power, MAX = worst-case (130% of TYP).",
+            "> Rail assignment is based on component operating voltage from BOM.",
+            "",
+        ]
+        lines.extend(table_lines)
+        lines += [
+            "",
+            "---",
+            "",
+            "## Power Summary",
+            "",
+            "| Rail | Typical Power (W) | Max Power (W) |",
+            "|------|-------------------|---------------|",
+        ]
+        for idx, label in enumerate(RAIL_LABELS):
+            t = round(rail_totals_typ[idx], 3)
+            m = round(rail_totals_max[idx], 3)
+            lines.append(f"| {label} | {t} | {m} |")
+        lines += [
+            f"| **TOTAL** | **{grand_typ}** | **{grand_max}** |",
+            "",
+            "> Note: Power values are estimated from component datasheets and design parameters.",
+            "> Actual measurements should be taken during hardware bring-up and updated in this table.",
+        ]
 
         return "\n".join(lines)
 

@@ -312,12 +312,40 @@ Generate the netlist using the generate_netlist tool. Include:
         for node in data.get("nodes", []):
             lines.append(f"| {node.get('instance_id', '')} | {node.get('part_number', '')} | {node.get('component_name', '')} |")
 
-        lines.extend(["", "## Connections", "", "| Net | From | Pin | To | Pin | Type |", "|---|---|---|---|---|---|"])
+        lines.extend(["", "## Pin-to-Pin Connections", "", "| Net | From | Pin | To | Pin | Type |", "|---|---|---|---|---|---|"])
         for edge in data.get("edges", []):
             lines.append(
                 f"| {edge.get('net_name', '')} | {edge.get('from_instance', '')} | {edge.get('from_pin', '')} "
                 f"| {edge.get('to_instance', '')} | {edge.get('to_pin', '')} | {edge.get('signal_type', '')} |"
             )
+
+        # Net-centric connection list — groups all pins sharing each net
+        edges = data.get("edges", [])
+        if edges:
+            # Build net → list of "RefDes - Pin" entries
+            net_map: dict = {}
+            for edge in edges:
+                net = edge.get("net_name", "").strip()
+                if not net:
+                    continue
+                from_entry = f"{edge.get('from_instance', '')} - {edge.get('from_pin', '')}"
+                to_entry   = f"{edge.get('to_instance', '')} - {edge.get('to_pin', '')}"
+                net_map.setdefault(net, [])
+                if from_entry not in net_map[net]:
+                    net_map[net].append(from_entry)
+                if to_entry not in net_map[net]:
+                    net_map[net].append(to_entry)
+
+            lines.extend([
+                "",
+                "## Net Connection List",
+                "",
+                "| Net Name | Reference Designator - Pin No. |",
+                "|----------|-------------------------------|",
+            ])
+            for net_name, pins in sorted(net_map.items()):
+                pins_str = ",  ".join(pins)
+                lines.append(f"| {net_name} | {pins_str} |")
 
         # Validation notes
         notes = data.get("validation_notes", [])

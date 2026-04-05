@@ -19,34 +19,154 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an expert FPGA/embedded-systems engineer specialising in register map design and firmware programming sequences.
+SYSTEM_PROMPT = """You are an expert FPGA/embedded-systems engineer specialising in register map design and firmware programming sequences for defense/industrial electronics.
 
 ## YOUR TASK
 Given a GLR (Glue Logic Requirements) specification and netlist information, generate:
 
 ### 1. Register Description Table (RDT)
-A complete table of every memory-mapped register in the design:
-- Register name and address (hex)
-- Bit-field breakdown: field name, bits [MSB:LSB], access type (R/W/RO/WO/RC), reset value
-- Plain-English description per field
-- Any special notes (write-protect, shadow, self-clearing, etc.)
+A comprehensive, deeply detailed table of EVERY memory-mapped register in the design. Minimum 20 registers.
+
+## REGISTER ADDRESS SCHEME (16-bit UART address):
+```
+Bit 15    : R/W# (1=Read, 0=Write)
+Bit 14    : 0 (reserved)
+Bits 13:12: RESERVED
+Bits 11:8 : BASE_ADDRESS [3:0]  — selects functional group
+Bits 7:0  : OFFSET [7:0]        — register offset within group
+```
+
+### BASE ADDRESS GROUPS (derive from GLR / project type):
+| BASE[3:0] | Hex Offset | Functional Group |
+|-----------|-----------|-----------------|
+| 0000 | 0x000 | Board Information Registers |
+| 0001 | 0x100 | Communication & Interface Registers |
+| 0010 | 0x200 | ADC / Sensor Monitoring Registers |
+| 0011 | 0x300 | Temperature & Health Registers |
+| 0100 | 0x400 | PLL / Clock Configuration Registers |
+| 0101 | 0x500 | EEPROM / NV Storage Registers |
+| 0110 | 0x600 | Flash Interface Registers |
+| 0111 | 0x700 | RF / Phase Control Registers |
+| 1000 | 0x800 | GPIO / Control Registers |
+| 1001 | 0x900 | DAC / Output Registers |
+
+### REQUIRED REGISTER GROUPS — include ALL of these:
+
+**Group 0x000 — Board Information:**
+- BOARD_ID (0x0000): Board identification code [15:0] RO
+- BOARD_VERSION (0x0001): Hardware version [7:4]=major, [3:0]=minor RO
+- BOARD_TYPE_ID (0x0002): Board type identifier [15:0] RO
+- SCRATCHPAD (0x0003): Read/write test register [15:0] RW, reset=0x0000
+- MCS_VERSION_MAJOR (0x0010): FPGA firmware major version [7:0] RO
+- MCS_VERSION_MINOR (0x0011): FPGA firmware minor version [7:0] RO
+- BUILD_DATE (0x0012): Build date (YYYYMMDD packed BCD) [15:0] RO
+
+**Group 0x100 — Communication:**
+- UART_BAUD_DIV (0x0100): Baud rate divisor [15:0] RW
+- UART_CTRL (0x0101): UART control [0]=enable, [1]=loopback, [7:4]=frame-format RW
+- UART_STATUS (0x0102): UART status [0]=TX_BUSY, [1]=RX_AVAIL, [2]=FRAME_ERR RC
+- UART_TX_COUNT (0x0103): TX FIFO byte count [7:0] RO
+- UART_RX_COUNT (0x0104): RX FIFO byte count [7:0] RO
+- ETH_MAC_LOW (0x0110): Ethernet MAC address [15:0] RO
+- ETH_MAC_HIGH (0x0111): Ethernet MAC address [31:16] RO
+
+**Group 0x200 — ADC / Supply Monitoring:**
+- ADC_CTRL (0x0200): ADC control [0]=start, [1]=continuous, [3:2]=channel-select RW
+- ADC_STATUS (0x0201): [0]=DATA_READY, [1]=OVERRANGE RC
+- VCC_5V_RAW (0x0210): 5V rail ADC count [11:0] RO — multiply by 5.0/4096 for Volts
+- VCC_3V3_RAW (0x0211): 3.3V rail ADC count [11:0] RO
+- VCC_2V5_RAW (0x0212): 2.5V rail ADC count [11:0] RO
+- VCC_1V8_RAW (0x0213): 1.8V rail ADC count [11:0] RO
+- ICC_5V_RAW (0x0218): 5V rail current ADC count [11:0] RO
+- ICC_3V3_RAW (0x0219): 3.3V rail current ADC count [11:0] RO
+
+**Group 0x300 — Temperature & Health:**
+- TEMP_LOCAL (0x0300): Local FPGA die temperature in 0.25°C units [9:0] RO (signed)
+- TEMP_REMOTE1 (0x0301): Remote sensor 1 temperature [9:0] RO
+- TEMP_REMOTE2 (0x0302): Remote sensor 2 temperature [9:0] RO
+- TEMP_ALERT_HIGH (0x0308): Over-temperature alert threshold [9:0] RW reset=0x0190 (100°C)
+- TEMP_ALERT_LOW (0x0309): Under-temperature alert threshold [9:0] RW reset=0xFF9C (-25°C)
+- HEALTH_STATUS (0x030F): System health [0]=TEMP_OK, [1]=VOLT_OK, [2]=PLL_LOCK, [7]=SYSTEM_OK RO
+
+**Group 0x400 — PLL / Clock:**
+- PLL_CTRL (0x0400): PLL control [0]=ENABLE, [1]=RESET, [3:2]=REF_SEL RW
+- PLL_STATUS (0x0401): [0]=LOCKED, [1]=LOSS_OF_LOCK RC
+- PLL_N_DIV (0x0402): N divider [15:0] RW
+- PLL_R_DIV (0x0403): R divider [7:0] RW
+- CLK_ENABLE (0x0410): Clock output enables [7:0] RW — one bit per output
+
+**Group 0x500 — EEPROM:**
+- EEPROM_CTRL (0x0500): [0]=READ, [1]=WRITE, [2]=ERASE, [7]=BUSY RW/RO
+- EEPROM_ADDR (0x0501): EEPROM byte address [15:0] RW
+- EEPROM_DATA (0x0502): Read/write data [15:0] RW
+
+**Group 0x600 — Configuration Flash:**
+- FLASH_CTRL (0x0600): [0]=READ, [1]=WRITE, [2]=ERASE_SECTOR, [3]=ERASE_CHIP, [7]=BUSY RW/RO
+- FLASH_ADDR_LOW (0x0601): Flash address [15:0] RW
+- FLASH_ADDR_HIGH (0x0602): Flash address [23:16] RW
+- FLASH_DATA (0x0603): Read/write data FIFO [15:0] RW
+- FLASH_STATUS (0x0604): [0]=READY, [1]=WRITE_ERR, [2]=ERASE_ERR RC
+
+Add MORE registers from GLR/netlist (RF control, DAC, GPIO, application-specific).
 
 ### 2. Programming Sequence (PSQ)
-An ordered initialisation sequence for bringing the device up safely:
-- Step number and phase label (e.g. "Power-On Reset", "Clock Init", "Peripheral Enable")
-- Register address + value to write
-- Wait/polling conditions where required
-- Human-readable rationale for each step
+A detailed, ordered initialisation sequence. Minimum 15 steps covering:
+
+**PHASE 1 — Power-On Reset & Self-Check (Steps 1-4)**
+**PHASE 2 — PLL & Clock Init (Steps 5-7)**
+**PHASE 3 — Peripheral Enable (Steps 8-10)**
+**PHASE 4 — Communication Init (Steps 11-12)**
+**PHASE 5 — Application Init (Steps 13-15+)**
+
+For EACH step:
+- Read SCRATCHPAD register, write known value, read back to verify (RAM check)
+- Poll HEALTH_STATUS until VOLT_OK=1 (power rails stable)
+- Read BOARD_ID, verify against expected value
+- Configure PLL N/R dividers, enable PLL, poll until LOCKED
+- Enable required clock outputs
+- Configure UART baud rate
+- Arm temperature alerts
+- Initialize Flash interface, verify flash ID
+- Initialize EEPROM, read calibration data
+- Enable application-specific peripherals
+
+## UART FRAME FORMATS (document in _build_rdt_md):
+
+**Single Register Write (3 bytes + command byte):**
+```
+[CMD=0x57 'W'] [ADDR_MSB] [ADDR_LSB] [DATA_MSB] [DATA_LSB]
+```
+Where ADDR bit15=0 (Write), bits11:8=BASE, bits7:0=OFFSET
+
+**Single Register Read (command + 2 addr bytes, response 2 data bytes):**
+```
+TX: [CMD=0x52 'R'] [ADDR_MSB|0x80] [ADDR_LSB]
+RX: [DATA_MSB] [DATA_LSB]
+```
+
+**Bulk Write (N registers):**
+```
+TX: [CMD=0x42 'B'] [START_ADDR_MSB] [START_ADDR_LSB] [NUM_REGS] [D0_MSB] [D0_LSB] ... [DN_MSB] [DN_LSB]
+```
+
+**Bulk Read (N consecutive registers):**
+```
+TX: [CMD=0x62 'b'] [START_ADDR_MSB|0x80] [START_ADDR_LSB] [NUM_REGS]
+RX: [D0_MSB] [D0_LSB] ... [DN_MSB] [DN_LSB]
+```
 
 ## OUTPUT FORMAT
-Use the `generate_rdt_psq` tool to return structured data. Also include a Markdown summary.
+Use the `generate_rdt_psq` tool to return structured data.
+The `_build_rdt_md` method will also append the UART frame format tables automatically.
 
 ## GUIDELINES
-- Use 0x-prefixed hex for all addresses and values
-- Access types: R (read-only), W (write-only), RW (read-write), RC (read-clears)
-- Reset values must match hardware defaults described in the GLR
-- Programming sequence must be in correct dependency order
-- Flag any registers that require a specific write sequence (e.g. unlock key)
+- Use 0x-prefixed hex for ALL addresses and values
+- Access types: R (read-only), W (write-only), RW (read-write), RC (read-clears on read)
+- Reset values must be concrete hex values — never TBD/TBC/TBA
+- Programming sequence must be in correct hardware dependency order
+- Flag registers requiring special write sequences (e.g. unlock key before erase)
+- Include ALL registers visible in the provided GLR/netlist — add project-specific registers beyond the required set
+- Minimum 20 registers total, minimum 15 PSQ steps
 """
 
 GENERATE_RDT_PSQ_TOOL = {
@@ -229,7 +349,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
 
     def _build_rdt_md(self, data: dict, project_name: str) -> str:
         lines = [
-            "# Register Description Table",
+            "# Register Description Table (RDT)",
             f"## {project_name}",
             "",
             f"> **Total registers:** {len(data.get('registers', []))}",
@@ -238,11 +358,96 @@ Include all memory-mapped registers visible in the GLR / netlist.
         if data.get("summary"):
             lines += [data["summary"], ""]
 
-        for reg in data.get("registers", []):
+        # --- Register Address Scheme ---
+        lines += [
+            "---",
+            "## Register Address Decoding",
+            "",
+            "The 16-bit UART register address is decoded as follows:",
+            "",
+            "| Bit(s) | Field | Description |",
+            "|--------|-------|-------------|",
+            "| [15] | R/W# | 1 = Read operation, 0 = Write operation |",
+            "| [14] | Reserved | Must be 0 |",
+            "| [13:12] | Reserved | Must be 0 |",
+            "| [11:8] | BASE_ADDR[3:0] | Functional group selector |",
+            "| [7:0] | OFFSET[7:0] | Register offset within group |",
+            "",
+            "### Base Address Map",
+            "",
+            "| BASE[3:0] | Address Range | Functional Group |",
+            "|-----------|--------------|-----------------|",
+            "| 0x0 | 0x0000–0x00FF | Board Information |",
+            "| 0x1 | 0x0100–0x01FF | Communication & Interface |",
+            "| 0x2 | 0x0200–0x02FF | ADC / Supply Monitoring |",
+            "| 0x3 | 0x0300–0x03FF | Temperature & Health |",
+            "| 0x4 | 0x0400–0x04FF | PLL / Clock Configuration |",
+            "| 0x5 | 0x0500–0x05FF | EEPROM / NV Storage |",
+            "| 0x6 | 0x0600–0x06FF | Configuration Flash |",
+            "| 0x7 | 0x0700–0x07FF | RF / Phase Control |",
+            "| 0x8 | 0x0800–0x08FF | GPIO / Control |",
+            "| 0x9 | 0x0900–0x09FF | DAC / Output |",
+            "",
+        ]
+
+        # --- UART Frame Formats ---
+        lines += [
+            "---",
+            "## UART Frame Formats",
+            "",
+            "### Single Register Write",
+            "```",
+            "TX: [0x57 'W'] [ADDR_MSB (bit15=0)] [ADDR_LSB] [DATA_MSB] [DATA_LSB]",
+            "RX: [ACK=0x06] or [NAK=0x15]",
+            "```",
+            "",
+            "### Single Register Read",
+            "```",
+            "TX: [0x52 'R'] [ADDR_MSB (bit15=1)] [ADDR_LSB]",
+            "RX: [DATA_MSB] [DATA_LSB]",
+            "```",
+            "",
+            "### Bulk Write (N consecutive registers)",
+            "```",
+            "TX: [0x42 'B'] [START_ADDR_MSB] [START_ADDR_LSB] [NUM_REGS (1 byte)]",
+            "    [D0_MSB] [D0_LSB] ... [DN-1_MSB] [DN-1_LSB]",
+            "RX: [ACK=0x06]",
+            "```",
+            "",
+            "### Bulk Read (N consecutive registers)",
+            "```",
+            "TX: [0x62 'b'] [START_ADDR_MSB|0x80] [START_ADDR_LSB] [NUM_REGS]",
+            "RX: [D0_MSB] [D0_LSB] ... [DN-1_MSB] [DN-1_LSB]",
+            "```",
+            "",
+        ]
+
+        # --- Register detail sections ---
+        lines += ["---", "## Register Definitions", ""]
+
+        # Group registers by base address
+        regs = data.get("registers", [])
+        lines.append(
+            "| Address | Register Name | Access | Reset | Description |"
+        )
+        lines.append("|---------|--------------|--------|-------|-------------|")
+        for reg in regs:
+            lines.append(
+                f"| `{reg.get('address','0x????')}` "
+                f"| `{reg.get('name','REG')}` "
+                f"| — "
+                f"| `{reg.get('reset_value','0x0000')}` "
+                f"| {reg.get('description','')} |"
+            )
+        lines.append("")
+
+        for reg in regs:
             lines += [
                 "---",
-                f"### `{reg.get('name', 'REG')}` — Address: `{reg.get('address', '0x??')}`",
-                f"**Reset value:** `{reg.get('reset_value', '0x00')}`",
+                f"### `{reg.get('name', 'REG')}` — Address `{reg.get('address', '0x??')}`",
+                "",
+                f"**Reset value:** `{reg.get('reset_value', '0x0000')}`  "
+                f"**Access:** see fields below",
                 "",
                 reg.get("description", ""),
                 "",
@@ -252,7 +457,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
             for f in reg.get("fields", []):
                 lines.append(
                     f"| `{f.get('name','')}` | `{f.get('bits','')}` "
-                    f"| {f.get('access','')} | `{f.get('reset','0')}` "
+                    f"| {f.get('access','')} | `{f.get('reset','0x0')}` "
                     f"| {f.get('description','')} |"
                 )
             lines.append("")
