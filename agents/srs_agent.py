@@ -406,7 +406,7 @@ class SRSAgent(BaseAgent):
             phase_number="P8a",
             phase_name="SRS Generation",
             model=settings.primary_model,  # Primary model for 50+ page professional document
-            max_tokens=16384,
+            max_tokens=32768,
         )
         self.srs_generator = SRSGenerator()
 
@@ -455,39 +455,52 @@ class SRSAgent(BaseAgent):
                 system=SYSTEM_PROMPT,
             )
             srs_content = response.get("content", "")
-            # First continuation if truncated
-            if response.get("stop_reason") == "max_tokens" and srs_content:
-                self.log("SRS truncated (pass 1), requesting continuation...")
-                cont1 = await self.call_llm(
+
+            # Up to 5 continuation passes — each feeds accumulated text back as context
+            _SRS_CONT_PROMPTS = [
+                (
+                    "Continue the SRS document from exactly where you left off. "
+                    "Do NOT repeat any sections already written. "
+                    "Continue generating requirements (REQ-SW-xxx), performance requirements, "
+                    "design constraints, interface requirements, and safety requirements."
+                ),
+                (
+                    "Continue writing the SRS from where you stopped. "
+                    "Do NOT repeat content already written. "
+                    "Focus on: V&V requirements, non-functional requirements, "
+                    "software quality attributes, and environmental/reliability constraints."
+                ),
+                (
+                    "Continue the SRS. Do NOT repeat content already written. "
+                    "Write the full Requirement Traceability Matrix (REQ-SW-xxx → REQ-HW-xxx / GLR sections). "
+                    "Every REQ-SW requirement must appear as a row in the traceability table."
+                ),
+                (
+                    "Continue. Do NOT repeat content already written. "
+                    "Write Appendix A (Error Codes enum in C), Appendix B (Register Map summary table), "
+                    "Appendix C (all Mermaid diagrams not yet included), Appendix D (acronyms and glossary)."
+                ),
+                (
+                    "Finalize the SRS. Add any remaining incomplete appendices or sections. "
+                    "Do NOT repeat content already written. "
+                    "End with the document revision history table and sign-off block."
+                ),
+            ]
+
+            for _pass_idx, _cont_prompt in enumerate(_SRS_CONT_PROMPTS, start=1):
+                if response.get("stop_reason") != "max_tokens":
+                    break
+                self.log(f"SRS truncated — continuation pass {_pass_idx}/5...")
+                _cont = await self.call_llm(
                     messages=[
                         {"role": "user", "content": user_message},
                         {"role": "assistant", "content": srs_content},
-                        {"role": "user", "content": (
-                            "Continue the SRS document from exactly where you left off. "
-                            "Do NOT repeat any sections already written. "
-                            "Continue generating requirements (REQ-SW-xxx), performance requirements, "
-                            "design constraints, V&V requirements, traceability matrix, and appendices."
-                        )},
+                        {"role": "user", "content": _cont_prompt},
                     ],
                     system=SYSTEM_PROMPT,
                 )
-                srs_content += "\n\n" + cont1.get("content", "")
-                # Second continuation if still truncated
-                if cont1.get("stop_reason") == "max_tokens":
-                    self.log("SRS still truncated (pass 2), requesting final continuation...")
-                    cont2 = await self.call_llm(
-                        messages=[
-                            {"role": "user", "content": user_message},
-                            {"role": "assistant", "content": srs_content},
-                            {"role": "user", "content": (
-                                "Complete the remaining SRS sections. "
-                                "Finish the traceability matrix, appendices (error codes, register map summary, Mermaid diagrams). "
-                                "Do NOT repeat anything already written."
-                            )},
-                        ],
-                        system=SYSTEM_PROMPT,
-                    )
-                    srs_content += "\n\n" + cont2.get("content", "")
+                srs_content += "\n\n" + _cont.get("content", "")
+                response = _cont  # check this response's stop_reason in next iteration
         except Exception as e:
             self.log(f"LLM SRS generation failed: {e} — falling back to template", "warning")
 

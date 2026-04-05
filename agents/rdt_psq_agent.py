@@ -239,7 +239,7 @@ class RdtPsqAgent(BaseAgent):
             phase_name="Register Map & Programming Sequence",
             model=settings.primary_model,
             tools=[GENERATE_RDT_PSQ_TOOL],
-            max_tokens=16384,  # Increased for comprehensive RDT/PSQ reports
+            max_tokens=32768,  # Max tokens for comprehensive RDT/PSQ reports
         )
 
     def get_system_prompt(self, project_context: dict) -> str:

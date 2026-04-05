@@ -47,7 +47,7 @@ class ComplianceAgent(BaseAgent):
             phase_number="P3",
             phase_name="Compliance Validation",
             model=settings.fast_model,
-            max_tokens=4096,
+            max_tokens=16384,
         )
 
     def get_system_prompt(self, project_context: dict) -> str:

@@ -698,7 +698,7 @@ class SDDAgent(BaseAgent):
             phase_number="P8b",
             phase_name="SDD Generation",
             model=settings.primary_model,  # Primary model for 50+ page professional document
-            max_tokens=16384,
+            max_tokens=32768,
         )
         self.sdd_generator = SDDGenerator()
 
@@ -750,40 +750,54 @@ class SDDAgent(BaseAgent):
                 system=SYSTEM_PROMPT,
             )
             sdd_content = response.get("content", "")
-            # First continuation if truncated
-            if response.get("stop_reason") == "max_tokens" and sdd_content:
-                self.log("SDD truncated (pass 1), requesting continuation...")
-                cont1 = await self.call_llm(
+
+            # Up to 5 continuation passes — each feeds accumulated text back as context
+            _SDD_CONT_PROMPTS = [
+                (
+                    "Continue the SDD from exactly where you left off. "
+                    "Do NOT repeat any sections already written. "
+                    "Complete remaining viewpoints, module interface definitions, "
+                    "state machines, and interrupt/task scheduling design."
+                ),
+                (
+                    "Continue the SDD. Do NOT repeat content already written. "
+                    "Write detailed algorithm descriptions, data flow diagrams (Mermaid flowcharts), "
+                    "and the complete sequence diagrams for every major hardware interaction."
+                ),
+                (
+                    "Continue the SDD. Do NOT repeat content already written. "
+                    "Complete the IEEE 1016 Information Viewpoint: "
+                    "all data structures (C structs), enums, configuration tables, "
+                    "and persistent data layout in non-volatile memory."
+                ),
+                (
+                    "Continue the SDD. Do NOT repeat content already written. "
+                    "Write the full Design Traceability Matrix "
+                    "(SDD component/function → REQ-SW-xxx → REQ-HW-xxx). "
+                    "Every SDD design decision must trace to at least one SRS requirement."
+                ),
+                (
+                    "Finalize the SDD. Do NOT repeat content already written. "
+                    "Write Appendix A (file/directory structure), Appendix B (memory map), "
+                    "Appendix C (coding standards compliance checklist), "
+                    "Appendix D (acronyms/glossary), and the revision history table."
+                ),
+            ]
+
+            for _pass_idx, _cont_prompt in enumerate(_SDD_CONT_PROMPTS, start=1):
+                if response.get("stop_reason") != "max_tokens":
+                    break
+                self.log(f"SDD truncated — continuation pass {_pass_idx}/5...")
+                _cont = await self.call_llm(
                     messages=[
                         {"role": "user", "content": user_message},
                         {"role": "assistant", "content": sdd_content},
-                        {"role": "user", "content": (
-                            "Continue the SDD from exactly where you left off. "
-                            "Do NOT repeat any sections already written. "
-                            "Complete remaining viewpoints, state machines, algorithms, design rationale, "
-                            "traceability matrix, and appendices."
-                        )},
+                        {"role": "user", "content": _cont_prompt},
                     ],
                     system=SYSTEM_PROMPT,
                 )
-                sdd_content += "\n\n" + cont1.get("content", "")
-                # Second continuation if still truncated
-                if cont1.get("stop_reason") == "max_tokens":
-                    self.log("SDD still truncated (pass 2), requesting final continuation...")
-                    cont2 = await self.call_llm(
-                        messages=[
-                            {"role": "user", "content": user_message},
-                            {"role": "assistant", "content": sdd_content},
-                            {"role": "user", "content": (
-                                "Complete all remaining SDD sections. "
-                                "Finish the traceability matrix mapping all SDD components to REQ-SW-xxx. "
-                                "Complete appendices (file structure, memory map, coding standards checklist). "
-                                "Do NOT repeat anything already written."
-                            )},
-                        ],
-                        system=SYSTEM_PROMPT,
-                    )
-                    sdd_content += "\n\n" + cont2.get("content", "")
+                sdd_content += "\n\n" + _cont.get("content", "")
+                response = _cont  # check this response's stop_reason in next iteration
         except Exception as e:
             self.log(f"LLM SDD generation failed: {e} — falling back to template", "warning")
 

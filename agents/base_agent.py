@@ -40,7 +40,7 @@ class BaseAgent(ABC):
         model: Optional[str] = None,
         system_prompt: str = "",
         tools: Optional[list[dict]] = None,
-        max_tokens: int = 8192,
+        max_tokens: int = 16384,
     ):
         self.phase_number = phase_number
         self.phase_name = phase_name

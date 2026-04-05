@@ -93,7 +93,7 @@ class DocumentAgent(BaseAgent):
             phase_number="P2",
             phase_name="HRS Generation",
             model=settings.primary_model,  # Use primary model for quality document generation
-            max_tokens=16384,  # Increased for comprehensive document generation
+            max_tokens=32768,  # Max for HRS — section-by-section generation
         )
         self.hrs_generator = HRSGenerator()
 
@@ -314,18 +314,24 @@ class DocumentAgent(BaseAgent):
                 )
                 section_text = resp.get("content", "")
 
-                # If this section was also truncated, request one continuation
-                if resp.get("stop_reason") == "max_tokens" and section_text:
-                    self.log(f"  {section_name} truncated — continuing...")
-                    cont = await self.call_llm(
+                # Up to 3 continuation passes per section if truncated
+                for _sec_pass in range(1, 4):
+                    if resp.get("stop_reason") != "max_tokens" or not section_text:
+                        break
+                    self.log(f"  {section_name} truncated — continuation pass {_sec_pass}/3...")
+                    resp = await self.call_llm(
                         messages=[
                             {"role": "user", "content": section_prompt},
                             {"role": "assistant", "content": section_text},
-                            {"role": "user", "content": "Continue the section from where you stopped. Do not repeat already-written content."},
+                            {"role": "user", "content": (
+                                f"Continue writing {section_name} from exactly where you stopped. "
+                                "Do NOT repeat content already written. "
+                                "Complete all sub-sections, tables, and requirement entries for this section."
+                            )},
                         ],
                         system=system,
                     )
-                    section_text += "\n" + cont.get("content", "")
+                    section_text += "\n" + resp.get("content", "")
 
                 if section_text.strip():
                     all_sections.append(section_text.strip())

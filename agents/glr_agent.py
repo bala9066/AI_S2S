@@ -302,7 +302,7 @@ class GLRAgent(BaseAgent):
             phase_number="P6",
             phase_name="GLR Generation",
             model=settings.primary_model,
-            max_tokens=16384,
+            max_tokens=32768,
         )
 
     def get_system_prompt(self, project_context: dict) -> str:
@@ -358,22 +358,41 @@ Generate the FULL GLR document following EVERY section in your system prompt.
             )
             glr_content = response.get("content", "")
 
-            # Request continuation if document was truncated
-            if response.get("stop_reason") == "max_tokens" and glr_content:
-                self.log("GLR truncated — requesting continuation...")
-                cont = await self.call_llm(
+            # Up to 3 continuation passes if truncated
+            _GLR_CONT_PROMPTS = [
+                (
+                    "Continue the GLR document from exactly where you left off. "
+                    "Do NOT repeat sections already written. "
+                    "Complete remaining functional specification sections, timing constraints, "
+                    "and resource utilisation estimates."
+                ),
+                (
+                    "Continue the GLR. Do NOT repeat content already written. "
+                    "Write the Verification & Validation requirements section, "
+                    "simulation test plan, and the full RTM Annexure table "
+                    "(GLR-ID | Description | Source REQ-HW | Verification Method | Status)."
+                ),
+                (
+                    "Finalize the GLR. Do NOT repeat content already written. "
+                    "Complete any remaining sub-sections, add the document revision history, "
+                    "and close with the approval sign-off block."
+                ),
+            ]
+
+            for _pass_idx, _cont_prompt in enumerate(_GLR_CONT_PROMPTS, start=1):
+                if response.get("stop_reason") != "max_tokens" or not glr_content:
+                    break
+                self.log(f"GLR truncated — continuation pass {_pass_idx}/3...")
+                _cont = await self.call_llm(
                     messages=[
                         {"role": "user", "content": user_message},
                         {"role": "assistant", "content": glr_content},
-                        {"role": "user", "content": (
-                            "Continue the GLR document from where you left off. "
-                            "Do NOT repeat sections already written. "
-                            "Complete all remaining sections through the RTM Annexure."
-                        )},
+                        {"role": "user", "content": _cont_prompt},
                     ],
                     system=SYSTEM_PROMPT,
                 )
-                glr_content += "\n\n" + cont.get("content", "")
+                glr_content += "\n\n" + _cont.get("content", "")
+                response = _cont
 
         except Exception as e:
             self.log(f"LLM GLR generation failed: {e}", "warning")
