@@ -90,3 +90,34 @@ No need to re-install packages every time.
 | API errors / phases failing | Check your API keys in `.env` |
 | Projects missing after copy | Also copy `hardware_pipeline.db` + `output/` folder |
 | ChromaDB seeding errors on startup | Normal — wait ~60s, it's downloading embeddings |
+
+---
+
+## "Error connecting to backend" — Step-by-Step Fix
+
+This error means the FastAPI server is **not running** on this PC. Follow these steps:
+
+### Step 1 — Confirm the server is not running
+Open a browser and go to: `http://localhost:8000/health`
+- If you see `{"status":"healthy"}` → server IS running (skip to Step 4)
+- If you get "This site can't be reached" → server is NOT running → continue
+
+### Step 2 — Run the server
+Double-click **`INSTALL.bat`** (first time) or **`run.bat`** (after first setup).
+
+A new terminal window titled **"S2S — FastAPI Backend"** should open and show log output.
+
+**If that window opens and then immediately closes** → there's a startup error. See Step 3.
+
+### Step 3 — Diagnose the error
+Double-click **`diagnose.bat`** — it will check Python, packages, `.env` keys, and port status, then open `diagnose_log.txt` with results.
+
+Common causes:
+- **Python not installed** → Install Python 3.10+ from https://python.org, check "Add Python to PATH"
+- **`.env` has no API keys** → Open `.env` and fill in `GLM_API_KEY` (or another key)
+- **Package install failed** → Open CMD, run: `pip install -r requirements.txt`
+- **Port 8000 blocked** → Temporarily disable Windows Firewall, or add an inbound rule for port 8000
+
+### Step 4 — Open the app
+Once `http://localhost:8000/health` returns `{"status":"healthy"}`:
+- Go to `http://localhost:8000/app` in your browser (do NOT open `bundle.html` directly as a file)
