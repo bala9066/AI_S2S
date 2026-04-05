@@ -60,6 +60,23 @@ function isWhQuestion(text: string): boolean {
 
 // ── main export ────────────────────────────────────────────────────────────
 
+// Derive a short label from a plain question sentence
+function labelFromQuestion(q: string): string {
+  const stripped = stripMd(q).trim();
+  // Try to grab first noun-phrase: up to 3 meaningful words before "?" or verb
+  const keywordMatch = stripped.match(
+    /\b(supply\s+voltage|operating\s+voltage|input\s+voltage|voltage|frequency|temp(?:erature)?|interface|protocol|power|current|data\s+rate|bandwidth|accuracy|resolution|form\s+factor|environment|regulation|topology|package|quantity|range)\b/i
+  );
+  if (keywordMatch) {
+    const kw = keywordMatch[0].trim();
+    return kw.charAt(0).toUpperCase() + kw.slice(1).toLowerCase()
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+  // Fall back: first 3–4 words
+  const words = stripped.replace(/[?!.,;:].*$/, '').split(/\s+/).slice(0, 4);
+  return words.join(' ');
+}
+
 export function parseQuestionsFromAI(aiText: string): QuestionCard[] {
   const allCards: QuestionCard[] = [];
   const lines = aiText.split('\n');
@@ -68,42 +85,85 @@ export function parseQuestionsFromAI(aiText: string): QuestionCard[] {
   while (i < lines.length && allCards.length < MAX_CARDS) {
     const line = lines[i];
 
-    // "1. **Label**: body" — separator must be explicit colon (not just any space)
+    // ── FORMAT A: "1. **Label**: body text" ──────────────────────────────
+    // Handles both bold ("**Label**:") and plain ("Label:") labels
     const numberedMatch = line.match(/^(\d+)\.\s+\*{0,2}([^*\n:]+?)\*{0,2}\s*:\s+(.*)$/);
-    if (!numberedMatch) { i++; continue; }
+    if (numberedMatch) {
+      const label = stripMd(numberedMatch[2].trim());
+      const body  = numberedMatch[3].trim();
 
-    const label = stripMd(numberedMatch[2].trim());
-    const body  = numberedMatch[3].trim();
+      if (body.length > 0) {
+        allCards.push(createCard(allCards.length + 1, label, body));
+        i++;
+        continue;
+      }
 
-    if (body.length > 0) {
-      allCards.push(createCard(allCards.length + 1, label, body));
-      i++;
+      // No inline body — look ahead for bullet sub-items
+      const bullets: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && j < i + 20) {
+        const bl = lines[j].trim();
+        if (/^[\-\*\u2022]\s+.+/.test(bl)) {
+          bullets.push(bl.replace(/^[\-\*\u2022]\s+/, ''));
+          j++;
+        } else if (bl.length === 0) {
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (bullets.length > 0) {
+        for (const bullet of bullets) {
+          allCards.push(createCard(allCards.length + 1, label, bullet));
+        }
+        i = j;
+      } else {
+        i++;
+      }
       continue;
     }
 
-    // No inline body — look ahead for bullet sub-items
-    const bullets: string[] = [];
-    let j = i + 1;
-    while (j < lines.length && j < i + 20) {
-      const bl = lines[j].trim();
-      if (/^[\-\*\u2022]\s+.+/.test(bl)) {
-        bullets.push(bl.replace(/^[\-\*\u2022]\s+/, ''));
-        j++;
-      } else if (bl.length === 0) {
-        j++;
-      } else {
-        break;
+    // ── FORMAT B: "1. Plain question text?" ──────────────────────────────
+    // Handles plain numbered questions with no "Label:" prefix
+    const plainMatch = line.match(/^(\d+)\.\s+(.{10,})$/);
+    if (plainMatch) {
+      const fullText = plainMatch[2].trim();
+      // Skip lines that are obviously not questions (too short, purely descriptive)
+      const looksLikeQuestion = fullText.includes('?') ||
+        /\b(what|which|how|is|are|do|does|will|would|should|can|please|specify|choose|select|indicate|describe|list)\b/i.test(fullText);
+      if (looksLikeQuestion) {
+        // Collect multi-line: check if next lines continue this point (indented or bullets)
+        const bullets: string[] = [];
+        let j = i + 1;
+        while (j < lines.length && j < i + 10) {
+          const bl = lines[j].trim();
+          if (/^[\-\*\u2022]\s+.+/.test(bl)) {
+            bullets.push(bl.replace(/^[\-\*\u2022]\s+/, ''));
+            j++;
+          } else if (bl.length === 0 && j < i + 3) {
+            j++;
+          } else {
+            break;
+          }
+        }
+
+        const label = labelFromQuestion(fullText);
+        if (bullets.length > 0) {
+          // Each bullet becomes a separate card under the same label
+          for (const b of bullets) {
+            allCards.push(createCard(allCards.length + 1, label, b));
+          }
+          i = j;
+        } else {
+          allCards.push(createCard(allCards.length + 1, label, fullText));
+          i++;
+        }
+        continue;
       }
     }
 
-    if (bullets.length > 0) {
-      for (const bullet of bullets) {
-        allCards.push(createCard(allCards.length + 1, label, bullet));
-      }
-      i = j;
-    } else {
-      i++;
-    }
+    i++;
   }
 
   return allCards.slice(0, MAX_CARDS);
