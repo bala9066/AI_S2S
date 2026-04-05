@@ -10,6 +10,8 @@ Fallback order:
 
 import json
 import logging
+import os
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
@@ -20,6 +22,49 @@ from openai import AsyncOpenAI
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _get_proxy() -> Optional[str]:
+    """
+    Detect proxy for outbound HTTPS — in order of priority:
+      1. HTTPS_PROXY / HTTP_PROXY env var (set in .env)
+      2. Windows system proxy (reads IE/WinHTTP settings via urllib)
+    Returns proxy URL string or None.
+    """
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    if proxy:
+        return proxy
+    # Auto-detect Windows system proxy
+    try:
+        sys_proxies = urllib.request.getproxies()
+        proxy = sys_proxies.get("https") or sys_proxies.get("http")
+        if proxy:
+            logger.info("base_agent.proxy_autodetected: %s", proxy)
+            return proxy
+    except Exception:
+        pass
+    return None
+
+
+def _make_sync_httpx_client() -> Optional[httpx.Client]:
+    proxy = _get_proxy()
+    if proxy:
+        logger.info("base_agent.using_proxy (sync): %s", proxy)
+        return httpx.Client(proxy=proxy, timeout=120.0)
+    return None
+
+
+def _make_async_httpx_client() -> Optional[httpx.AsyncClient]:
+    proxy = _get_proxy()
+    if proxy:
+        logger.info("base_agent.using_proxy (async): %s", proxy)
+        return httpx.AsyncClient(proxy=proxy, timeout=120.0)
+    return None
 
 
 class BaseAgent(ABC):
@@ -52,16 +97,20 @@ class BaseAgent(ABC):
         # Initialize Anthropic client (Claude API)
         self._anthropic_client: Optional[anthropic.Anthropic] = None
         if settings.anthropic_api_key:
+            _hc = _make_sync_httpx_client()
             self._anthropic_client = anthropic.Anthropic(
-                api_key=settings.anthropic_api_key
+                api_key=settings.anthropic_api_key,
+                **( {"http_client": _hc} if _hc else {} ),
             )
 
         # Initialize DeepSeek client (OpenAI-compatible API)
         self._deepseek_client: Optional[AsyncOpenAI] = None
         if settings.deepseek_api_key:
+            _ahc = _make_async_httpx_client()
             self._deepseek_client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
                 base_url=settings.deepseek_base_url,
+                **( {"http_client": _ahc} if _ahc else {} ),
             )
             logger.info("DeepSeek client initialized — using DeepSeek-V3 as primary LLM")
 
@@ -326,7 +375,11 @@ class BaseAgent(ABC):
             ollama_messages.append({"role": "system", "content": system})
         ollama_messages.extend(messages)
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        _proxy = _get_proxy()
+        _client_kwargs: dict = {"timeout": 120.0}
+        if _proxy:
+            _client_kwargs["proxy"] = _proxy
+        async with httpx.AsyncClient(**_client_kwargs) as client:
             response = await client.post(
                 f"{settings.ollama_base_url}/api/chat",
                 json={
@@ -365,10 +418,12 @@ class BaseAgent(ABC):
         if not settings.glm_api_key:
             raise RuntimeError("GLM API key not configured")
 
-        # Create a one-off Anthropic client pointed at Z.AI
+        # Create a one-off Anthropic client pointed at Z.AI (with proxy if configured)
+        _hc = _make_sync_httpx_client()
         glm_client = anthropic.Anthropic(
             api_key=settings.glm_api_key,
             base_url=settings.glm_base_url,
+            **( {"http_client": _hc} if _hc else {} ),
         )
 
         kwargs: dict[str, Any] = {
