@@ -93,7 +93,7 @@ class DocumentAgent(BaseAgent):
             phase_number="P2",
             phase_name="HRS Generation",
             model=settings.primary_model,  # Use primary model for quality document generation
-            max_tokens=32768,  # Max for HRS — section-by-section generation
+            max_tokens=16384,  # Max for HRS — section-by-section generation
         )
         self.hrs_generator = HRSGenerator()
 

@@ -302,7 +302,7 @@ class GLRAgent(BaseAgent):
             phase_number="P6",
             phase_name="GLR Generation",
             model=settings.primary_model,
-            max_tokens=32768,
+            max_tokens=16384,
         )
 
     def get_system_prompt(self, project_context: dict) -> str:

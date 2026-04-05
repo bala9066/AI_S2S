@@ -406,7 +406,7 @@ class SRSAgent(BaseAgent):
             phase_number="P8a",
             phase_name="SRS Generation",
             model=settings.primary_model,  # Primary model for 50+ page professional document
-            max_tokens=32768,
+            max_tokens=16384,
         )
         self.srs_generator = SRSGenerator()
 

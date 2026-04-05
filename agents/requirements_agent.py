@@ -86,6 +86,8 @@ After the user has answered your questions (or if their FIRST message already co
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
 - Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters.
 - Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
+- **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use the real manufacturer datasheet URL (e.g., `https://www.ti.com/lit/ds/symlink/...`, `https://www.analog.com/media/en/.../DS.pdf`). If you are not certain of the exact URL, use the manufacturer product page URL (e.g., `https://www.st.com/en/microcontrollers-microprocessors/stm32f4-series.html`). Never leave `datasheet_url` empty.
+- Include `digikey_url` where known (e.g., `https://www.digikey.com/en/products/detail/texas-instruments/...`).
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
 
@@ -172,6 +174,18 @@ GENERATE_REQUIREMENTS_TOOL = {
                         "primary_manufacturer": {"type": "string"},
                         "primary_description": {"type": "string"},
                         "primary_key_specs": {"type": "object", "additionalProperties": {"type": "string"}},
+                        "datasheet_url": {
+                            "type": "string",
+                            "description": (
+                                "Direct URL to the manufacturer datasheet PDF or product page. "
+                                "Use real manufacturer URLs (e.g. https://www.ti.com/lit/ds/...). "
+                                "Required for every component."
+                            ),
+                        },
+                        "digikey_url": {
+                            "type": "string",
+                            "description": "DigiKey product page URL if available (e.g. https://www.digikey.com/en/products/detail/...).",
+                        },
                         "alternatives": {
                             "type": "array",
                             "items": {
@@ -180,6 +194,7 @@ GENERATE_REQUIREMENTS_TOOL = {
                                     "part_number": {"type": "string"},
                                     "manufacturer": {"type": "string"},
                                     "trade_off": {"type": "string"},
+                                    "datasheet_url": {"type": "string"},
                                 },
                             },
                         },
@@ -286,17 +301,41 @@ class RequirementsAgent(BaseAgent):
             if not messages or messages[-1]["role"] != "user":
                 messages.append({"role": "user", "content": user_input})
 
+            # ── Detect phase completion state ────────────────────────────────
+            # If phase is already complete (outputs exist on disk), treat follow-up
+            # messages as conversational — don't blindly force generate_requirements.
+            # Only force regeneration when the user explicitly requests it.
+            phase_status = project_context.get("phase_statuses", {}).get("P1", "pending")
+            phase_already_complete = phase_status == "completed"
+
+            _REGEN_KEYWORDS = (
+                "regenerate", "re-generate", "re generate", "rerun", "re-run",
+                "update", "redo", "add datasheet", "add link", "add url",
+                "refresh", "rebuild", "recreate", "redo phase", "run again",
+            )
+            user_wants_regen = any(kw in user_input.lower() for kw in _REGEN_KEYWORDS)
+
             # ── Force tool call when user has already answered questions ───
-            # Detect: 2+ user turns → user has answered clarifying questions → generate now.
+            # Only force if: phase not yet complete OR user explicitly wants regeneration
             prior_user_turns = sum(1 for m in messages[:-1] if m.get("role") == "user")
-            if prior_user_turns >= 1 and messages:
+            if prior_user_turns >= 1 and messages and (not phase_already_complete or user_wants_regen):
                 original = messages[-1]["content"]
                 messages[-1]["content"] = (
                     f"{original}\n\n"
                     "You have the answers you need. Call the `generate_requirements` tool NOW with the complete BOM, "
                     "requirements, block_diagram_mermaid, architecture_mermaid, design_parameters, and "
-                    "component_recommendations. Do not ask more questions."
+                    "component_recommendations — including `datasheet_url` for every component. "
+                    "Do not ask more questions."
                 )
+            elif phase_already_complete and not user_wants_regen:
+                # Phase is done — user is asking a follow-up question, answer conversationally
+                # Append a note so the LLM knows the phase is complete
+                if messages:
+                    messages[-1]["content"] = (
+                        f"{messages[-1]['content']}\n\n"
+                        "[Note: Phase 1 is already complete. Answer the user's question directly "
+                        "without calling generate_requirements unless they explicitly ask to regenerate.]"
+                    )
 
         # ── Tool handlers ──────────────────────────────────────────────────
         # generate_requirements: capture tool input via closure so we can detect
@@ -438,11 +477,15 @@ class RequirementsAgent(BaseAgent):
         comps = tool_input.get("component_recommendations", [])
         if comps:
             lines += [f"## Component Selections ({len(comps)} components)", ""]
-            for comp in comps:
-                part = comp.get("primary_part", "See BOM")
-                mfr  = comp.get("primary_manufacturer", "")
-                func = comp.get("function", "")
-                lines.append(f"- **{func}**: {part} ({mfr})")
+            lines.append("| # | Function | Part Number | Manufacturer | Datasheet |")
+            lines.append("|---|---|---|---|---|")
+            for i, comp in enumerate(comps, 1):
+                part   = comp.get("primary_part", "See BOM")
+                mfr    = comp.get("primary_manufacturer", "")
+                func   = comp.get("function", "")
+                ds_url = comp.get("datasheet_url", "").strip()
+                ds_link = f"[Datasheet]({ds_url})" if ds_url else "—"
+                lines.append(f"| {i} | {func} | {part} | {mfr} | {ds_link} |")
             lines.append("")
 
         # Block diagram (if present)
@@ -783,17 +826,39 @@ class RequirementsAgent(BaseAgent):
         ]
 
         for i, comp in enumerate(tool_input.get("component_recommendations", []), 1):
+            part = comp.get('primary_part', 'See BOM')
+            mfr  = comp.get('primary_manufacturer', '')
+            ds_url  = comp.get('datasheet_url', '').strip()
+            dk_url  = comp.get('digikey_url', '').strip()
+
+            # Primary heading with part number as a link if datasheet available
+            if ds_url:
+                part_str = f"[{part}]({ds_url})"
+            else:
+                part_str = part
+
             lines.extend([
                 f"### {i}. {comp.get('function', 'Component')}",
                 "",
-                f"**Primary Choice:** {comp.get('primary_part', 'See BOM')} ({comp.get('primary_manufacturer', '')})",
+                f"**Primary Choice:** {part_str} ({mfr})",
                 "",
                 f"*{comp.get('primary_description', '')}*",
                 "",
             ])
 
-            # Key specs
-            specs = comp.get("primary_key_specs", {})
+            # Quick-link row for datasheet / DigiKey
+            links = []
+            if ds_url:
+                links.append(f"[📄 Datasheet]({ds_url})")
+            if dk_url:
+                links.append(f"[🛒 DigiKey]({dk_url})")
+            if links:
+                lines.append("  ".join(links))
+                lines.append("")
+
+            # Key specs — remove 'datasheet' key if LLM stuffed the URL there
+            specs = {k: v for k, v in (comp.get("primary_key_specs") or {}).items()
+                     if k.lower() not in ("datasheet", "datasheet_url", "digikey", "digikey_url")}
             if specs:
                 lines.append("| Spec | Value |")
                 lines.append("|---|---|")
@@ -806,8 +871,11 @@ class RequirementsAgent(BaseAgent):
             if alts:
                 lines.append("**Alternatives:**")
                 for alt in alts:
+                    alt_ds = alt.get('datasheet_url', '').strip()
+                    alt_pn = alt.get('part_number', '')
+                    alt_pn_str = f"[{alt_pn}]({alt_ds})" if alt_ds else alt_pn
                     lines.append(
-                        f"- **{alt.get('part_number', '')}** ({alt.get('manufacturer', '')}): "
+                        f"- **{alt_pn_str}** ({alt.get('manufacturer', '')}): "
                         f"{alt.get('trade_off', '')}"
                     )
                 lines.append("")
