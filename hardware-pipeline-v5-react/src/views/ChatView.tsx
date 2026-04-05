@@ -1295,8 +1295,13 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           }
         }
       }, 16);
-    } catch {
-      onMessages([...updated, { role: 'ai', text: 'Error connecting to backend. Make sure FastAPI is running on port 8000.' }]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isNetworkErr = !msg.startsWith('HTTP ');
+      const display = isNetworkErr
+        ? '⚠️ Cannot reach the backend.\n\nDouble-click **run.bat** in the project folder and wait for "Application startup complete", then try again.'
+        : `⚠️ Server error — ${msg}\n\nCheck the uvicorn terminal window for the full traceback.`;
+      onMessages([...updated, { role: 'ai', text: display }]);
       setStreaming('');
       setLoading(false);
     }
