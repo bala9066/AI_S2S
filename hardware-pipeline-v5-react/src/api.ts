@@ -124,4 +124,22 @@ export const api = {
       m => (m.role === 'user' || m.role === 'assistant') && m.content
     );
   },
+
+  /** Call POST /clarify — returns structured card data (tool_use forced, zero parse failures). */
+  clarifyRequirement: async (
+    id: number,
+    requirement: string,
+    designType: string = 'RF'
+  ): Promise<{
+    intro: string;
+    questions: Array<{ id: string; question: string; why: string; options: string[] }>;
+  }> => {
+    const res = await fetch(`${BASE}/api/v1/projects/${id}/clarify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirement, design_type: designType }),
+    });
+    if (!res.ok) throw new Error(`Clarify failed: ${res.status}`);
+    return res.json();
+  },
 };

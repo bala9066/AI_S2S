@@ -12,6 +12,7 @@ interface Props {
   onLanding: () => void;
   onNewProject: () => void;
   onLoadProject: () => void;
+  onLLMSettings: () => void;
 }
 
 // Visual groups to add separators between sections
@@ -29,7 +30,7 @@ function getGroupLabel(phaseId: string): string | null {
   return null;
 }
 
-export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], onSelect, onLanding, onNewProject, onLoadProject }: Props) {
+export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], onSelect, onLanding, onNewProject, onLoadProject, onLLMSettings }: Props) {
   const completedCount = completedIds.length;
   const totalAI = phases.filter(p => p.auto).length;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -129,6 +130,24 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                 >
                   <span style={{ fontSize: 13 }}>&#8629;</span>
                   Load Project
+                </button>
+                <div style={{ height: 1, background: 'var(--border2)', margin: '4px 0' }} />
+                <button
+                  onClick={() => { setMenuOpen(false); onLLMSettings(); }}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 5,
+                    background: 'transparent', border: 'none',
+                    color: 'var(--text2)', fontSize: 12.5,
+                    fontFamily: "'DM Mono',monospace", fontWeight: 400,
+                    cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    transition: 'background 0.12s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--panel2)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ fontSize: 14 }}>⚙</span>
+                  LLM Settings
                 </button>
                 <div style={{ height: 1, background: 'var(--border2)', margin: '4px 0' }} />
                 <button

@@ -9,6 +9,7 @@ import MiniTopbar from './components/MiniTopbar';
 import PhaseHeader from './components/PhaseHeader';
 import CreateProjectModal from './components/CreateProjectModal';
 import LoadProjectModal from './components/LoadProjectModal';
+import LLMSettingsModal from './components/LLMSettingsModal';
 import Toast from './components/Toast';
 import ChatView from './views/ChatView';
 import DocumentsView from './views/DocumentsView';
@@ -28,6 +29,7 @@ export default function App() {
 
   const [mode, setMode] = useState<AppMode>('landing');
   const [modal, setModal] = useState<'create' | 'load' | null>(null);
+  const [llmSettingsOpen, setLLMSettingsOpen] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [statuses, setStatuses] = useState<Statuses>({});
   const [selectedPhaseIdx, setSelectedPhaseIdx] = useState(0);
@@ -332,6 +334,27 @@ export default function App() {
     } catch (_) { setTab('documents'); }
   };
 
+  const handleSaveLLMSettings = async (settings: {
+    glm_api_key?: string;
+    deepseek_api_key?: string;
+    anthropic_api_key?: string;
+    glm_base_url?: string;
+    deepseek_base_url?: string;
+    primary_model?: string;
+    fast_model?: string;
+  }) => {
+    const res = await fetch('/api/v1/settings/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Failed to save settings');
+    }
+    return await res.json();
+  };
+
   const handleSelectPhase = (idx: number) => {
     const phase = PHASES[idx];
     if (phase.manual) {
@@ -428,6 +451,7 @@ export default function App() {
         }}
         onNewProject={() => setModal('create')}
         onLoadProject={() => setModal('load')}
+        onLLMSettings={() => setLLMSettingsOpen(true)}
       />
 
       {/* Center Content */}
@@ -502,6 +526,11 @@ export default function App() {
           onCancel={() => setModal(null)}
         />
       )}
+      <LLMSettingsModal
+        open={llmSettingsOpen}
+        onClose={() => setLLMSettingsOpen(false)}
+        onSave={handleSaveLLMSettings}
+      />
       {toast && <Toast message={toast} />}
     </div>
   );

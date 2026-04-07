@@ -397,6 +397,43 @@ async def list_documents(project_id: int):
         return []
 
 
+# ── Clarify (Phase 1 — pre-chat card generation) ──────────────────────────────
+
+class ClarifyRequest(BaseModel):
+    requirement: str
+    design_type: str = "RF"
+
+
+@app.post("/api/v1/projects/{project_id}/clarify", tags=["chat"])
+async def get_clarification_questions(project_id: int, body: ClarifyRequest):
+    """
+    Given a raw hardware requirement, return structured clarification questions
+    as interactive card data — powered by tool_use (zero parse failures).
+
+    Called once when user submits their initial requirement in P1 chat.
+    Frontend renders the returned questions as clickable option cards.
+    After all cards answered, answers are bundled into one rich message
+    and sent to POST /chat to run the P1 requirements agent.
+    """
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+
+    try:
+        from agents.requirements_agent import RequirementsAgent
+        agent = RequirementsAgent()
+        result = agent.get_clarification_questions(
+            user_requirement=body.requirement,
+            design_type=body.design_type,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        log.exception("api.clarify_failed", extra={"project_id": project_id})
+        raise HTTPException(500, f"Clarification failed: {str(exc)}")
+
+
 # ── Chat (Phase 1) ─────────────────────────────────────────────────────────────
 
 @app.post("/api/v1/projects/{project_id}/chat", tags=["chat"])
@@ -416,6 +453,112 @@ async def chat(project_id: int, body: dict):
     except Exception as exc:
         log.exception("api.chat_failed", extra={"project_id": project_id})
         raise HTTPException(500, str(exc))
+
+
+# ── LLM Settings ─────────────────────────────────────────────────────────────────
+
+class LLMSettingsRequest(BaseModel):
+    glm_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    glm_base_url: Optional[str] = None
+    deepseek_base_url: Optional[str] = None
+    primary_model: Optional[str] = None
+    fast_model: Optional[str] = None
+
+
+@app.get("/api/v1/settings/llm", tags=["settings"])
+async def get_llm_settings():
+    """
+    Get current LLM configuration settings.
+    Returns masked API keys for security.
+    """
+    def mask_key(key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        if len(key) <= 8:
+            return "•" * len(key)
+        return key[:6] + "•" * min(len(key) - 10, 12) + key[-4:]
+
+    return {
+        "glm_api_key": mask_key(settings.glm_api_key),
+        "deepseek_api_key": mask_key(settings.deepseek_api_key),
+        "anthropic_api_key": mask_key(settings.anthropic_api_key),
+        "glm_base_url": settings.glm_base_url,
+        "deepseek_base_url": settings.deepseek_base_url,
+        "primary_model": settings.primary_model,
+        "fast_model": settings.fast_model,
+        "glm_model": settings.glm_model,
+        "glm_fast_model": settings.glm_fast_model,
+    }
+
+
+@app.post("/api/v1/settings/llm", tags=["settings"])
+async def update_llm_settings(body: LLMSettingsRequest):
+    """
+    Update LLM configuration settings.
+
+    Updates environment variables and runtime settings.
+    Note: This updates the current process only; changes are not persisted
+    to .env file. For persistence, users should update .env manually.
+
+    Returns the updated settings (with masked API keys).
+    """
+    import os
+
+    def mask_key(key: Optional[str]) -> Optional[str]:
+        if not key:
+            return None
+        if len(key) <= 8:
+            return "•" * len(key)
+        return key[:6] + "•" * min(len(key) - 10, 12) + key[-4:]
+
+    # Update settings object if values are provided and non-empty
+    if body.glm_api_key is not None and body.glm_api_key.strip():
+        settings.glm_api_key = body.glm_api_key.strip()
+        os.environ["GLM_API_KEY"] = body.glm_api_key.strip()
+
+    if body.deepseek_api_key is not None and body.deepseek_api_key.strip():
+        settings.deepseek_api_key = body.deepseek_api_key.strip()
+        os.environ["DEEPSEEK_API_KEY"] = body.deepseek_api_key.strip()
+
+    if body.anthropic_api_key is not None and body.anthropic_api_key.strip():
+        settings.anthropic_api_key = body.anthropic_api_key.strip()
+        os.environ["ANTHROPIC_API_KEY"] = body.anthropic_api_key.strip()
+
+    if body.glm_base_url is not None and body.glm_base_url.strip():
+        settings.glm_base_url = body.glm_base_url.strip()
+        os.environ["GLM_BASE_URL"] = body.glm_base_url.strip()
+
+    if body.deepseek_base_url is not None and body.deepseek_base_url.strip():
+        settings.deepseek_base_url = body.deepseek_base_url.strip()
+        os.environ["DEEPSEEK_BASE_URL"] = body.deepseek_base_url.strip()
+
+    if body.primary_model is not None and body.primary_model.strip():
+        settings.primary_model = body.primary_model.strip()
+        os.environ["PRIMARY_MODEL"] = body.primary_model.strip()
+
+    if body.fast_model is not None and body.fast_model.strip():
+        settings.fast_model = body.fast_model.strip()
+        os.environ["FAST_MODEL"] = body.fast_model.strip()
+
+    log.info("api.settings_updated", extra={
+        "glm_configured": bool(settings.glm_api_key),
+        "deepseek_configured": bool(settings.deepseek_api_key),
+        "anthropic_configured": bool(settings.anthropic_api_key),
+    })
+
+    return {
+        "glm_api_key": mask_key(settings.glm_api_key),
+        "deepseek_api_key": mask_key(settings.deepseek_api_key),
+        "anthropic_api_key": mask_key(settings.anthropic_api_key),
+        "glm_base_url": settings.glm_base_url,
+        "deepseek_base_url": settings.deepseek_base_url,
+        "primary_model": settings.primary_model,
+        "fast_model": settings.fast_model,
+        "glm_model": settings.glm_model,
+        "glm_fast_model": settings.glm_fast_model,
+    }
 
 
 # ── Pipeline (P2→P8c background execution) ────────────────────────────────────
