@@ -17,8 +17,53 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from agents.base_agent import BaseAgent
+import anthropic as _anthropic
+
+from agents.base_agent import BaseAgent, _make_sync_httpx_client
 from config import settings
+
+# ── Clarification card tool (tool_use forced — zero free-text risk) ──────────
+
+CLARIFICATION_TOOL = {
+    "name": "show_clarification_cards",
+    "description": (
+        "Display structured clarification questions as interactive cards. "
+        "Call this with every question needed to fully specify the hardware requirement."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "intro": {
+                "type": "string",
+                "description": "One sentence acknowledging the requirement (max 20 words)"
+            },
+            "questions": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":       {"type": "string", "description": "Short id: q1, q2 …"},
+                        "question": {"type": "string", "description": "Full question ending with ?"},
+                        "why":      {"type": "string", "description": "Why this matters (max 6 words)"},
+                        "options":  {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string"}}
+                    },
+                    "required": ["id", "question", "why", "options"]
+                }
+            }
+        },
+        "required": ["intro", "questions"]
+    }
+}
+
+_CLARIFICATION_SYSTEM = (
+    "You are a senior hardware design engineer at Data Patterns India. "
+    "When given a hardware specification, identify the 3-5 most critical clarifying questions "
+    "needed before beginning design — parameters that fundamentally affect component selection, "
+    "architecture, and compliance requirements. "
+    "You MUST call the show_clarification_cards tool. Do NOT respond with free text."
+)
 
 _APPROVAL_KEYWORDS = {"approve", "approved", "yes", "ok", "okay", "looks good",
                       "good", "correct", "proceed", "go ahead", "lgtm", "perfect", "great"}
@@ -299,6 +344,55 @@ class RequirementsAgent(BaseAgent):
             design_type=project_context.get("design_type", "general"),
             project_name=project_context.get("name", "Unnamed Project"),
         )
+
+    def get_clarification_questions(
+        self,
+        user_requirement: str,
+        design_type: Optional[str] = "RF",
+    ) -> dict:
+        """
+        Use tool_use (forced) to return structured clarification cards.
+        The AI cannot respond in free text — it MUST call show_clarification_cards.
+
+        Returns:
+            { "intro": str, "questions": [{ "id", "question", "why", "options" }] }
+        """
+        # Prefer GLM, fall back to Anthropic if configured
+        if not settings.glm_api_key and not self._anthropic_client:
+            raise ValueError("No LLM API key configured — set GLM_API_KEY or ANTHROPIC_API_KEY.")
+
+        # Determine which client and model to use
+        use_glm = bool(settings.glm_api_key)
+        model = settings.glm_fast_model if use_glm else settings.fast_model
+
+        if use_glm:
+            # Use GLM via Z.AI (Anthropic-compatible endpoint)
+            _hc = _make_sync_httpx_client()
+            client = _anthropic.Anthropic(
+                api_key=settings.glm_api_key,
+                base_url=settings.glm_base_url,
+                **({"http_client": _hc} if _hc else {}),
+            )
+        else:
+            # Fall back to Anthropic client
+            client = self._anthropic_client
+
+        response = client.messages.create(
+            model=model,
+            max_tokens=1000,
+            system=_CLARIFICATION_SYSTEM,
+            tools=[CLARIFICATION_TOOL],
+            tool_choice={"type": "tool", "name": "show_clarification_cards"},
+            messages=[
+                {"role": "user", "content": f"Design type: {design_type}\nRequirement: {user_requirement}"}
+            ],
+        )
+
+        for block in response.content:
+            if block.type == "tool_use" and block.name == "show_clarification_cards":
+                return block.input   # Already a clean Python dict — no parsing needed
+
+        raise ValueError(f"No tool_use block returned. Check API key and model availability (model: {model}).")
 
     async def execute(self, project_context: dict, user_input: str) -> dict:
         """
