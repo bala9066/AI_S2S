@@ -1154,6 +1154,17 @@ function cleanAiText(text: string): string {
     .trim();
 }
 
+// ── Clarification-flow types & constants ─────────────────────────────────────
+interface ClarificationQuestion { id: string; question: string; why: string; options: string[]; }
+interface ClarificationData { intro: string; questions: ClarificationQuestion[]; }
+const Q_COLORS_CLARIFY = ['var(--teal)', 'var(--blue)', '#f59e0b', '#8b5cf6', 'var(--teal)'];
+const CLARIFY_SUGGESTIONS = [
+  { label: 'RF receiver, 5-18GHz wideband', icon: '[RF]' },
+  { label: 'BLDC motor controller, 48V, 10kW', icon: '[Motor]' },
+  { label: 'FPGA-based digital signal processor', icon: '[FPGA]' },
+  { label: 'Power supply, 24V to 5V, 10A', icon: '[Power]' },
+];
+
 // ---- Props ----
 interface Props {
   project: Project | null;
@@ -1181,6 +1192,16 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   // Driven by pipelineStarted prop (P2+ has in_progress or completed activity),
   // NOT just by phaseStatus — P1 can be done without the pipeline having started.
   const [approveClicked, setApproveClicked] = useState(pipelineStarted);
+
+  // ── Pre-stage clarification flow state ────────────────────────────────────
+  type PreStage = 'waiting' | 'loading-clarify' | 'clarifying' | 'done';
+  const [preStage, setPreStage] = useState<PreStage>(
+    phaseStatus === 'completed' ? 'done' : 'waiting'
+  );
+  const [requirement, setRequirement] = useState('');
+  const [clarification, setClarification] = useState<ClarificationData | null>(null);
+  const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
+  const [clarifyError, setClarifyError] = useState('');
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
@@ -1216,6 +1237,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           role: m.role === 'assistant' ? 'ai' : 'user' as 'user' | 'ai',
           text: m.content,
         })));
+        setPreStage('done'); // skip clarification flow when history exists
       }
     } catch { /* silent */ }
     setHistoryLoaded(true);
@@ -1307,6 +1329,44 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     }
   };
 
+  // ── Pre-stage clarification handlers ─────────────────────────────────────
+  const handleRequirementSubmit = async (req: string) => {
+    if (!req.trim() || !project) return;
+    setRequirement(req);
+    setPreStage('loading-clarify');
+    setClarifyError('');
+    try {
+      const data = await api.clarifyRequirement(
+        project.id, req, project.design_type || 'RF'
+      );
+      setClarification(data);
+      setClarifyAnswers({});
+      setPreStage('clarifying');
+    } catch {
+      setClarifyError('Could not load clarification questions. Please try again.');
+      setPreStage('waiting');
+    }
+  };
+
+  const handleClarifyAnswer = (qId: string, opt: string) => {
+    setClarifyAnswers(prev => ({ ...prev, [qId]: opt }));
+  };
+
+  const allClarifyAnswered =
+    clarification !== null &&
+    clarification.questions.every(q => clarifyAnswers[q.id] !== undefined);
+
+  const handleConfirmAnswers = () => {
+    if (!clarification || !allClarifyAnswered) return;
+    const lines = clarification.questions
+      .map(q => `${q.question} -> ${clarifyAnswers[q.id]}`)
+      .join('\n');
+    const fullMessage = `${requirement}\n\n${lines}`;
+    setPreStage('done');
+    setInput(''); // Clear the chat input field
+    sendMessage(fullMessage);
+  };
+
   // Derive last AI message text for QuickReplyPanel
   const lastAiText = messages.length > 0 && messages[messages.length - 1].role === 'ai'
     ? messages[messages.length - 1].text
@@ -1314,12 +1374,123 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
-      {/* Scrollable messages area */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 80px 0' }}>
-        {/* Welcome card — show only when no messages */}
-        {messages.length === 0 && !loading && (
-          <WelcomeCard color={color} onSuggestion={sendMessage} />
-        )}
+      {preStage !== 'done' ? (
+        /* ── Pre-stage clarification flow ── */
+        <>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0 80px' }}>
+            {/* waiting: suggestion chips */}
+            {preStage === 'waiting' && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', padding: '32px 16px', gap: 24 }}>
+                {clarifyError && (
+                  <div style={{ fontSize: 12, color: '#f59e0b', textAlign: 'center' }}>{clarifyError}</div>
+                )}
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Describe your hardware project</div>
+                  <div style={{ fontSize: 11, color: 'var(--text4)', letterSpacing: '0.08em', textTransform: 'uppercase' as const, fontFamily: "'DM Mono',monospace" }}>or pick a quick start</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, width: '100%', maxWidth: 480 }}>
+                  {CLARIFY_SUGGESTIONS.map(s => (
+                    <button key={s.label} onClick={() => handleRequirementSubmit(s.label)}
+                      style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 13px', background: 'var(--panel)', border: `1px solid ${color}22`, borderRadius: 6, cursor: 'pointer', textAlign: 'left' as const, color: 'var(--text2)', fontFamily: "'DM Mono',monospace", fontSize: 12, lineHeight: 1.5 }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = color; e.currentTarget.style.color = color; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = `${color}22`; e.currentTarget.style.color = 'var(--text2)'; }}>
+                      <span style={{ fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
+                      <span>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* loading-clarify: spinner */}
+            {preStage === 'loading-clarify' && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 12 }}>
+                <div style={{ width: 16, height: 16, border: '2px solid rgba(0,198,167,0.3)', borderTopColor: color, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                <span style={{ fontSize: 13, color: 'var(--text3)' }}>Analysing specification...</span>
+              </div>
+            )}
+            {/* clarifying: question cards */}
+            {preStage === 'clarifying' && clarification && (
+              <div style={{ padding: '0 4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
+                  <div style={{ background: `${color}18`, border: `1px solid ${color}33`, borderRadius: '8px 8px 2px 8px', padding: '9px 13px', maxWidth: '80%', fontSize: 13, color: 'var(--text)', lineHeight: 1.5, fontFamily: "'DM Mono',monospace" }}>
+                    {requirement}
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6, marginBottom: 16 }}>
+                  {clarification.intro}
+                </div>
+                {clarification.questions.map((q, qi) => {
+                  const qColor = Q_COLORS_CLARIFY[qi % Q_COLORS_CLARIFY.length];
+                  const sel = clarifyAnswers[q.id];
+                  return (
+                    <div key={q.id} style={{ marginBottom: 18 }}>
+                      <div style={{ fontSize: 10, color: qColor, letterSpacing: '0.1em', textTransform: 'uppercase' as const, fontWeight: 600, fontFamily: "'DM Mono',monospace", marginBottom: 4 }}>
+                        Q{qi + 1} &middot; {q.why}
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, marginBottom: 9 }}>
+                        {q.question}
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 7 }}>
+                        {q.options.map(opt => {
+                          const isSel = sel === opt;
+                          return (
+                            <button key={opt} onClick={() => handleClarifyAnswer(q.id, opt)}
+                              style={{ padding: '6px 13px', fontSize: 12, fontFamily: "'DM Mono',monospace", background: isSel ? `${qColor}22` : 'var(--panel)', border: `0.5px solid ${isSel ? qColor : qColor + '44'}`, borderRadius: 4, cursor: 'pointer', color: isSel ? 'var(--text)' : 'var(--text3)', transition: 'all 0.12s' }}
+                              onMouseEnter={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor; e.currentTarget.style.color = 'var(--text)'; } }}
+                              onMouseLeave={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor + '44'; e.currentTarget.style.color = 'var(--text3)'; } }}>
+                              {isSel ? '\u2713 ' : ''}{opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                {allClarifyAnswered && (
+                  <div style={{ paddingBottom: 16 }}>
+                    <button onClick={handleConfirmAnswers}
+                      style={{ width: '100%', padding: '11px 0', background: `${color}12`, border: `0.5px solid ${color}80`, borderRadius: 4, color, fontSize: 13, fontFamily: "'DM Mono',monospace", cursor: 'pointer', letterSpacing: '0.02em' }}>
+                      Generate requirements spec &rarr;
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+          {(preStage === 'waiting' || preStage === 'clarifying') && (
+            <div style={{ position: 'sticky', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent, var(--navy) 20%)', padding: '16px 0 4px' }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <textarea
+                  value={requirement}
+                  onChange={e => setRequirement(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRequirementSubmit(requirement); } }}
+                  placeholder="Type your hardware requirement..."
+                  rows={1}
+                  style={{ flex: 1, background: 'var(--panel)', border: '1px solid var(--panel3)', borderRadius: 6, padding: '11px 14px', fontSize: 13, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'none' as const, outline: 'none', lineHeight: 1.5, transition: 'border-color 0.2s' }}
+                  onFocus={e => { e.target.style.borderColor = color; }}
+                  onBlur={e => { e.target.style.borderColor = 'var(--panel3)'; }}
+                />
+                <button
+                  onClick={() => handleRequirementSubmit(requirement)}
+                  disabled={!requirement.trim()}
+                  style={{ padding: '0 18px', borderRadius: 6, cursor: requirement.trim() ? 'pointer' : 'default', fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 700, background: requirement.trim() ? color : 'var(--panel2)', border: 'none', color: requirement.trim() ? '#070b14' : 'var(--text4)', transition: 'all 0.15s', whiteSpace: 'nowrap' as const }}>
+                  Send &rarr;
+                </button>
+              </div>
+            </div>
+          )}
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes blink { 50% { opacity: 0; } } @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
+        </>
+      ) : (
+        /* ── Chat flow ── */
+        <>
+          {/* Scrollable messages area */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 80px 0' }}>
+            {/* Welcome card — show only when no messages */}
+            {messages.length === 0 && !loading && (
+              <WelcomeCard color={color} onSuggestion={sendMessage} />
+            )}
 
         {/* Message history */}
         {messages.map((msg, i) => (
@@ -1460,6 +1631,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
         @keyframes blink { 50% { opacity: 0; } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
+        </>
+      )}
     </div>
   );
 }
