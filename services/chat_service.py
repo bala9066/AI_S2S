@@ -60,7 +60,12 @@ class ChatService:
 
         # Detect whether P1 was already completed (enables refinement mode in agent)
         phase_statuses = proj.get("phase_statuses", {})
-        p1_complete = phase_statuses.get("P1") == "completed"
+        # phase_statuses values are dicts: {"status": "completed", "updated_at": "..."}
+        _p1_val = phase_statuses.get("P1", {})
+        p1_complete = (
+            (_p1_val.get("status") if isinstance(_p1_val, dict) else _p1_val)
+            == "completed"
+        )
 
         # Call the agent
         from agents.requirements_agent import RequirementsAgent

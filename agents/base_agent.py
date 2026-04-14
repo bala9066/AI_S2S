@@ -51,20 +51,61 @@ def _get_proxy() -> Optional[str]:
     return None
 
 
-def _make_sync_httpx_client() -> Optional[httpx.Client]:
-    proxy = _get_proxy()
-    if proxy:
-        logger.info("base_agent.using_proxy (sync): %s", proxy)
-        return httpx.Client(proxy=proxy, timeout=120.0)
-    return None
+def _is_no_proxy(host: str) -> bool:
+    """Check if a hostname should bypass the proxy (NO_PROXY env var)."""
+    no_proxy = (
+        os.environ.get("NO_PROXY")
+        or os.environ.get("no_proxy")
+        or ""
+    )
+    if not no_proxy:
+        return False
+    domains = {d.strip().lstrip(".").lower() for d in no_proxy.split(",") if d.strip()}
+    host_lower = host.lower()
+    return any(host_lower == d or host_lower.endswith("." + d) for d in domains)
 
 
-def _make_async_httpx_client() -> Optional[httpx.AsyncClient]:
+_MITM_CA_PATHS = [
+    "/etc/ssl/certs/mitm-proxy-ca.pem",   # Cowork sandbox
+    "/usr/local/share/ca-certificates/mitm-proxy-ca.crt",
+]
+
+
+def _get_ssl_verify() -> str | bool:
+    """Return CA bundle path for the sandbox proxy, or True for default system certs."""
+    # Allow override via env var
+    ca_bundle = os.environ.get("SSL_CA_BUNDLE", "")
+    if ca_bundle and os.path.exists(ca_bundle):
+        return ca_bundle
+    # Auto-detect MITM proxy CA (present in Cowork sandbox)
+    for path in _MITM_CA_PATHS:
+        if os.path.exists(path):
+            return path
+    return True  # Use system/default cert store
+
+
+def _make_sync_httpx_client(target_host: Optional[str] = None) -> Optional[httpx.Client]:
     proxy = _get_proxy()
-    if proxy:
-        logger.info("base_agent.using_proxy (async): %s", proxy)
-        return httpx.AsyncClient(proxy=proxy, timeout=120.0)
-    return None
+    if not proxy:
+        return None
+    if target_host and _is_no_proxy(target_host):
+        logger.info("base_agent.direct_connection (no_proxy bypass): %s", target_host)
+        return None  # Direct connection — no proxy
+    verify = _get_ssl_verify()
+    logger.info("base_agent.using_proxy (sync): %s -> %s (verify=%s)", target_host or "?", proxy, verify)
+    return httpx.Client(proxy=proxy, verify=verify, timeout=120.0)
+
+
+def _make_async_httpx_client(target_host: Optional[str] = None) -> Optional[httpx.AsyncClient]:
+    proxy = _get_proxy()
+    if not proxy:
+        return None
+    if target_host and _is_no_proxy(target_host):
+        logger.info("base_agent.direct_connection (no_proxy bypass): %s", target_host)
+        return None  # Direct connection — no proxy
+    verify = _get_ssl_verify()
+    logger.info("base_agent.using_proxy (async): %s -> %s (verify=%s)", target_host or "?", proxy, verify)
+    return httpx.AsyncClient(proxy=proxy, verify=verify, timeout=120.0)
 
 
 class BaseAgent(ABC):
@@ -97,7 +138,7 @@ class BaseAgent(ABC):
         # Initialize Anthropic client (Claude API)
         self._anthropic_client: Optional[anthropic.Anthropic] = None
         if settings.anthropic_api_key:
-            _hc = _make_sync_httpx_client()
+            _hc = _make_sync_httpx_client("api.anthropic.com")
             self._anthropic_client = anthropic.Anthropic(
                 api_key=settings.anthropic_api_key,
                 **( {"http_client": _hc} if _hc else {} ),
@@ -106,7 +147,7 @@ class BaseAgent(ABC):
         # Initialize DeepSeek client (OpenAI-compatible API)
         self._deepseek_client: Optional[AsyncOpenAI] = None
         if settings.deepseek_api_key:
-            _ahc = _make_async_httpx_client()
+            _ahc = _make_async_httpx_client("api.deepseek.com")
             self._deepseek_client = AsyncOpenAI(
                 api_key=settings.deepseek_api_key,
                 base_url=settings.deepseek_base_url,
@@ -382,8 +423,10 @@ class BaseAgent(ABC):
 
         _proxy = _get_proxy()
         _client_kwargs: dict = {"timeout": 120.0}
-        if _proxy:
+        # Ollama is local — never route through proxy
+        if _proxy and not _is_no_proxy("localhost"):
             _client_kwargs["proxy"] = _proxy
+            _client_kwargs["verify"] = _get_ssl_verify()
         async with httpx.AsyncClient(**_client_kwargs) as client:
             response = await client.post(
                 f"{settings.ollama_base_url}/api/chat",
@@ -423,8 +466,8 @@ class BaseAgent(ABC):
         if not settings.glm_api_key:
             raise RuntimeError("GLM API key not configured")
 
-        # Create a one-off Anthropic client pointed at Z.AI (with proxy if configured)
-        _hc = _make_sync_httpx_client()
+        # Create a one-off Anthropic client pointed at Z.AI (bypass proxy via NO_PROXY)
+        _hc = _make_sync_httpx_client("api.z.ai")
         glm_client = anthropic.Anthropic(
             api_key=settings.glm_api_key,
             base_url=settings.glm_base_url,

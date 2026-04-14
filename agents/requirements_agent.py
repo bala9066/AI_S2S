@@ -449,8 +449,8 @@ class RequirementsAgent(BaseAgent):
                 messages.append({"role": "user", "content": user_input})
 
             # ── Detect phase completion state ────────────────────────────────
-            phase_status = project_context.get("phase_statuses", {}).get("P1", "pending")
-            phase_already_complete = phase_status == "completed"
+            # project_context passes "p1_complete" boolean from chat_service
+            phase_already_complete = bool(project_context.get("p1_complete", False))
 
             # ── Detect if follow-up is a hardware specification addition ─────
             # Explicit regen keywords the user might type:

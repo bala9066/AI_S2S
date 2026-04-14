@@ -6,10 +6,23 @@ Compatible with Python 3.10+ (no pydantic-settings dependency).
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
-# Load .env file
+# Load .env file (does NOT override already-set env vars — intentional)
 load_dotenv(Path(__file__).parent / ".env")
+
+# Extend NO_PROXY from .env, merging with any system-level NO_PROXY.
+# This is needed because load_dotenv won't override system env vars, but the
+# Cowork sandbox sets NO_PROXY to only local ranges while our .env adds LLM domains.
+_dotenv_raw = dotenv_values(Path(__file__).parent / ".env")
+_dotenv_no_proxy = _dotenv_raw.get("NO_PROXY", "")
+if _dotenv_no_proxy:
+    _sys_no_proxy = os.environ.get("NO_PROXY", "") or os.environ.get("no_proxy", "")
+    _existing = {d.strip() for d in _sys_no_proxy.split(",") if d.strip()}
+    _extra    = {d.strip() for d in _dotenv_no_proxy.split(",") if d.strip()}
+    _merged   = ",".join(sorted(_existing | _extra))
+    os.environ["NO_PROXY"] = _merged
+    os.environ["no_proxy"] = _merged
 
 
 def _env(key: str, default: str = "") -> str:
