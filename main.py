@@ -619,8 +619,14 @@ async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
     if not proj:
         raise HTTPException(404, f"Project {project_id} not found")
 
-    if _project_svc().get_phase_status(project_id, "P1") != "completed":
+    p1_status = _project_svc().get_phase_status(project_id, "P1")
+    if p1_status not in ("completed", "draft_pending"):
         raise HTTPException(400, "Phase 1 must be completed before running the pipeline")
+
+    # User clicked "Approve & Start Pipeline" — if P1 is in draft_pending, promote to completed
+    if p1_status == "draft_pending":
+        _project_svc().set_phase_status(project_id, "P1", "completed")
+        log.info("api.p1_approved_and_completed", extra={"project_id": project_id})
 
     svc = _pipeline_svc()
     background_tasks.add_task(svc.run_pipeline, project_id)
