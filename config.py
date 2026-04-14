@@ -49,15 +49,24 @@ class Settings:
         self.deepseek_fast_model = _env("DEEPSEEK_FAST_MODEL", "deepseek-chat")
 
         # --- LLM Models ---
-        # Priority: DeepSeek-V3 > GLM-4.7 > Ollama local > GLM fallback
-        # If DEEPSEEK_API_KEY is set, DeepSeek-V3 becomes primary automatically.
+        # Priority (auto-detected from available API keys):
+        #   GLM via Z.AI  → primary when GLM_API_KEY is set (cheapest, Anthropic-compatible API)
+        #   DeepSeek-V3   → fallback when DEEPSEEK_API_KEY is set
+        #   Ollama local  → air-gap / last resort
+        # Override any of these via PRIMARY_MODEL / FAST_MODEL env vars in .env.
+        _has_glm      = bool(_env("GLM_API_KEY", ""))
         _has_deepseek = bool(_env("DEEPSEEK_API_KEY", ""))
         self.primary_model = _env("PRIMARY_MODEL",
-            "deepseek-chat" if _has_deepseek else "glm-4.7")
+            "glm-4.7"      if _has_glm      else
+            "deepseek-chat" if _has_deepseek else
+            "ollama/qwen2.5-coder:32b")
         self.fast_model = _env("FAST_MODEL",
-            "deepseek-chat" if _has_deepseek else "glm-4.5-air")
+            "glm-4.5-air"  if _has_glm      else
+            "deepseek-chat" if _has_deepseek else
+            "ollama/qwen2.5-coder:32b")
         self.fallback_model = _env("FALLBACK_MODEL",
-            "glm-4.7" if _has_deepseek else "ollama/qwen2.5-coder:32b")
+            "deepseek-chat" if (_has_glm and _has_deepseek) else
+            "ollama/qwen2.5-coder:32b")
         self.last_resort_model = _env("LAST_RESORT_MODEL", "ollama/qwen2.5-coder:32b")
 
         # --- Ollama (Air-Gap) ---

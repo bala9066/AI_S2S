@@ -114,16 +114,25 @@ class ProjectService:
 
     # ── Phase status ────────────────────────────────────────────────────────
 
+    # All AI phase IDs downstream of P1 — must be reset when P1 requirements change
+    _DOWNSTREAM_AI_PHASES = ["P2", "P3", "P4", "P6", "P7a", "P8a", "P8b", "P8c"]
+
     def set_phase_status(
         self,
         project_id: int,
         phase_id: str,
         status: str,            # "in_progress" | "completed" | "failed"
         extra: Optional[dict] = None,
+        reset_downstream: bool = False,
     ) -> dict:
         """
         Atomically update a phase's status in the DB.
         Returns the full updated phase_statuses dict.
+
+        Args:
+            reset_downstream: When True AND phase_id == 'P1' AND status == 'completed',
+                              reset all downstream AI phases to 'pending' because P1
+                              requirements changed and all outputs are now stale.
         """
         session = get_session()
         try:
@@ -132,10 +141,25 @@ class ProjectService:
                 raise ValueError(f"Project {project_id} not found")
 
             statuses = dict(p.phase_statuses or {})
+            was_already_complete = statuses.get(phase_id, {}).get("status") == "completed"
             entry: dict = {"status": status, "updated_at": datetime.utcnow().isoformat()}
             if extra:
                 entry.update(extra)
             statuses[phase_id] = entry
+
+            # When P1 is RE-completed (was already done → new requirements submitted),
+            # reset all downstream AI phases to pending so they pick up fresh requirements.
+            if (phase_id == "P1" and status == "completed"
+                    and (reset_downstream or was_already_complete)):
+                ts = datetime.utcnow().isoformat()
+                for ds_phase in self._DOWNSTREAM_AI_PHASES:
+                    if ds_phase in statuses:
+                        statuses[ds_phase] = {"status": "pending", "updated_at": ts}
+                log.info(
+                    "phase.downstream_reset: P1 requirements updated — "
+                    "downstream phases reset to pending",
+                    extra={"project_id": project_id},
+                )
 
             p.phase_statuses = statuses
             flag_modified(p, "phase_statuses")  # force SQLAlchemy to detect JSON column change
@@ -245,6 +269,7 @@ class ProjectService:
         phase_id: str,
         status: str,
         extra: Optional[dict] = None,
+        reset_downstream: bool = False,
     ) -> dict:
         """Async version of set_phase_status — safe to call from background tasks."""
         factory = get_async_session_factory()
@@ -258,10 +283,25 @@ class ProjectService:
                     raise ValueError(f"Project {project_id} not found")
 
                 statuses = dict(p.phase_statuses or {})
+                was_already_complete = statuses.get(phase_id, {}).get("status") == "completed"
                 entry: dict = {"status": status, "updated_at": datetime.utcnow().isoformat()}
                 if extra:
                     entry.update(extra)
                 statuses[phase_id] = entry
+
+                # When P1 requirements are updated (re-completed), reset all downstream
+                # AI phases to pending so they pick up the fresh requirements.md.
+                if (phase_id == "P1" and status == "completed"
+                        and (reset_downstream or was_already_complete)):
+                    ts = datetime.utcnow().isoformat()
+                    for ds_phase in self._DOWNSTREAM_AI_PHASES:
+                        if ds_phase in statuses:
+                            statuses[ds_phase] = {"status": "pending", "updated_at": ts}
+                    log.info(
+                        "phase.downstream_reset (async): P1 updated — downstream set to pending",
+                        extra={"project_id": project_id},
+                    )
+
                 p.phase_statuses = statuses
                 flag_modified(p, "phase_statuses")  # force SQLAlchemy to detect JSON column change
                 if status == "completed" and phase_id == "P1":

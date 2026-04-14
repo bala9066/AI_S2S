@@ -1202,6 +1202,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   const [clarification, setClarification] = useState<ClarificationData | null>(null);
   const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
   const [clarifyError, setClarifyError] = useState('');
+  const [retryText, setRetryText] = useState('');
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
@@ -1283,6 +1284,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
   const sendMessage = async (text: string) => {
     if (!project || !text.trim() || loading) return;
+    setRetryText(''); // clear any previous retry state on fresh send
     const updated = [...messages, { role: 'user' as const, text }];
     onMessages(updated);
     setInput('');
@@ -1326,7 +1328,16 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       onMessages([...updated, { role: 'ai', text: display }]);
       setStreaming('');
       setLoading(false);
+      setRetryText(text); // store so user can retry without re-typing
     }
+  };
+
+  const handleRetry = () => {
+    if (!retryText) return;
+    // Remove the last two messages (failed user bubble + error AI bubble) before retrying
+    const trimmed = messages.slice(0, -2);
+    onMessages(trimmed);
+    sendMessage(retryText);
   };
 
   // ── Pre-stage clarification handlers ─────────────────────────────────────
@@ -1367,10 +1378,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     sendMessage(fullMessage);
   };
 
-  // Derive last AI message text for QuickReplyPanel
-  const lastAiText = messages.length > 0 && messages[messages.length - 1].role === 'ai'
-    ? messages[messages.length - 1].text
-    : '';
+  // lastAiText intentionally removed — QuickReplyPanel no longer shown in chat flow.
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
@@ -1458,7 +1466,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
             )}
             <div ref={bottomRef} />
           </div>
-          {(preStage === 'waiting' || preStage === 'clarifying') && (
+          {preStage === 'waiting' && (
             <div style={{ position: 'sticky', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent, var(--navy) 20%)', padding: '16px 0 4px' }}>
               <div style={{ display: 'flex', gap: 8 }}>
                 <textarea
@@ -1497,16 +1505,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           <ChatMessageItem key={i} msg={msg} color={color} />
         ))}
 
-        {/* QuickReplyPanel — shows after last AI message with questions */}
-        {lastAiText && !loading && !streaming && (
-          <QuickReplyPanel
-            aiMessage={lastAiText}
-            designDescription={project?.description || project?.name || ''}
-            color={color}
-            onSend={sendMessage}
-            disabled={loading}
-          />
-        )}
+        {/* QuickReplyPanel removed — clarification is handled by the pre-stage flow
+            before the first message. Users type freely after that. */}
 
         {/* Streaming / loading indicator */}
         {(loading || streaming) && (
@@ -1564,6 +1564,22 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
             <span style={{ fontSize: 12, color: 'var(--text2)' }}>
               Pipeline is running — check <strong style={{ color }}>Documents</strong> tab for generated outputs
             </span>
+          </div>
+        )}
+
+        {/* Retry button — shown when last send failed (network / server error) */}
+        {retryText && !loading && (
+          <div style={{ textAlign: 'center', marginBottom: 12 }}>
+            <button
+              onClick={handleRetry}
+              style={{
+                padding: '9px 22px', borderRadius: 6, cursor: 'pointer',
+                fontSize: 12, fontFamily: "'DM Mono', monospace", fontWeight: 700,
+                background: `${color}18`, border: `1px solid ${color}66`,
+                color, transition: 'all 0.15s',
+              }}>
+              ↺ Retry last message
+            </button>
           </div>
         )}
 

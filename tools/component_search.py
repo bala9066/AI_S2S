@@ -17,10 +17,20 @@ from pathlib import Path
 try:
     import chromadb
     CHROMADB_AVAILABLE = True
-except (ImportError, Exception) as e:
+except ImportError:
     CHROMADB_AVAILABLE = False
     chromadb = None  # type: ignore
-    logging.info("ChromaDB not available (optional): %s", e)
+    logging.warning(
+        "ChromaDB not installed — component vector search disabled. "
+        "Run: pip install chromadb --break-system-packages"
+    )
+except Exception as e:
+    CHROMADB_AVAILABLE = False
+    chromadb = None  # type: ignore
+    logging.warning(
+        "ChromaDB import failed (Windows Pydantic v2 issue?) — component search disabled. "
+        "Error: %s", e
+    )
 
 from config import settings
 from schemas.component import Component, ComponentSearchResult
@@ -45,7 +55,11 @@ class ComponentSearchTool:
     def _initialize(self):
         """Initialize ChromaDB client and collection."""
         if not CHROMADB_AVAILABLE:
-            logger.warning("ChromaDB not available, component search disabled")
+            logger.warning(
+                "ChromaDB not available — component vector search disabled. "
+                "The pipeline will still run; component selection uses LLM knowledge instead. "
+                "To enable ChromaDB: pip install chromadb"
+            )
             self._client = None
             self._collection = None
             return

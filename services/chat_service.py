@@ -101,8 +101,20 @@ class ChatService:
 
         # Update phase status atomically in DB (async)
         if phase_complete:
-            await self._proj_svc.async_set_phase_status(project_id, "P1", "completed")
-            log.info("chat.phase1_complete", extra={"project_id": project_id})
+            # Pass reset_downstream=True when P1 was already complete — this means the user
+            # added follow-up requirements, so all downstream phases are now stale and must
+            # be re-run to incorporate the updated requirements.md.
+            await self._proj_svc.async_set_phase_status(
+                project_id, "P1", "completed",
+                reset_downstream=p1_complete,   # p1_complete = was already done before this call
+            )
+            if p1_complete:
+                log.info(
+                    "chat.phase1_requirements_updated — downstream phases reset to pending",
+                    extra={"project_id": project_id},
+                )
+            else:
+                log.info("chat.phase1_complete", extra={"project_id": project_id})
         elif draft_pending:
             await self._proj_svc.async_set_phase_status(project_id, "P1", "draft_pending")
             log.info("chat.draft_pending", extra={"project_id": project_id})

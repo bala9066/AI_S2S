@@ -8,6 +8,9 @@ interface Props {
   statuses: Statuses;
   completedIds: string[];
   stalePhaseIds?: string[];
+  /** True once the user has clicked "Approve & Run Pipeline" — used to
+   *  distinguish P1 "requirements captured (review pending)" from "approved & running" */
+  pipelineStarted?: boolean;
   onSelect: (idx: number) => void;
   onLanding: () => void;
   onNewProject: () => void;
@@ -30,7 +33,7 @@ function getGroupLabel(phaseId: string): string | null {
   return null;
 }
 
-export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], onSelect, onLanding, onNewProject, onLoadProject, onLLMSettings }: Props) {
+export default function LeftPanel({ phases, selectedIdx, statuses, completedIds, stalePhaseIds = [], pipelineStarted = false, onSelect, onLanding, onNewProject, onLoadProject, onLLMSettings }: Props) {
   const completedCount = completedIds.length;
   const totalAI = phases.filter(p => p.auto).length;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -315,6 +318,9 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                     }} />
                   ) : isFailed ? (
                     <span style={{ fontSize: 13 }}>✕</span>
+                  ) : isComplete && phase.id === 'P1' && !pipelineStarted ? (
+                    // P1 requirements captured but not yet approved — show pending icon
+                    <span style={{ fontSize: 12 }}>⭮</span>
                   ) : isComplete && !phase.manual ? (
                     <span style={{ fontSize: 13 }}>✓</span>
                   ) : phase.manual ? (
@@ -350,6 +356,8 @@ export default function LeftPanel({ phases, selectedIdx, statuses, completedIds,
                         ? '✕ Failed — click to retry'
                         : isRunning
                         ? '⚡ Running...'
+                        : isComplete && phase.id === 'P1' && !pipelineStarted
+                        ? '⭮ REVIEW READY'
                         : isComplete
                         ? '✓ Complete'
                         : '⚡ AUTO'}

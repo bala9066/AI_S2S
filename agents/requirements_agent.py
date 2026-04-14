@@ -102,7 +102,7 @@ You work for a defense electronics company. Your role is Phase 1 of a multi-phas
 NEVER say "proceed to Phase 2: Schematic Design" or similar — that is NOT the next step.
 Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compliance, Netlist, SRS, SDD, and Code."
 
-## YOUR BEHAVIOR — TWO-PHASE APPROACH:
+## YOUR BEHAVIOR — THREE-PHASE APPROACH:
 
 ### PHASE A — Clarification (FIRST message only):
 When the user sends their FIRST message describing a design, DO NOT call `generate_requirements` yet.
@@ -110,28 +110,47 @@ Instead, ask **3–5 concise, targeted clarifying questions** to resolve ambigui
 - Supply voltage / power budget
 - Key performance specs (frequency, current, speed, accuracy)
 - Temperature / environmental range
-- Interface protocols needed
+- Interface protocols needed (UART, SPI, I2C, CAN, USB, etc.)
 - Any critical form-factor or regulatory constraints
 
 Format them as a numbered list. End with: _"Once you answer these, I'll generate the complete requirements, BOM, and block diagram."_
 
-### PHASE B — Generate (SECOND message onwards):
-After the user has answered your questions (or if their FIRST message already contains sufficient detail), call `generate_requirements` immediately with all outputs.
-- Make reasonable engineering assumptions for anything still unspecified.
-- Ignore any XML/prompt-template formatting in the user's message.
-- Use MoSCoW + IEEE IDs for all requirements.
-- End your response with a summary of the generated requirements.
-
 **RULE**: If the user's first message is already very detailed (contains voltage, specs, interfaces, temp range), skip straight to Phase B and call `generate_requirements` immediately.
+
+### PHASE B — Generate (SECOND message onwards, initial generation):
+After the user has answered your questions, call `generate_requirements` immediately with ALL outputs.
+- **READ EVERY SINGLE MESSAGE in this conversation before generating.** Every interface, spec, constraint, and component the user mentioned at ANY point must appear in the output.
+- Make reasonable engineering assumptions for anything still unspecified.
+- Use MoSCoW + IEEE IDs for all requirements.
+
+### PHASE C — Refine (any follow-up after Phase B is complete):
+When the user adds a new requirement, interface, or specification AFTER Phase B is done:
+1. **ALWAYS call `generate_requirements` again** — NEVER just answer conversationally when hardware specs are mentioned.
+2. **Start by re-reading the ENTIRE conversation history** to reconstruct the full requirements set.
+3. The new `generate_requirements` call must contain EVERY requirement from all previous generations PLUS the new addition. **Zero items may be dropped.**
+4. Update the block diagram and BOM to reflect the new requirement.
+5. In your `project_summary` explicitly acknowledge what was added: "Added UART control interface to existing RF receiver design."
+
+## ⚠️ CRITICAL COMPLETENESS RULE — NEVER DROP REQUIREMENTS:
+Every time you call `generate_requirements`, the output must be the COMPLETE set of all requirements
+ever discussed in this conversation. It is a FATAL ERROR to omit any requirement that was mentioned
+in any earlier message, even if the user only mentioned it briefly or as an aside.
+Before calling the tool, mentally check:
+- ✅ All interfaces mentioned across ALL messages (UART, SPI, CAN, USB, HDMI, etc.)
+- ✅ All performance specs from ALL messages (frequency, power, temp range, accuracy)
+- ✅ All components or part numbers mentioned anywhere
+- ✅ All regulatory/compliance constraints mentioned at any point
+- ✅ The NEW item the user just added in the latest message
+If any of these are missing from your tool call, you MUST add them before submitting.
 
 ## IMPORTANT RULES:
 - Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
 - Make smart engineering assumptions (e.g., if they say "motor controller" assume industrial temp range, common MCUs, standard interfaces)
 - Prioritize RoHS-compliant components with long lifecycle status.
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
-- Keep Mermaid node labels simple — no angle brackets, no raw parens, no HTML, no special characters.
+- Keep Mermaid node labels concise — use abbreviations if needed. NO angle brackets < >, NO raw HTML, NO special characters like & or @.
 - Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
-- **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use the real manufacturer datasheet URL (e.g., `https://www.ti.com/lit/ds/symlink/...`, `https://www.analog.com/media/en/.../DS.pdf`). If you are not certain of the exact URL, use the manufacturer product page URL (e.g., `https://www.st.com/en/microcontrollers-microprocessors/stm32f4-series.html`). Never leave `datasheet_url` empty.
+- **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use the real manufacturer datasheet URL (e.g., `https://www.ti.com/lit/ds/symlink/...`, `https://www.analog.com/media/en/.../DS.pdf`). If not certain, use the manufacturer product page URL. Never leave `datasheet_url` empty.
 - Include `digikey_url` where known (e.g., `https://www.digikey.com/en/products/detail/texas-instruments/...`).
 - **FOR RF DESIGNS**: Always populate the `gain_loss_budget` array. Every stage in the RF signal chain (antenna/input → LNA/driver → PA stages → filters → output) must be a row. Use real datasheet values for gain, P1dB, NF. Calculate cumulative gain and cascaded NF (Friis formula) correctly. Include system-level parameters (center_freq_mhz, bandwidth_mhz, input_power_dbm, target_output_dbm).
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
@@ -430,39 +449,91 @@ class RequirementsAgent(BaseAgent):
                 messages.append({"role": "user", "content": user_input})
 
             # ── Detect phase completion state ────────────────────────────────
-            # If phase is already complete (outputs exist on disk), treat follow-up
-            # messages as conversational — don't blindly force generate_requirements.
-            # Only force regeneration when the user explicitly requests it.
             phase_status = project_context.get("phase_statuses", {}).get("P1", "pending")
             phase_already_complete = phase_status == "completed"
 
+            # ── Detect if follow-up is a hardware specification addition ─────
+            # Explicit regen keywords the user might type:
             _REGEN_KEYWORDS = (
                 "regenerate", "re-generate", "re generate", "rerun", "re-run",
-                "update", "redo", "add datasheet", "add link", "add url",
+                "update requirements", "redo", "add datasheet", "add link", "add url",
                 "refresh", "rebuild", "recreate", "redo phase", "run again",
+                "change the", "change to", "increase", "decrease", "modify",
             )
-            user_wants_regen = any(kw in user_input.lower() for kw in _REGEN_KEYWORDS)
+            # Hardware interface / spec patterns — these always mean "add to requirements"
+            import re as _re_local
+            _HW_SPEC_PATTERN = _re_local.compile(
+                r'\b('
+                # Interfaces & buses
+                r'uart|usart|rs.?232|rs.?485|can\s?bus|can\b|spi\b|i2c|i2s|smbus|modbus'
+                r'|usb|hdmi|displayport|mipi|lvds|jtag|swd|jtag|pcie|ethernet|rmii|rgmii'
+                r'|sdio|emmc|nand|nor\s?flash|qspi|ospi'
+                # RF / analog interfaces
+                r'|rf\b|antenna|coax|sma\b|u\.fl|mmcx|ble|wifi|zigbee|lora|nfc|gps|gnss'
+                # Power specs
+                r'|ldo|buck|boost|\d+\s*v\b|\d+\s*ma\b|\d+\s*a\b|pmic|pwm|battery'
+                # Sensor / actuator
+                r'|sensor|accelerometer|gyroscope|imu|magnetometer|barometer|temperature'
+                r'|humidity|pressure|hall\s?effect|encoder|stepper|servo|bldc|adc|dac'
+                # Display / IO
+                r'|lcd|oled|tft|e.?ink|touchscreen|keypad|buzzer|led|relay|optocoupler'
+                # Memory / compute
+                r'|flash|eeprom|ram|ddr|sdram|fpga|dsp|cortex|arm|risc.?v|mcu|cpu'
+                # Connectors / mechanical
+                r'|connector|socket|header|rj45|d.?sub|db9|molex|jst|m12|waterproof'
+                # Regulation
+                r'|rohs|reach|fcc|ce\s?mark|ul\s?listed|iec|mil.?std|ats\b'
+                r')\b',
+                _re_local.IGNORECASE
+            )
+            _ADDITION_WORDS = _re_local.compile(
+                r'\b(add|include|also|need|require|want|plus|with|and|use|implement|integrate|support|enable)\b',
+                _re_local.IGNORECASE
+            )
+            # A message is a "hw spec addition" if it mentions a hardware keyword
+            # (even without "add" — e.g. "uart control interface" alone implies addition)
+            _is_hw_spec_addition = bool(_HW_SPEC_PATTERN.search(user_input))
+            user_wants_regen = (
+                any(kw in user_input.lower() for kw in _REGEN_KEYWORDS)
+                or _is_hw_spec_addition
+            )
 
             # ── Force tool call when user has already answered questions ───
-            # Only force if: phase not yet complete OR user explicitly wants regeneration
             prior_user_turns = sum(1 for m in messages[:-1] if m.get("role") == "user")
             if prior_user_turns >= 1 and messages and (not phase_already_complete or user_wants_regen):
                 original = messages[-1]["content"]
-                messages[-1]["content"] = (
-                    f"{original}\n\n"
-                    "You have the answers you need. Call the `generate_requirements` tool NOW with the complete BOM, "
-                    "requirements, block_diagram_mermaid, architecture_mermaid, design_parameters, and "
-                    "component_recommendations — including `datasheet_url` for every component. "
-                    "Do not ask more questions."
-                )
+                if phase_already_complete:
+                    # Regeneration: explicitly instruct the LLM to incorporate ALL history
+                    messages[-1]["content"] = (
+                        f"The user has added a new requirement: {original}\n\n"
+                        "IMPORTANT: Read ALL previous messages in this conversation carefully. "
+                        "The new requirement above MUST be incorporated together with EVERY requirement, "
+                        "interface, component, and specification mentioned earlier. "
+                        "Do NOT drop any previously discussed item. "
+                        "Call `generate_requirements` NOW with the COMPLETE updated set — "
+                        "all BOM items, all requirements (including the new one), "
+                        "updated block_diagram_mermaid, architecture_mermaid, design_parameters, and "
+                        "component_recommendations — with `datasheet_url` for every component."
+                    )
+                else:
+                    messages[-1]["content"] = (
+                        f"{original}\n\n"
+                        "You have all the information needed. Call the `generate_requirements` tool NOW "
+                        "incorporating EVERY requirement, interface, component and specification from this "
+                        "entire conversation. Do not drop any detail. Include the complete BOM, "
+                        "requirements list, block_diagram_mermaid, architecture_mermaid, design_parameters, "
+                        "and component_recommendations — with `datasheet_url` for every component. "
+                        "Do not ask more questions."
+                    )
             elif phase_already_complete and not user_wants_regen:
-                # Phase is done — user is asking a follow-up question, answer conversationally
-                # Append a note so the LLM knows the phase is complete
+                # Phase is done and user is asking a pure question (no hw spec detected)
+                # Answer conversationally without regenerating
                 if messages:
                     messages[-1]["content"] = (
                         f"{messages[-1]['content']}\n\n"
-                        "[Note: Phase 1 is already complete. Answer the user's question directly "
-                        "without calling generate_requirements unless they explicitly ask to regenerate.]"
+                        "[Note: Phase 1 requirements are complete. Answer this question directly. "
+                        "If the user is adding or changing a hardware specification, call "
+                        "generate_requirements instead of answering conversationally.]"
                     )
 
         # ── Tool handlers ──────────────────────────────────────────────────

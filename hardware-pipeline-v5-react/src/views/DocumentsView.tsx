@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import type { Project, PhaseMeta, PhaseStatusValue } from '../types';
 import { api } from '../api';
 import { getVisibleDocuments } from '../data/phases';
-import { loadMermaid, purgeMermaidScratch } from '../utils/mermaid';
+import { loadMermaid, renderMermaid, purgeMermaidScratch } from '../utils/mermaid';
 
 interface DocFile {
   name: string;
@@ -80,17 +80,26 @@ function sanitizeMermaidCode(raw: string): string {
   const known = ['flowchart', 'sequencediagram', 'classdiagram', 'statediagram',
     'erdiagram', 'gantt', 'pie', 'gitgraph', 'mindmap', 'timeline'];
   if (!known.some(t => first.startsWith(t))) code = 'flowchart TD\n' + code;
-  // Strip HTML tags (except <br/>)
-  code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
-  // Replace literal \n escape sequences with a space
+  // Replace literal \n escape sequences with Mermaid HTML line-break
   // LLMs often emit \n inside labels thinking it's a newline escape
-  code = code.replace(/\\n/g, ' ');
+  code = code.replace(/\\n/g, '<br/>');
+  // Decode HTML entities that agents mistakenly encode in Mermaid source
+  // e.g. &lt;br/&gt; → <br/>,  &lt;  → < (will be re-sanitized below)
+  code = code.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
+  code = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  // Strip HTML tags (except <br/>) from the whole diagram body
+  code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
   // Sanitize flowchart node labels: [ ... ], ( ... ), { ... }
+  // Preserve <br/> for multi-line labels; neutralise other angle-bracket chars.
   const sanitizeLabel = (inner: string) =>
     inner
+      // protect <br/> tokens before we touch angle brackets
+      .replace(/<br\s*\/?>/gi, '\x00BR\x00')
       .replace(/&(?!amp;|lt;|gt;|#)/g, 'and')
-      .replace(/</g, 'lt ')
-      .replace(/>/g, ' gt');
+      .replace(/</g, '(')   // convert bare < to ( so Mermaid doesn't choke
+      .replace(/>/g, ')')   // convert bare > to )
+      // restore <br/>
+      .replace(/\x00BR\x00/g, '<br/>');
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
   code = code.replace(/\{([^}]*)\}/g, (_m, inner: string) => `{${sanitizeLabel(inner)}}`);
@@ -117,6 +126,43 @@ marked.setOptions({ gfm: true, breaks: false });
 
 // ── MermaidBlock component ────────────────────────────────────────────────────
 
+// Inject CSS overrides into the SVG so it always looks right regardless of
+// which Mermaid version is loaded from CDN.
+function patchSvg(raw: string, accentColor: string): string {
+  // Make SVG fluid-width so it fills the container on all screen sizes
+  let s = raw
+    .replace(/<svg([^>]*)width="[^"]*"/, '<svg$1width="100%"')
+    .replace(/<svg([^>]*)height="([^"]*)"/, '<svg$1height="auto" data-orig-height="$2"')
+    .replace(/<svg(?![^>]*style=)([^>]*)>/, '<svg$1 style="max-width:100%;display:block;">');
+
+  // Append our CSS overrides before </style> (or inject a new <style> block)
+  const overrideCss = `
+    /* Hardware Pipeline — Mermaid visual overrides */
+    .node rect, .node circle, .node ellipse, .node polygon, .node path {
+      stroke: ${accentColor} !important; stroke-width: 1.5px !important;
+      rx: 6; ry: 6;
+    }
+    .edgePath .path { stroke: ${accentColor} !important; stroke-width: 1.5px !important; }
+    .arrowheadPath { fill: ${accentColor} !important; stroke: none !important; }
+    .edgeLabel .label rect { fill: #0f1e33 !important; }
+    .edgeLabel .label span { color: #94a3b8 !important; font-size: 11px !important; }
+    .cluster rect { fill: #0d1423 !important; stroke: #2a3a50 !important; stroke-width: 1px !important; rx: 8; ry: 8; }
+    .cluster text, .cluster span { fill: #64748b !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: 0.06em !important; }
+    text, tspan { fill: #e2e8f0 !important; font-family: 'DM Mono', monospace !important; }
+    .nodeLabel, .label { color: #e2e8f0 !important; font-size: 12px !important; }
+    .nodeLabel p { margin: 0 !important; }
+  `;
+
+  if (s.includes('</style>')) {
+    s = s.replace('</style>', overrideCss + '</style>');
+  } else {
+    s = s.replace('<svg', `<svg><style>${overrideCss}</style><svg`).replace('<svg><style>', '<svg><style>');
+    // simpler: just prepend a style block inside the <svg>
+    s = s.replace(/(<svg[^>]*>)/, `$1<style>${overrideCss}</style>`);
+  }
+  return s;
+}
+
 function MermaidBlock({ code, color }: { code: string; color: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<string | null>(null);
@@ -126,40 +172,55 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
   useEffect(() => {
     let cancelled = false;
     const rid = id.current;
-    loadMermaid().then(async () => {
+
+    // 12-second timeout — if mermaid hangs (invalid syntax), show fallback
+    const timeout = setTimeout(() => {
+      if (!cancelled) {
+        cancelled = true;
+        purgeMermaidScratch(rid);
+        setErr('Diagram render timed out — showing source');
+      }
+    }, 12000);
+
+    (async () => {
       try {
-        // render() only — no parse() so Mermaid never fires error toasts before our catch
-        const result = await window.mermaid!.render(rid, code);
+        await loadMermaid(); // instant — mermaid is bundled, not CDN
+        const rawSvg = await renderMermaid(rid, code);
+        clearTimeout(timeout);
         purgeMermaidScratch(rid);
         if (!cancelled) {
-          if (result.svg?.includes('<svg') && !result.svg.includes('class="error"')) {
-            setSvg(result.svg);
+          if (rawSvg?.includes('<svg') && !rawSvg.includes('class="error"')) {
+            setSvg(patchSvg(rawSvg, color));
           } else {
-            setErr('Diagram render produced no output');
+            setErr('Diagram produced no SVG output');
           }
         }
       } catch (e: unknown) {
+        clearTimeout(timeout);
         purgeMermaidScratch(rid);
-        if (!cancelled) setErr(e instanceof Error ? e.message : 'Diagram error');
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setErr(`Syntax error: ${msg.slice(0, 120)}`);
+        }
       }
-    }).catch(e => {
-      if (!cancelled) setErr(e?.message || 'Could not load Mermaid');
-    });
+    })();
+
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
       purgeMermaidScratch(rid);
     };
   }, [code]);
 
   if (err) {
-    // Graceful fallback: show the raw Mermaid source instead of a red error box
+    // Graceful fallback: show the raw Mermaid source with the error reason
     return (
       <div style={{ margin: '4px 0' }}>
-        <div style={{ fontSize: 10, color: '#475569', fontFamily: "'DM Mono', monospace", letterSpacing: '0.08em', marginBottom: 5 }}>
-          DIAGRAM SOURCE (render failed)
+        <div style={{ fontSize: 10, color: '#f59e0b', fontFamily: "'DM Mono', monospace", letterSpacing: '0.08em', marginBottom: 5 }}>
+          ⚠ DIAGRAM SOURCE — {err}
         </div>
         <pre style={{
-          background: 'var(--panel2)', border: '1px solid var(--border2)', borderRadius: 6,
+          background: 'var(--panel2)', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 6,
           padding: '12px 14px', margin: 0, fontSize: 11, color: 'var(--text3)',
           fontFamily: "'JetBrains Mono', monospace",
           overflowX: 'auto', lineHeight: 1.65, whiteSpace: 'pre-wrap',
@@ -179,7 +240,14 @@ function MermaidBlock({ code, color }: { code: string; color: string }) {
   }
   return (
     <div ref={ref}
-      style={{ padding: '14px', overflowX: 'auto', background: 'var(--panel2)', borderRadius: 6 }}
+      style={{
+        padding: '20px 16px',
+        overflowX: 'auto',
+        background: '#0a1628',
+        borderRadius: 8,
+        border: `1px solid ${color}30`,
+        boxShadow: `0 0 32px rgba(0,0,0,0.4), inset 0 0 60px rgba(0,0,0,0.2)`,
+      }}
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

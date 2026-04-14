@@ -13,6 +13,7 @@ Design principles applied here:
 import functools
 import logging
 import os
+import pathlib
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -21,6 +22,7 @@ from typing import Optional
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -98,6 +100,12 @@ app = FastAPI(
     docs_url="/docs" if settings.debug else None,   # hide Swagger in prod
     redoc_url=None,
 )
+
+# Static assets — mermaid.min.js and other bundled libs served from localhost
+# so the frontend never needs an internet connection during the demo.
+_STATIC_DIR = pathlib.Path(__file__).parent / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # CORS: restrict to known origins only (never wildcard in any real deploy)
 _ALLOWED_ORIGINS = [
@@ -455,9 +463,36 @@ async def chat(project_id: int, body: dict):
         raise HTTPException(500, str(exc))
 
 
-# ── LLM Settings ─────────────────────────────────────────────────────────────────
+# ── Configuration Settings ────────────────────────────────────────────────────────
 
-class LLMSettingsRequest(BaseModel):
+_ENV_FILE = pathlib.Path(__file__).parent / ".env"
+
+def _persist_env(updates: dict) -> None:
+    """Write key=value pairs to .env file, creating or updating entries."""
+    try:
+        lines = _ENV_FILE.read_text(encoding="utf-8").splitlines() if _ENV_FILE.exists() else []
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                key = stripped.split("=", 1)[0].strip()
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}")
+                    updated_keys.add(key)
+                    continue
+            new_lines.append(line)
+        # Append any keys not yet in the file
+        for key, val in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f"{key}={val}")
+        _ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        log.warning("settings.persist_env_failed: %s", exc)
+
+
+class ConfigSettingsRequest(BaseModel):
+    # LLM keys
     glm_api_key: Optional[str] = None
     deepseek_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
@@ -465,99 +500,93 @@ class LLMSettingsRequest(BaseModel):
     deepseek_base_url: Optional[str] = None
     primary_model: Optional[str] = None
     fast_model: Optional[str] = None
+    # GitHub / Git
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+
+
+# Keep old name as alias for backward compat
+LLMSettingsRequest = ConfigSettingsRequest
+
+
+def _mask_key(key: Optional[str]) -> Optional[str]:
+    if not key:
+        return None
+    if len(key) <= 8:
+        return "•" * len(key)
+    return key[:6] + "•" * min(len(key) - 10, 12) + key[-4:]
 
 
 @app.get("/api/v1/settings/llm", tags=["settings"])
 async def get_llm_settings():
-    """
-    Get current LLM configuration settings.
-    Returns masked API keys for security.
-    """
-    def mask_key(key: Optional[str]) -> Optional[str]:
-        if not key:
-            return None
-        if len(key) <= 8:
-            return "•" * len(key)
-        return key[:6] + "•" * min(len(key) - 10, 12) + key[-4:]
-
+    """Get current configuration. Returns masked API keys for security."""
     return {
-        "glm_api_key": mask_key(settings.glm_api_key),
-        "deepseek_api_key": mask_key(settings.deepseek_api_key),
-        "anthropic_api_key": mask_key(settings.anthropic_api_key),
+        "glm_api_key": _mask_key(settings.glm_api_key),
+        "deepseek_api_key": _mask_key(settings.deepseek_api_key),
+        "anthropic_api_key": _mask_key(settings.anthropic_api_key),
         "glm_base_url": settings.glm_base_url,
         "deepseek_base_url": settings.deepseek_base_url,
         "primary_model": settings.primary_model,
         "fast_model": settings.fast_model,
         "glm_model": settings.glm_model,
         "glm_fast_model": settings.glm_fast_model,
+        "github_token": _mask_key(settings.github_token),
+        "github_repo": settings.github_repo,
+        "git_enabled": settings.git_enabled,
     }
 
 
 @app.post("/api/v1/settings/llm", tags=["settings"])
-async def update_llm_settings(body: LLMSettingsRequest):
+async def update_llm_settings(body: ConfigSettingsRequest):
     """
-    Update LLM configuration settings.
-
-    Updates environment variables and runtime settings.
-    Note: This updates the current process only; changes are not persisted
-    to .env file. For persistence, users should update .env manually.
-
-    Returns the updated settings (with masked API keys).
+    Update LLM + GitHub configuration. Persists changes to .env file.
     """
-    import os
+    env_updates: dict = {}
 
-    def mask_key(key: Optional[str]) -> Optional[str]:
-        if not key:
-            return None
-        if len(key) <= 8:
-            return "•" * len(key)
-        return key[:6] + "•" * min(len(key) - 10, 12) + key[-4:]
+    def _apply(attr: str, env_key: str, value: Optional[str]) -> None:
+        if value is not None and value.strip():
+            v = value.strip()
+            setattr(settings, attr, v)
+            os.environ[env_key] = v
+            env_updates[env_key] = v
 
-    # Update settings object if values are provided and non-empty
-    if body.glm_api_key is not None and body.glm_api_key.strip():
-        settings.glm_api_key = body.glm_api_key.strip()
-        os.environ["GLM_API_KEY"] = body.glm_api_key.strip()
+    _apply("glm_api_key",      "GLM_API_KEY",       body.glm_api_key)
+    _apply("deepseek_api_key", "DEEPSEEK_API_KEY",   body.deepseek_api_key)
+    _apply("anthropic_api_key","ANTHROPIC_API_KEY",  body.anthropic_api_key)
+    _apply("glm_base_url",     "GLM_BASE_URL",       body.glm_base_url)
+    _apply("deepseek_base_url","DEEPSEEK_BASE_URL",  body.deepseek_base_url)
+    _apply("primary_model",    "PRIMARY_MODEL",      body.primary_model)
+    _apply("fast_model",       "FAST_MODEL",         body.fast_model)
+    _apply("github_token",     "GITHUB_TOKEN",       body.github_token)
+    _apply("github_repo",      "GITHUB_REPO",        body.github_repo)
 
-    if body.deepseek_api_key is not None and body.deepseek_api_key.strip():
-        settings.deepseek_api_key = body.deepseek_api_key.strip()
-        os.environ["DEEPSEEK_API_KEY"] = body.deepseek_api_key.strip()
+    # Recompute git_enabled after token change
+    if body.github_token is not None:
+        settings.git_enabled = bool(settings.github_token)
+        os.environ["GIT_ENABLED"] = "true" if settings.git_enabled else "false"
 
-    if body.anthropic_api_key is not None and body.anthropic_api_key.strip():
-        settings.anthropic_api_key = body.anthropic_api_key.strip()
-        os.environ["ANTHROPIC_API_KEY"] = body.anthropic_api_key.strip()
-
-    if body.glm_base_url is not None and body.glm_base_url.strip():
-        settings.glm_base_url = body.glm_base_url.strip()
-        os.environ["GLM_BASE_URL"] = body.glm_base_url.strip()
-
-    if body.deepseek_base_url is not None and body.deepseek_base_url.strip():
-        settings.deepseek_base_url = body.deepseek_base_url.strip()
-        os.environ["DEEPSEEK_BASE_URL"] = body.deepseek_base_url.strip()
-
-    if body.primary_model is not None and body.primary_model.strip():
-        settings.primary_model = body.primary_model.strip()
-        os.environ["PRIMARY_MODEL"] = body.primary_model.strip()
-
-    if body.fast_model is not None and body.fast_model.strip():
-        settings.fast_model = body.fast_model.strip()
-        os.environ["FAST_MODEL"] = body.fast_model.strip()
+    # Persist to .env so settings survive restarts
+    if env_updates:
+        _persist_env(env_updates)
 
     log.info("api.settings_updated", extra={
-        "glm_configured": bool(settings.glm_api_key),
-        "deepseek_configured": bool(settings.deepseek_api_key),
-        "anthropic_configured": bool(settings.anthropic_api_key),
+        "keys_updated": list(env_updates.keys()),
+        "git_enabled": settings.git_enabled,
     })
 
     return {
-        "glm_api_key": mask_key(settings.glm_api_key),
-        "deepseek_api_key": mask_key(settings.deepseek_api_key),
-        "anthropic_api_key": mask_key(settings.anthropic_api_key),
+        "glm_api_key": _mask_key(settings.glm_api_key),
+        "deepseek_api_key": _mask_key(settings.deepseek_api_key),
+        "anthropic_api_key": _mask_key(settings.anthropic_api_key),
         "glm_base_url": settings.glm_base_url,
         "deepseek_base_url": settings.deepseek_base_url,
         "primary_model": settings.primary_model,
         "fast_model": settings.fast_model,
         "glm_model": settings.glm_model,
         "glm_fast_model": settings.glm_fast_model,
+        "github_token": _mask_key(settings.github_token),
+        "github_repo": settings.github_repo,
+        "git_enabled": settings.git_enabled,
     }
 
 

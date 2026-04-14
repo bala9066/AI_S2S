@@ -128,14 +128,14 @@ export default function App() {
   }, [project]);
 
   // Reactive polling:
-  //   2s  — while a phase is actively in_progress
-  //   2s  — while pipelineActive (brief gap between consecutive phases)
-  //   3s  — short idle (project loaded but pipeline not running)
+  //   2s   — while a phase is actively in_progress
+  //   2s   — while pipelineActive (brief gap between consecutive phases)
+  //   12s  — idle (project loaded but pipeline not running — reduces SQLAlchemy log noise)
   useEffect(() => {
     if (!project) return;
     refreshStatuses();
     const isFast = hasRunning || pipelineActiveRef.current;
-    const interval = setInterval(refreshStatuses, isFast ? 2000 : 3000);
+    const interval = setInterval(refreshStatuses, isFast ? 2000 : 12000);
     return () => clearInterval(interval);
   }, [project, refreshStatuses, hasRunning]);
 
@@ -438,6 +438,10 @@ export default function App() {
         statuses={statuses}
         completedIds={completedIds}
         stalePhaseIds={stalePhaseIds}
+        pipelineStarted={PHASES.some(
+          ph => !ph.manual && ph.id !== 'P1' &&
+          ['in_progress', 'completed', 'failed'].includes(statuses[ph.id])
+        )}
         onSelect={handleSelectPhase}
         onLanding={() => {
           setMode('landing');

@@ -1,11 +1,11 @@
 """
-Base Agent class with Claude API tool_use and LLM fallback chain.
+Base Agent class with multi-LLM fallback chain.
 
-Fallback order:
-  1. Claude Opus 4.6   (primary - complex reasoning)
-  2. Claude Haiku 4.5  (same API, cheaper tokens)
-  3. Ollama local       (air-gapped, no token limits)
-  4. GLM-4             (last resort)
+Default fallback order (auto-detected from .env API keys):
+  1. GLM-4.7 via Z.AI   (primary — Anthropic-compatible, cheapest)
+  2. DeepSeek-V3         (fallback — if DEEPSEEK_API_KEY set)
+  3. Ollama local        (air-gap / last resort)
+Override with PRIMARY_MODEL env var.
 """
 
 import json
@@ -112,12 +112,17 @@ class BaseAgent(ABC):
                 base_url=settings.deepseek_base_url,
                 **( {"http_client": _ahc} if _ahc else {} ),
             )
-            logger.info("DeepSeek client initialized — using DeepSeek-V3 as primary LLM")
+            logger.info("DeepSeek client initialized — available as fallback LLM")
 
         # Fallback chain — auto-promote based on available keys
         self.fallback_chain = settings.fallback_chain
+        logger.info(
+            "agent.init phase=%s primary_model=%s chain=%s",
+            phase_number, self.model, self.fallback_chain,
+            extra={"phase": phase_number, "model": self.model},
+        )
         if not settings.anthropic_api_key and not settings.deepseek_api_key and settings.glm_api_key:
-            logger.info("No Anthropic/DeepSeek key — using GLM via Z.AI as primary LLM")
+            logger.info("GLM via Z.AI is primary LLM (no Anthropic/DeepSeek key set)")
 
     @abstractmethod
     async def execute(self, project_context: dict, user_input: str) -> dict:
