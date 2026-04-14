@@ -727,16 +727,55 @@ async def export_project_zip(project_id: int):
     )
 
 
+_MERMAID_RENDERER_JS = str(
+    pathlib.Path(__file__).parent.parent.parent  # walk up from S2S_V2 if needed
+    / "sessions" / "pensive-laughing-clarke" / "mermaid-renderer" / "render.js"
+)
+# Absolute path to the local mermaid renderer script
+_MERMAID_RENDERER_JS = "/sessions/pensive-laughing-clarke/mermaid-renderer/render.js"
+
+
+def _render_mermaid_local(code: str, out_path: str) -> bool:
+    """
+    Render Mermaid diagram code to PNG using local Node.js renderer + cairosvg.
+    No internet required. Returns True on success, False on failure.
+    """
+    import subprocess as _sp
+    import sys as _sys
+
+    try:
+        result = _sp.run(
+            ["node", _MERMAID_RENDERER_JS, code],
+            capture_output=True, text=True, timeout=15,
+        )
+        svg_str = result.stdout
+        if result.returncode != 0 or not svg_str or "<svg" not in svg_str:
+            log.debug("mermaid.node.skip: %s", result.stderr[:200])
+            return False
+
+        # Convert SVG → PNG via cairosvg
+        _svg_mod_path = "/sessions/pensive-laughing-clarke/.local/lib/python3.10/site-packages"
+        if _svg_mod_path not in _sys.path:
+            _sys.path.insert(0, _svg_mod_path)
+        from cairosvg import svg2png  # type: ignore
+        png_data = svg2png(bytestring=svg_str.encode("utf-8"), scale=2.0,
+                           background_color="white")
+        if png_data and len(png_data) > 200:
+            import pathlib as _pl
+            _pl.Path(out_path).write_bytes(png_data)
+            return True
+    except Exception as e:
+        log.debug("mermaid.local.error: %s", e)
+    return False
+
+
 def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     """
-    Pre-render ```mermaid``` blocks to PNG via mermaid.ink API.
-    All diagrams are fetched IN PARALLEL (ThreadPoolExecutor) with a 3s timeout each,
-    so a document with N diagrams takes ~3 s total, not N×3 s.
+    Pre-render ```mermaid``` blocks to PNG images using local Node.js + cairosvg.
+    All diagrams are rendered IN PARALLEL (ThreadPoolExecutor).
     Failures fall back gracefully to a labelled code block.
     """
     import re as _re
-    import base64 as _b64
-    import urllib.request as _urlreq
     import pathlib as _pl
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -751,26 +790,16 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     if not blocks:
         return md_text
 
-    # ── 2. Fetch all diagrams in parallel ─────────────────────────────────────
-    def fetch_diagram(idx_code):
+    # ── 2. Render all diagrams in parallel ────────────────────────────────────
+    def render_diagram(idx_code):
         idx, code = idx_code
-        try:
-            encoded = _b64.urlsafe_b64encode(code.encode('utf-8')).decode('ascii')
-            url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=white"
-            req = _urlreq.Request(url, headers={"User-Agent": "HardwarePipeline/1.0"})
-            with _urlreq.urlopen(req, timeout=3) as resp:  # 3s max
-                data = resp.read()
-            if data and len(data) > 200:
-                img_path = tmp / f"diagram_{idx}.png"
-                img_path.write_bytes(data)
-                return idx, str(img_path)
-        except Exception as e:
-            log.debug("mermaid.ink.skip idx=%d: %s", idx, e)
-        return idx, None
+        img_path = str(tmp / f"diagram_{idx}.png")
+        success = _render_mermaid_local(code, img_path)
+        return idx, img_path if success else None
 
     results: dict[int, str | None] = {}
-    with ThreadPoolExecutor(max_workers=min(len(blocks), 6)) as pool:
-        futures = {pool.submit(fetch_diagram, (i + 1, code)): i for i, (_, code) in enumerate(blocks)}
+    with ThreadPoolExecutor(max_workers=min(len(blocks), 4)) as pool:
+        futures = {pool.submit(render_diagram, (i + 1, code)): i for i, (_, code) in enumerate(blocks)}
         for fut in as_completed(futures):
             idx, path = fut.result()
             results[idx] = path
