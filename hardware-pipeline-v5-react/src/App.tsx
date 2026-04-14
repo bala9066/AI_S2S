@@ -438,6 +438,7 @@ export default function App() {
   }
 
   return (
+    <>
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--navy)', fontFamily: "'DM Mono', monospace" }}>
       {/* Left Panel */}
       <LeftPanel
@@ -526,6 +527,8 @@ export default function App() {
         </div>
       </div>
 
+    </div>
+      {/* Modals rendered OUTSIDE the overflow:hidden flex container so position:fixed works correctly */}
       {modal === 'create' && (
         <CreateProjectModal
           onConfirm={handleCreateProject}
@@ -544,6 +547,6 @@ export default function App() {
         onSave={handleSaveLLMSettings}
       />
       {toast && <Toast message={toast} />}
-    </div>
+    </>
   );
 }
