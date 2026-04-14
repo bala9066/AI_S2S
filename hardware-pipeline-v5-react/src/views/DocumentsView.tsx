@@ -53,6 +53,11 @@ const VIEWABLE = new Set(['md', 'txt', 'json', 'html', 'csv', 'net', 'xdc', 'py'
 
 function sanitizeMermaidCode(raw: string): string {
   let code = raw.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Fix em-dash arrows: LLMs sometimes emit — (em-dash) instead of -- in arrows
+  // ——> (two em-dashes) or —> (one em-dash) → -->
+  code = code.replace(/\u2014\u2014>/g, '-->').replace(/\u2014>/g, '-->');
+  // Also handle encoded/smart versions
+  code = code.replace(/——>/g, '-->').replace(/—>/g, '-->');
   // Normalise graph → flowchart
   code = code.replace(/^graph\s+(TD|LR|TB|RL|BT)/im, 'flowchart $1');
   // Step 0: join lines where [ is opened but not closed.
@@ -90,9 +95,14 @@ function sanitizeMermaidCode(raw: string): string {
   // Strip HTML tags (except <br/>) from the whole diagram body
   code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
   // Fix: "PSU [+28V Input]" → "PSU[+28V Input]" — space before bracket breaks Mermaid parser
-  // Apply only to non-subgraph lines (subgraph has intentional spaces).
+  // For regular lines: remove space between word-char and [
+  // For subgraph lines: only fix the ID-to-title bracket (e.g. "subgraph PS [title]" → "subgraph PS[title]")
   code = code.split('\n').map(line => {
-    if (/^\s*subgraph\b/.test(line)) return line; // don't touch subgraph declarations
+    if (/^\s*subgraph\b/.test(line)) {
+      // Only collapse space between subgraph ID and its title bracket
+      // "subgraph PS [Processing System]" → "subgraph PS[Processing System]"
+      return line.replace(/^(\s*subgraph\s+\w+)\s+\[/, '$1[');
+    }
     // Replace word-char + space + [ with word-char + [ (node ID parsing fix)
     return line.replace(/(\w)\s+\[/g, '$1[');
   }).join('\n');
@@ -467,7 +477,12 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [contents, setContents] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loadingFile, setLoadingFile] = useState<Record<string, boolean>>({});
+  // docxConverting: shown in UI (only when user actually clicks ↓ DOCX and pre-convert isn't ready)
   const [docxConverting, setDocxConverting] = useState<Record<string, boolean>>({});
+  // docxBlobUrls: pre-converted blob URLs — download is instant when ready
+  const [docxBlobUrls, setDocxBlobUrls] = useState<Record<string, string>>({});
+  // docxPreconverting: background conversion in progress — NOT shown in UI button
+  const docxPreconvertingRef = useRef<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
   const visibleFilenames = project
@@ -597,6 +612,36 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, filteredFiles.map(f => f.name).join(',')]);
 
+  // Background pre-convert all .md files to DOCX so downloads are instant.
+  // Runs silently — no spinner shown in the UI until user actually clicks ↓ DOCX.
+  useEffect(() => {
+    if (!project || filteredFiles.length === 0) return;
+    let cancelled = false;
+    const preconvert = async () => {
+      const mdFiles = filteredFiles.filter(f => getExt(f.name) === 'md');
+      for (const file of mdFiles) {
+        if (cancelled) return;
+        // Skip if already converted or currently converting
+        if (docxBlobUrls[file.name] || docxPreconvertingRef.current.has(file.name)) continue;
+        docxPreconvertingRef.current.add(file.name);
+        try {
+          const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
+        } catch { /* silent — user will see spinner on click if needed */ }
+        docxPreconvertingRef.current.delete(file.name);
+        // Stagger to avoid overwhelming the backend
+        await new Promise(r => setTimeout(r, 300));
+      }
+    };
+    // Delay start by 1s to let text prefetch (higher priority) go first
+    const timer = setTimeout(preconvert, 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project, filteredFiles.map(f => f.name).join(',')]);
+
   const fetchContent = async (file: DocFile) => {
     if (!project) return;
     const ext = getExt(file.name);
@@ -631,6 +676,24 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
   const triggerDocxDownload = async (file: DocFile) => {
     if (!project || docxConverting[file.name]) return;
+
+    const docxName = file.name.replace(/\.md$/i, '.docx');
+
+    // If pre-conversion already finished, use cached blob URL — instant download
+    if (docxBlobUrls[file.name]) {
+      const a = document.createElement('a');
+      a.href = docxBlobUrls[file.name];
+      a.download = docxName;
+      a.click();
+      // Revoke and clear so it can be re-fetched if needed (e.g. file changed)
+      setTimeout(() => {
+        URL.revokeObjectURL(docxBlobUrls[file.name]);
+        setDocxBlobUrls(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+      }, 5000);
+      return;
+    }
+
+    // Pre-convert not ready yet — show "Converting…" spinner while we wait
     setDocxConverting(prev => ({ ...prev, [file.name]: true }));
     try {
       const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
@@ -639,7 +702,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = file.name.replace(/\.md$/i, '.docx');
+      a.download = docxName;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (err) {

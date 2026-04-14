@@ -276,10 +276,13 @@ Use the `generate_rdt_psq` tool to return structured register data and initialis
 Include all memory-mapped registers visible in the GLR / netlist.
 """
 
+        # Force the tool call on the first attempt using tool_choice
+        _force_tool = {"type": "tool", "name": "generate_rdt_psq"}
         messages = [{"role": "user", "content": user_message}]
         response = await self.call_llm(
             messages=messages,
             system=self.get_system_prompt(project_context),
+            tool_choice=_force_tool,
         )
 
         outputs: Dict[str, str] = {}
@@ -291,11 +294,14 @@ Include all memory-mapped registers visible in the GLR / netlist.
                     rdt_psq_data = tc["input"]
                     break
 
-        # Retry once with an explicit tool-use nudge if the first call missed the tool
+        # Retry with explicit nudge + forced tool_choice if first attempt still missed
         if not rdt_psq_data:
-            logger.warning("P7a: tool not called on first attempt — retrying with explicit prompt")
+            logger.warning("P7a: tool not called on first attempt — retrying with explicit prompt + tool_choice")
+            # Build a valid assistant turn — if content is empty, use a placeholder
+            # (Anthropic requires non-empty assistant content before a user follow-up)
+            assistant_content = response.get("content", "") or "I will now call the generate_rdt_psq tool."
             messages = messages + [
-                {"role": "assistant", "content": response.get("content", "")},
+                {"role": "assistant", "content": assistant_content},
                 {"role": "user", "content": (
                     "You must call the `generate_rdt_psq` tool now to return the structured "
                     "register map and programming sequence. Do not write prose — call the tool."
@@ -304,6 +310,7 @@ Include all memory-mapped registers visible in the GLR / netlist.
             retry_response = await self.call_llm(
                 messages=messages,
                 system=self.get_system_prompt(project_context),
+                tool_choice=_force_tool,
             )
             if retry_response.get("tool_calls"):
                 for tc in retry_response["tool_calls"]:

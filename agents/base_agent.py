@@ -191,6 +191,7 @@ class BaseAgent(ABC):
         model: Optional[str] = None,
         tools: Optional[list[dict]] = None,
         max_tokens: Optional[int] = None,
+        tool_choice: Optional[dict] = None,
     ) -> dict:
         """
         Call Claude API with automatic fallback chain.
@@ -210,7 +211,7 @@ class BaseAgent(ABC):
         for fallback_model in chain:
             try:
                 result = await self._call_model(
-                    fallback_model, messages, system, tools, max_tokens
+                    fallback_model, messages, system, tools, max_tokens, tool_choice
                 )
                 if result:
                     result["model_used"] = fallback_model
@@ -258,18 +259,19 @@ class BaseAgent(ABC):
         system: str,
         tools: list[dict],
         max_tokens: int,
+        tool_choice: Optional[dict] = None,
     ) -> Optional[dict]:
         """Route to the correct API based on model name."""
 
         if model.startswith("claude"):
-            return await self._call_anthropic(model, messages, system, tools, max_tokens)
+            return await self._call_anthropic(model, messages, system, tools, max_tokens, tool_choice)
         elif model.startswith("deepseek"):
-            return await self._call_deepseek(model, messages, system, tools, max_tokens)
+            return await self._call_deepseek(model, messages, system, tools, max_tokens, tool_choice)
         elif model.startswith("ollama"):
             return await self._call_ollama(model, messages, system, max_tokens)
         elif model.startswith("glm"):
             # GLM via Z.AI uses Anthropic-compatible API — full tool_use support
-            return await self._call_glm_anthropic(model, messages, system, tools, max_tokens)
+            return await self._call_glm_anthropic(model, messages, system, tools, max_tokens, tool_choice)
         else:
             logger.warning(f"Unknown model type: {model}")
             return None
@@ -281,6 +283,7 @@ class BaseAgent(ABC):
         system: str,
         tools: list[dict],
         max_tokens: int,
+        tool_choice: Optional[dict] = None,
     ) -> dict:
         """Call Claude API with native tool_use."""
         if not self._anthropic_client:
@@ -295,6 +298,8 @@ class BaseAgent(ABC):
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
+            if tool_choice:
+                kwargs["tool_choice"] = tool_choice
 
         response = self._anthropic_client.messages.create(**kwargs)
 
@@ -329,6 +334,7 @@ class BaseAgent(ABC):
         system: str,
         tools: list[dict],
         max_tokens: int,
+        tool_choice: Optional[dict] = None,
     ) -> dict:
         """Call DeepSeek API (OpenAI-compatible).
 
@@ -364,7 +370,14 @@ class BaseAgent(ABC):
         }
         if oai_tools:
             kwargs["tools"] = oai_tools
-            kwargs["tool_choice"] = "auto"
+            # Convert Anthropic tool_choice → OpenAI tool_choice format
+            if tool_choice and tool_choice.get("type") == "tool":
+                kwargs["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tool_choice["name"]},
+                }
+            else:
+                kwargs["tool_choice"] = "auto"
 
         response = await self._deepseek_client.chat.completions.create(**kwargs)
 
@@ -457,6 +470,7 @@ class BaseAgent(ABC):
         system: str,
         tools: list[dict],
         max_tokens: int,
+        tool_choice: Optional[dict] = None,
     ) -> dict:
         """
         Call GLM via Z.AI using the Anthropic-compatible endpoint.
@@ -483,6 +497,8 @@ class BaseAgent(ABC):
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
+            if tool_choice:
+                kwargs["tool_choice"] = tool_choice
 
         response = glm_client.messages.create(**kwargs)
 
