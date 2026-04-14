@@ -25,6 +25,7 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 export interface ChatResult {
   text: string;
   phaseComplete: boolean;
+  draftPending: boolean;
 }
 
 export const api = {
@@ -104,7 +105,7 @@ export const api = {
         : (result.content != null)
           ? result.content
           : JSON.stringify(result);
-    return { text, phaseComplete: !!result.phase_complete };
+    return { text, phaseComplete: !!result.phase_complete, draftPending: !!result.draft_pending };
   },
 
   listDocuments: (id: number): Promise<{ name: string; size: number }[]> =>

@@ -151,6 +151,14 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [project, refreshStatuses]);
 
+  // When P1 goes back to draft_pending (user chatted again with new requirements),
+  // reset pipelineStartedRef so the Approve & Run button works again.
+  useEffect(() => {
+    if (statuses['P1'] === 'draft_pending') {
+      pipelineStartedRef.current = false;
+    }
+  }, [statuses]);
+
   // Auto-advance: when a NEW phase becomes in_progress, jump to it once.
   // Uses a ref to remember the last auto-advanced phase so subsequent polls
   // (every 2-3s) do NOT override the user's manual navigation.

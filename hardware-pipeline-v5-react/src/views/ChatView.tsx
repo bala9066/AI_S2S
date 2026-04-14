@@ -1203,14 +1203,19 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
   const [clarifyError, setClarifyError] = useState('');
   const [retryText, setRetryText] = useState('');
+  // "Other" option state for clarification cards
+  const [otherActiveQId, setOtherActiveQId] = useState<string | null>(null);
+  const [otherInputValues, setOtherInputValues] = useState<Record<string, string>>({});
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
-    console.log('[ChatView] phaseStatus changed:', phaseStatus);
     if (phaseStatus === 'completed') {
       setPhaseCompleted(true);
       setShowApproveCard(true);
-      console.log('[ChatView] Setting showApproveCard = true');
+    } else if (phaseStatus === 'draft_pending') {
+      // User has chatted again after a pipeline run — reset so approve button re-appears
+      setShowApproveCard(true);
+      setApproveClicked(false);
     } else {
       setShowApproveCard(false);
     }
@@ -1247,10 +1252,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  // streaming intentionally excluded — scrolling every 16ms causes jank
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, showApproveCard, phaseCompleted]);
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [messages, showApproveCard, phaseCompleted, streaming]);
 
   /** Silently finalize Phase 1 — no user bubble, no input echo */
   const finalizePhase = async () => {
@@ -1290,9 +1293,9 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     setInput('');
     setLoading(true);
     setStreaming('');
-    // Hide the approve card while the user is actively chatting — it will
-    // re-appear after the next AI response if phaseComplete is still true.
-    if (showApproveCard && !approveClicked) setShowApproveCard(false);
+    // Hide both the approve card and "Pipeline is running" card while user is chatting.
+    // They re-appear after the AI responds if the phase is still complete/draft_pending.
+    if (showApproveCard) setShowApproveCard(false);
 
     try {
       const result = await api.chat(project.id, text);
@@ -1316,6 +1319,10 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           if (result.phaseComplete) {
             setPhaseCompleted(true);
             setShowApproveCard(true);
+          } else if (result.draftPending) {
+            // Backend says requirements are captured — show approve button again
+            setShowApproveCard(true);
+            setApproveClicked(false);
           }
         }
       }, 16);
@@ -1442,7 +1449,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                         {q.options.map(opt => {
                           const isSel = sel === opt;
                           return (
-                            <button key={opt} onClick={() => handleClarifyAnswer(q.id, opt)}
+                            <button key={opt} onClick={() => { handleClarifyAnswer(q.id, opt); setOtherActiveQId(null); }}
                               style={{ padding: '6px 13px', fontSize: 12, fontFamily: "'DM Mono',monospace", background: isSel ? `${qColor}22` : 'var(--panel)', border: `0.5px solid ${isSel ? qColor : qColor + '44'}`, borderRadius: 4, cursor: 'pointer', color: isSel ? 'var(--text)' : 'var(--text3)', transition: 'all 0.12s' }}
                               onMouseEnter={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor; e.currentTarget.style.color = 'var(--text)'; } }}
                               onMouseLeave={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor + '44'; e.currentTarget.style.color = 'var(--text3)'; } }}>
@@ -1450,6 +1457,40 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                             </button>
                           );
                         })}
+                        {/* "Other" option — always visible */}
+                        {otherActiveQId !== q.id ? (
+                          <button
+                            onClick={() => { setOtherActiveQId(q.id); }}
+                            style={{ padding: '6px 13px', fontSize: 12, fontFamily: "'DM Mono',monospace", background: (sel && !q.options.includes(sel)) ? `${qColor}22` : 'var(--panel)', border: `0.5px solid ${(sel && !q.options.includes(sel)) ? qColor : qColor + '44'}`, borderRadius: 4, cursor: 'pointer', color: (sel && !q.options.includes(sel)) ? 'var(--text)' : 'var(--text3)', transition: 'all 0.12s' }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = qColor; e.currentTarget.style.color = 'var(--text)'; }}
+                            onMouseLeave={e => { if (!(sel && !q.options.includes(sel))) { e.currentTarget.style.borderColor = qColor + '44'; e.currentTarget.style.color = 'var(--text3)'; } }}>
+                            {(sel && !q.options.includes(sel)) ? `\u2713 ${sel}` : '✏ Other'}
+                          </button>
+                        ) : (
+                          <div style={{ display: 'flex', gap: 6, width: '100%', marginTop: 4 }}>
+                            <input
+                              autoFocus
+                              value={otherInputValues[q.id] || ''}
+                              onChange={e => setOtherInputValues(prev => ({ ...prev, [q.id]: e.target.value }))}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && (otherInputValues[q.id] || '').trim()) {
+                                  handleClarifyAnswer(q.id, otherInputValues[q.id].trim());
+                                  setOtherActiveQId(null);
+                                } else if (e.key === 'Escape') {
+                                  setOtherActiveQId(null);
+                                }
+                              }}
+                              placeholder="Type your answer..."
+                              style={{ flex: 1, background: 'var(--panel)', border: `1px solid ${qColor}66`, borderRadius: 4, padding: '5px 10px', fontSize: 12, color: 'var(--text)', fontFamily: "'DM Mono',monospace", outline: 'none' }}
+                            />
+                            <button
+                              disabled={!(otherInputValues[q.id] || '').trim()}
+                              onClick={() => { if ((otherInputValues[q.id] || '').trim()) { handleClarifyAnswer(q.id, otherInputValues[q.id].trim()); setOtherActiveQId(null); } }}
+                              style={{ padding: '5px 12px', fontSize: 11, background: (otherInputValues[q.id] || '').trim() ? qColor : 'var(--panel2)', border: 'none', borderRadius: 4, cursor: (otherInputValues[q.id] || '').trim() ? 'pointer' : 'default', color: (otherInputValues[q.id] || '').trim() ? '#070b14' : 'var(--text4)', fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>
+                              OK
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );

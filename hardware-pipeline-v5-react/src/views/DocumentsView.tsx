@@ -89,6 +89,14 @@ function sanitizeMermaidCode(raw: string): string {
   code = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   // Strip HTML tags (except <br/>) from the whole diagram body
   code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
+  // Fix: "PSU [+28V Input]" → "PSU[+28V Input]" — space before bracket breaks Mermaid parser
+  // Apply only to non-subgraph lines (subgraph has intentional spaces).
+  code = code.split('\n').map(line => {
+    if (/^\s*subgraph\b/.test(line)) return line; // don't touch subgraph declarations
+    // Replace word-char + space + [ with word-char + [ (node ID parsing fix)
+    return line.replace(/(\w)\s+\[/g, '$1[');
+  }).join('\n');
+
   // Sanitize flowchart node labels: [ ... ], ( ... ), { ... }
   // Preserve <br/> for multi-line labels; neutralise other angle-bracket chars.
   const sanitizeLabel = (inner: string) =>
@@ -138,19 +146,30 @@ function patchSvg(raw: string, accentColor: string): string {
   // Append our CSS overrides before </style> (or inject a new <style> block)
   const overrideCss = `
     /* Hardware Pipeline — Mermaid visual overrides */
+    svg { background: #0f1e33 !important; }
     .node rect, .node circle, .node ellipse, .node polygon, .node path {
+      fill: #1a2235 !important;
       stroke: ${accentColor} !important; stroke-width: 1.5px !important;
       rx: 6; ry: 6;
     }
     .edgePath .path { stroke: ${accentColor} !important; stroke-width: 1.5px !important; }
     .arrowheadPath { fill: ${accentColor} !important; stroke: none !important; }
     .edgeLabel .label rect { fill: #0f1e33 !important; }
-    .edgeLabel .label span { color: #94a3b8 !important; font-size: 11px !important; }
+    .edgeLabel .label span, .edgeLabel span { color: #e2e8f0 !important; font-size: 11px !important; }
     .cluster rect { fill: #0d1423 !important; stroke: #2a3a50 !important; stroke-width: 1px !important; rx: 8; ry: 8; }
-    .cluster text, .cluster span { fill: #64748b !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: 0.06em !important; }
-    text, tspan { fill: #e2e8f0 !important; font-family: 'DM Mono', monospace !important; }
-    .nodeLabel, .label { color: #e2e8f0 !important; font-size: 12px !important; }
-    .nodeLabel p { margin: 0 !important; }
+    .cluster text, .cluster tspan, .cluster span { fill: #94a3b8 !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: 0.06em !important; }
+    text, tspan { fill: #e2e8f0 !important; font-family: 'DM Mono', monospace !important; font-size: 12px !important; }
+    .nodeLabel, .label, .label span, .labelText { color: #e2e8f0 !important; fill: #e2e8f0 !important; font-size: 12px !important; }
+    .nodeLabel p { margin: 0 !important; color: #e2e8f0 !important; }
+    foreignObject div, foreignObject span, foreignObject p { color: #e2e8f0 !important; font-size: 12px !important; font-family: 'DM Mono', monospace !important; }
+    .messageText, .actor text, .note text, .labelBox text { fill: #e2e8f0 !important; }
+    .actor rect, .actor line { fill: #1a2235 !important; stroke: ${accentColor} !important; }
+    .messageLine0, .messageLine1 { stroke: ${accentColor} !important; }
+    .activation0, .activation1, .activation2 { fill: #2a3a50 !important; stroke: ${accentColor} !important; }
+    .loopLine { stroke: #2a3a50 !important; }
+    .loopText, .loopText tspan { fill: #94a3b8 !important; }
+    .noteText, .noteText tspan { fill: #e2e8f0 !important; }
+    .note { fill: #1a2235 !important; stroke: #2a3a50 !important; }
   `;
 
   if (s.includes('</style>')) {
