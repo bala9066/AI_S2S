@@ -121,7 +121,7 @@ Generate a complete compliance report with:
                 requirements_text=requirements,
             )
             outputs["sbom.json"] = sbom_result["sbom_json"]
-            outputs["sbom_summary.md"] = sbom_result["sbom_summary"]
+            # sbom_summary.md intentionally excluded from outputs — not shown in UI
             self.log(
                 f"SBOM generated: {sbom_result['component_count']} components "
                 f"-> {sbom_result['sbom_path']}"
