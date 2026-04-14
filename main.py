@@ -503,6 +503,11 @@ class ConfigSettingsRequest(BaseModel):
     # GitHub / Git
     github_token: Optional[str] = None
     github_repo: Optional[str] = None
+    # Component search
+    digikey_client_id: Optional[str] = None
+    digikey_client_secret: Optional[str] = None
+    mouser_api_key: Optional[str] = None
+    chroma_persist_dir: Optional[str] = None
 
 
 # Keep old name as alias for backward compat
@@ -533,6 +538,10 @@ async def get_llm_settings():
         "github_token": _mask_key(settings.github_token),
         "github_repo": settings.github_repo,
         "git_enabled": settings.git_enabled,
+        "digikey_client_id": _mask_key(settings.digikey_client_id),
+        "digikey_client_secret": _mask_key(settings.digikey_client_secret),
+        "mouser_api_key": _mask_key(settings.mouser_api_key),
+        "chroma_persist_dir": settings.chroma_persist_dir,
     }
 
 
@@ -557,8 +566,12 @@ async def update_llm_settings(body: ConfigSettingsRequest):
     _apply("deepseek_base_url","DEEPSEEK_BASE_URL",  body.deepseek_base_url)
     _apply("primary_model",    "PRIMARY_MODEL",      body.primary_model)
     _apply("fast_model",       "FAST_MODEL",         body.fast_model)
-    _apply("github_token",     "GITHUB_TOKEN",       body.github_token)
-    _apply("github_repo",      "GITHUB_REPO",        body.github_repo)
+    _apply("github_token",          "GITHUB_TOKEN",          body.github_token)
+    _apply("github_repo",           "GITHUB_REPO",           body.github_repo)
+    _apply("digikey_client_id",     "DIGIKEY_CLIENT_ID",     body.digikey_client_id)
+    _apply("digikey_client_secret", "DIGIKEY_CLIENT_SECRET", body.digikey_client_secret)
+    _apply("mouser_api_key",        "MOUSER_API_KEY",        body.mouser_api_key)
+    _apply("chroma_persist_dir",    "CHROMA_PERSIST_DIR",    body.chroma_persist_dir)
 
     # Recompute git_enabled after token change
     if body.github_token is not None:
@@ -587,6 +600,10 @@ async def update_llm_settings(body: ConfigSettingsRequest):
         "github_token": _mask_key(settings.github_token),
         "github_repo": settings.github_repo,
         "git_enabled": settings.git_enabled,
+        "digikey_client_id": _mask_key(settings.digikey_client_id),
+        "digikey_client_secret": _mask_key(settings.digikey_client_secret),
+        "mouser_api_key": _mask_key(settings.mouser_api_key),
+        "chroma_persist_dir": settings.chroma_persist_dir,
     }
 
 

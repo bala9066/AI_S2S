@@ -10,6 +10,10 @@ interface ConfigSettings {
   fast_model?: string;
   github_token?: string;
   github_repo?: string;
+  digikey_client_id?: string;
+  digikey_client_secret?: string;
+  mouser_api_key?: string;
+  chroma_persist_dir?: string;
 }
 
 interface Props {
@@ -28,9 +32,13 @@ const DEFAULT_SETTINGS: ConfigSettings = {
   fast_model: '',
   github_token: '',
   github_repo: '',
+  digikey_client_id: '',
+  digikey_client_secret: '',
+  mouser_api_key: '',
+  chroma_persist_dir: './chroma_data',
 };
 
-type Tab = 'llm' | 'git';
+type Tab = 'llm' | 'git' | 'components';
 
 export default function LLMSettingsModal({ open, onClose, onSave }: Props) {
   const [settings, setSettings] = useState<ConfigSettings>(DEFAULT_SETTINGS);
@@ -66,6 +74,10 @@ export default function LLMSettingsModal({ open, onClose, onSave }: Props) {
         fast_model: data.fast_model || '',
         github_token: data.github_token || '',
         github_repo: data.github_repo || '',
+        digikey_client_id: data.digikey_client_id || '',
+        digikey_client_secret: data.digikey_client_secret || '',
+        mouser_api_key: data.mouser_api_key || '',
+        chroma_persist_dir: data.chroma_persist_dir || './chroma_data',
       });
       setGitEnabled(data.git_enabled || false);
     } catch (e: unknown) {
@@ -160,7 +172,7 @@ export default function LLMSettingsModal({ open, onClose, onSave }: Props) {
           display: 'flex', borderBottom: '1px solid var(--border2)',
           background: 'var(--panel)', flexShrink: 0,
         }}>
-          {([['llm', '⚡ LLM Models'], ['git', '⎇ GitHub Integration']] as [Tab, string][]).map(([id, label]) => (
+          {([['llm', '⚡ LLM Models'], ['git', '⎇ GitHub Integration'], ['components', '◈ Components']] as [Tab, string][]).map(([id, label]) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
@@ -317,6 +329,94 @@ export default function LLMSettingsModal({ open, onClose, onSave }: Props) {
                     <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--teal)' }}>ℹ Auto-Selection Order</div>
                     GLM (Z.AI) → DeepSeek → Anthropic → Ollama (local)<br/>
                     Override with explicit model names above if needed.
+                  </div>
+                </>
+              )}
+
+              {/* ── Components Tab ── */}
+              {activeTab === 'components' && (
+                <>
+                  <div style={sectionHeaderStyle}>DigiKey API</div>
+
+                  <div style={fieldWrap}>
+                    <label style={labelStyle}>Client ID</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        type={showKeys ? 'text' : 'password'}
+                        value={settings.digikey_client_id}
+                        onChange={e => setSettings({ ...settings, digikey_client_id: e.target.value })}
+                        placeholder="DigiKey Client ID"
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                      <button
+                        onClick={() => setShowKeys(!showKeys)}
+                        style={{
+                          padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border2)',
+                          background: 'var(--panel2)', color: 'var(--text3)', cursor: 'pointer',
+                          fontSize: 11, fontFamily: monoFont, whiteSpace: 'nowrap' as const,
+                        }}
+                      >{showKeys ? '🙈 Hide' : '👁 Show'}</button>
+                    </div>
+                  </div>
+
+                  <div style={fieldWrap}>
+                    <label style={labelStyle}>Client Secret</label>
+                    <input
+                      type={showKeys ? 'text' : 'password'}
+                      value={settings.digikey_client_secret}
+                      onChange={e => setSettings({ ...settings, digikey_client_secret: e.target.value })}
+                      placeholder="DigiKey Client Secret"
+                      style={inputStyle}
+                    />
+                    <div style={hintStyle}>
+                      Register at{' '}
+                      <a href="https://developer.digikey.com" target="_blank" rel="noopener" style={{ color: 'var(--teal)' }}>developer.digikey.com</a>
+                      {' '}— enables real-time BOM pricing &amp; availability
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 20, marginBottom: 12, ...sectionHeaderStyle }}>Mouser API</div>
+
+                  <div style={fieldWrap}>
+                    <label style={labelStyle}>API Key</label>
+                    <input
+                      type={showKeys ? 'text' : 'password'}
+                      value={settings.mouser_api_key}
+                      onChange={e => setSettings({ ...settings, mouser_api_key: e.target.value })}
+                      placeholder="Mouser API Key"
+                      style={inputStyle}
+                    />
+                    <div style={hintStyle}>
+                      Register at{' '}
+                      <a href="https://www.mouser.com/api-hub" target="_blank" rel="noopener" style={{ color: 'var(--teal)' }}>mouser.com/api-hub</a>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 20, marginBottom: 12, ...sectionHeaderStyle }}>ChromaDB Vector Search</div>
+
+                  <div style={fieldWrap}>
+                    <label style={labelStyle}>Persist Directory</label>
+                    <input
+                      type="text"
+                      value={settings.chroma_persist_dir}
+                      onChange={e => setSettings({ ...settings, chroma_persist_dir: e.target.value })}
+                      placeholder="./chroma_data"
+                      style={inputStyle}
+                    />
+                    <div style={hintStyle}>
+                      Local path where component datasheet embeddings are stored
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: 12, borderRadius: 6, background: 'rgba(245,158,11,0.06)',
+                    border: '1px solid rgba(245,158,11,0.2)', fontSize: 11,
+                    color: 'var(--text2)', lineHeight: 1.7, marginTop: 8,
+                  }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4, color: '#f59e0b' }}>ℹ Component Search</div>
+                    DigiKey + Mouser APIs provide live pricing and stock data during BOM generation.
+                    ChromaDB stores datasheet embeddings for semantic component search.
+                    All are optional — the LLM will use its training knowledge as fallback.
                   </div>
                 </>
               )}
