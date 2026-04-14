@@ -16,21 +16,22 @@ function inferDesignType(name: string): string {
 
 export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('');
+  const [requirements, setRequirements] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setLoading(true);
     const dtype = inferDesignType(name);
-    await onConfirm(name.trim(), '', dtype);
+    await onConfirm(name.trim(), requirements.trim(), dtype);
     setLoading(false);
   };
 
   const inputStyle = {
-    width: '100%', background: 'var(--panel)', border: '1px solid var(--panel3)',
+    width: '100%', background: 'var(--panel2)', border: '1px solid var(--panel3)',
     borderRadius: 5, padding: '10px 13px', fontSize: 13,
     color: 'var(--text)', fontFamily: "'DM Mono', monospace",
-    transition: 'border-color 0.2s',
+    transition: 'border-color 0.2s', outline: 'none', boxSizing: 'border-box',
   } as React.CSSProperties;
 
   const labelStyle = {
@@ -40,30 +41,54 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(7,11,20,0.88)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
     }}>
       <div style={{
         background: 'var(--panel)', border: '1px solid var(--panel2)',
-        borderRadius: 10, padding: 30, width: 460,
+        borderRadius: 10, padding: 30, width: 480,
         boxShadow: '0 24px 60px rgba(0,0,0,0.7)',
       }}>
-        <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 17, fontWeight: 800, marginBottom: 6 }}>
+        <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 17, fontWeight: 800, marginBottom: 6, color: 'var(--text)' }}>
           New Project
         </div>
         <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 24 }}>
-          Give your project a name — describe your design in the chat
+          Give your project a name — describe your design further in the chat
         </div>
 
-        <div style={{ marginBottom: 28 }}>
-          <label style={labelStyle}>PROJECT NAME</label>
+        {/* Project name */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={labelStyle}>PROJECT NAME <span style={{ color: 'var(--teal)' }}>*</span></label>
           <input
             style={inputStyle}
             placeholder="e.g. 2.4GHz RF Transceiver Board"
             value={name}
             onChange={e => setName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) handleSubmit(); }}
             autoFocus
           />
+        </div>
+
+        {/* Optional requirements */}
+        <div style={{ marginBottom: 28 }}>
+          <label style={labelStyle}>
+            ANY SPECIFIC REQUIREMENTS?
+            <span style={{ color: 'var(--text4)', fontWeight: 400, marginLeft: 6, letterSpacing: 0 }}>optional</span>
+          </label>
+          <textarea
+            style={{
+              ...inputStyle,
+              resize: 'vertical',
+              minHeight: 80,
+              lineHeight: 1.65,
+            }}
+            placeholder="e.g. Must operate at -40°C to +85°C, use SMA connectors, target IPC Class 3 PCB..."
+            value={requirements}
+            onChange={e => setRequirements(e.target.value)}
+            rows={3}
+          />
+          <div style={{ fontSize: 10, color: 'var(--text4)', marginTop: 5, fontFamily: "'DM Mono', monospace" }}>
+            These will be included as initial constraints alongside your chat description.
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>

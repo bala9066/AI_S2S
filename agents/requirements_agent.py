@@ -359,10 +359,21 @@ class RequirementsAgent(BaseAgent):
             self.component_search = None
 
     def get_system_prompt(self, project_context: dict) -> str:
-        return SYSTEM_PROMPT.format(
+        base = SYSTEM_PROMPT.format(
             design_type=project_context.get("design_type", "general"),
             project_name=project_context.get("name", "Unnamed Project"),
         )
+        # If the user supplied initial requirements at project creation, surface them
+        # as a hard constraint block so the AI never asks about already-stated specs.
+        desc = (project_context.get("description") or "").strip()
+        if desc:
+            base += (
+                f"\n\n## PRE-STATED REQUIREMENTS (from project creation)\n"
+                f"The user already specified these constraints when creating the project:\n"
+                f"{desc}\n"
+                f"Treat these as confirmed requirements — do NOT ask about them again."
+            )
+        return base
 
     def get_clarification_questions(
         self,
