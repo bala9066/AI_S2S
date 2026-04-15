@@ -16,14 +16,13 @@ function inferDesignType(name: string): string {
 
 export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
   const [name, setName] = useState('');
-  const [requirements, setRequirements] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setLoading(true);
     const dtype = inferDesignType(name);
-    await onConfirm(name.trim(), requirements.trim(), dtype);
+    await onConfirm(name.trim(), '', dtype);
     setLoading(false);
   };
 
@@ -56,7 +55,7 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
         </div>
 
         {/* Project name */}
-        <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 28 }}>
           <label style={labelStyle}>PROJECT NAME <span style={{ color: 'var(--teal)' }}>*</span></label>
           <input
             style={inputStyle}
@@ -66,29 +65,6 @@ export default function CreateProjectModal({ onConfirm, onCancel }: Props) {
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) handleSubmit(); }}
             autoFocus
           />
-        </div>
-
-        {/* Optional requirements */}
-        <div style={{ marginBottom: 28 }}>
-          <label style={labelStyle}>
-            ANY SPECIFIC REQUIREMENTS?
-            <span style={{ color: 'var(--text4)', fontWeight: 400, marginLeft: 6, letterSpacing: 0 }}>optional</span>
-          </label>
-          <textarea
-            style={{
-              ...inputStyle,
-              resize: 'vertical',
-              minHeight: 80,
-              lineHeight: 1.65,
-            }}
-            placeholder="e.g. Must operate at -40°C to +85°C, use SMA connectors, target IPC Class 3 PCB..."
-            value={requirements}
-            onChange={e => setRequirements(e.target.value)}
-            rows={3}
-          />
-          <div style={{ fontSize: 10, color: 'var(--text4)', marginTop: 5, fontFamily: "'DM Mono', monospace" }}>
-            These will be included as initial constraints alongside your chat description.
-          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>

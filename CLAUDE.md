@@ -449,9 +449,20 @@ async def serve_frontend():
 
 ---
 
-## Known Issues
+## Known Issues / Bug Backlog
 
-*(none — all known bugs resolved)*
+| # | Bug | Status | File(s) |
+|---|-----|--------|---------|
+| B1 | **Optional Requirements Card** — After AI asks questions in P1 chat, inject a final card: "ANY SPECIFIC REQUIREMENTS? (optional)" so user can add free-form constraints before generation | ✅ DONE | `ChatView.tsx` |
+| B2 | **Power Budget Table Jumbled** — Split into two sub-tables: "5V & 3.3V Rails" and "2.5V & 1.8V Rails" | ✅ DONE | `requirements_agent.py` `_build_power_calc_md()` |
+| B3 | **DOCX Download Broken** — Fixed `clickDownload()` (append anchor to body), fixed hardcoded cairosvg path in `main.py`, added inline error toast in UI | ✅ DONE | `DocumentsView.tsx`, `main.py` |
+| B4 | **Elapsed Timer Resets on Phase Switch** — Elapsed state lifted out of `GeneratingState` into `DocumentsView` using `phaseStartTsRef` keyed by phase ID | ✅ DONE | `DocumentsView.tsx` |
+| B5 | **Preview Slow** — Fixed stale closure in prefetch via `contentsRef`; Preview button shows ✓ when cached; loading spinner on in-flight fetch | ✅ DONE | `DocumentsView.tsx` |
+| B6 | **Mermaid Parse Error in All Phases** — Both sanitizers completely rewritten: strips `%%` frontmatter, fixes `==>` arrows, removes `"` `#` `|` from labels, handles multi-line labels, aligns ChatView + DocumentsView sanitizers. System prompt updated | ✅ DONE | `ChatView.tsx`, `DocumentsView.tsx`, `requirements_agent.py` |
+| B7 | **Bad Datasheet Links** — VPT manufacturer banned in system prompt + URL validator strips VPT URLs at build time. Agent instructed to use product-page URLs (not fabricated PDF paths) | ✅ DONE | `requirements_agent.py` |
+| B8 | **GLR Missing RF Specs** — Tool schema extended with `input_return_loss_db`, `output_return_loss_db`, `harmonic_rejection`, `power_vs_frequency`, `power_vs_input`, `cable_loss`. All rendered conditionally when data present | ✅ DONE | `requirements_agent.py` |
+| B9 | **HTTP 500 on first chat message** — `SYSTEM_PROMPT` contained `%%{{ init }}%%` escaped as `{ init }` causing `KeyError: ' init '` when `.format()` was called. Fixed by escaping as `%%{{init}}%%` | ✅ DONE | `requirements_agent.py` |
+| B10 | **Optional card in wrong place / not shown** — `specificReqs` card was inside `QuickReplyPanel` (not rendered). Moved to `preStage === 'clarifying'` section with `clarifySpecificReqs` state. Removed pre-existing requirements field from `CreateProjectModal` | ✅ DONE | `ChatView.tsx`, `CreateProjectModal.tsx` |
 
 ---
 
