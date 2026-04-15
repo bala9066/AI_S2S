@@ -267,19 +267,200 @@ Step-by-step sequence:
 
 ---
 
+---
+
+## 10. Software Register Address Map
+
+This section is CRITICAL for firmware development — it defines the complete FPGA register address space as seen by the software.
+
+### 10.1 Register Base Addresses
+
+| Block Name | Base Address | Address Range | Description |
+|------------|-------------|---------------|-------------|
+| System / Identification | 0x0000 | 0x0000–0x00FF | Board ID, firmware version, status |
+| UART Control | 0x0100 | 0x0100–0x01FF | Baud rate, FIFO control, status |
+| SPI Control | 0x0200 | 0x0200–0x02FF | SPI master, chip-select control |
+| I2C Control | 0x0300 | 0x0300–0x03FF | I2C master, device address, data |
+| GPIO | 0x0400 | 0x0400–0x04FF | General purpose I/O control |
+| PLL Control | 0x0500 | 0x0500–0x05FF | PLL N/R dividers, status, config |
+| Temperature Monitor | 0x0600 | 0x0600–0x06FF | Temp sensor readings, alert threshold |
+| Power Monitor | 0x0700 | 0x0700–0x07FF | Voltage/current ADC readings per rail |
+| RF Control | 0x0800 | 0x0800–0x08FF | TRP, PA enable, attenuator, phase shift |
+| Flash / EEPROM | 0x0900 | 0x0900–0x09FF | Flash address, data, command register |
+| Diagnostics | 0x0A00 | 0x0A00–0x0AFF | Fault log, uptime counter, loopback |
+
+### 10.2 Detailed Register Map
+
+For EACH block, provide the full register table:
+
+**Block 0x0000 — System / Identification**
+
+| Offset | Register Name | Width | R/W | Reset Value | Bit-Field Description |
+|--------|--------------|-------|-----|-------------|----------------------|
+| 0x00 | BOARD_ID | 16 | R | 0x[XX] | Board identification code |
+| 0x01 | FW_VERSION_MAJOR | 16 | R | 0x0001 | Firmware major version |
+| 0x02 | FW_VERSION_MINOR | 16 | R | 0x0000 | Firmware minor version |
+| 0x03 | SYS_STATUS | 16 | R | 0x0000 | [15:8] Reserved, [7] PLL_LOCKED, [6] TEMP_ALERT, [5] VOLT_FAULT, [4:0] Reserved |
+| 0x04 | SYS_CTRL | 16 | R/W | 0x0000 | [0] SOFT_RESET, [1] WDT_ENABLE, [2] RF_ENABLE |
+
+**Block 0x0100 — UART Control**
+
+| Offset | Register Name | Width | R/W | Reset Value | Bit-Field Description |
+|--------|--------------|-------|-----|-------------|----------------------|
+| 0x00 | BAUD_DIV | 16 | R/W | 0x0036 | Baud rate divisor = FPGA_CLK / (16 × BAUD_RATE) |
+| 0x01 | UART_CTRL | 16 | R/W | 0x0001 | [0] UART_ENABLE, [1] LOOPBACK_EN, [2] CRC_EN |
+| 0x02 | UART_STATUS | 16 | R | 0x0000 | [0] TX_BUSY, [1] RX_AVAIL, [2] RX_OVERRUN, [3] FRAME_ERR |
+| 0x03 | TX_FIFO_COUNT | 16 | R | 0x0000 | Number of bytes in TX FIFO |
+| 0x04 | RX_FIFO_COUNT | 16 | R | 0x0000 | Number of bytes in RX FIFO |
+
+**Block 0x0500 — PLL Control**
+
+| Offset | Register Name | Width | R/W | Reset Value | Bit-Field Description |
+|--------|--------------|-------|-----|-------------|----------------------|
+| 0x00 | PLL_N_DIV | 16 | R/W | 0x0020 | PLL feedback N divider (integer) |
+| 0x01 | PLL_R_DIV | 16 | R/W | 0x0001 | PLL reference R divider |
+| 0x02 | PLL_CTRL | 16 | R/W | 0x0000 | [0] PLL_ENABLE, [1] PLL_RESET, [2] PLL_BYPASS |
+| 0x03 | PLL_STATUS | 16 | R | 0x0000 | [0] PLL_LOCKED, [1] PLL_LOSS_OF_LOCK, [2] PLL_ERROR |
+| 0x04 | PLL_LOCK_TIMEOUT | 16 | R/W | 0x0064 | Lock timeout in 1ms units (default 100ms) |
+
+(Generate complete register tables for ALL blocks listed in Section 10.1, deriving bit definitions from the functional specifications in Section 9)
+
+### 10.3 Register Access Rules
+- All registers are 16-bit wide; accessed via UART Single/Bulk Read/Write protocol (Section 9.1)
+- Read: set bit15 of address (address OR 0x8000)
+- Write: address as-is
+- Shadow registers: PLL_N_DIV and PLL_R_DIV are double-buffered; write PLL_CTRL[0]=0 then 1 to apply
+- Atomic access: Bulk Write used for multi-register atomic updates (e.g. frequency change)
+
+---
+
+## 11. UART Register Protocol Specification
+
+This section provides the EXACT byte-level frame format for the UART register protocol. Firmware MUST implement this exactly.
+
+### 11.1 Physical Layer
+- Baud rate: [value from Section 9.1] (configurable via UART_CTRL.BAUD_DIV)
+- Frame format: 1 start bit, 8 data bits, 1 stop bit, no parity (8N1)
+- Physical interface: [RS-422 / RS-232 / TTL — from BOM]
+- Signal levels: [value from BOM] V logic
+
+### 11.2 Command Frame Formats
+
+**Single Register Write (CMD = 0x57 'W'):**
+```
+Byte 0: 0x57 (CMD)
+Byte 1: ADDR[15:8] (address MSB)
+Byte 2: ADDR[7:0]  (address LSB)
+Byte 3: DATA[15:8] (data MSB)
+Byte 4: DATA[7:0]  (data LSB)
+→ Response: 0x06 (ACK) within 1ms, or 0x15 (NAK) on error
+Total frame: 5 bytes TX, 1 byte RX
+```
+
+**Single Register Read (CMD = 0x52 'R'):**
+```
+Byte 0: 0x52 (CMD)
+Byte 1: (ADDR[15:8] | 0x80)  (MSB with read bit set)
+Byte 2: ADDR[7:0]             (address LSB)
+→ Response: DATA[15:8], DATA[7:0] within 2ms
+Total frame: 3 bytes TX, 2 bytes RX
+```
+
+**Bulk Register Write (CMD = 0x42 'B'):**
+```
+Byte 0: 0x42 (CMD)
+Byte 1: ADDR[15:8] (start address MSB)
+Byte 2: ADDR[7:0]  (start address LSB)
+Byte 3: N          (register count, 1–64)
+Byte 4..4+2N-1: DATA[0]_H, DATA[0]_L, ..., DATA[N-1]_H, DATA[N-1]_L
+→ Response: 0x06 (ACK) within 5ms, or 0x15 (NAK)
+Total frame: (4 + 2N) bytes TX, 1 byte RX
+```
+
+**Bulk Register Read (CMD = 0x62 'b'):**
+```
+Byte 0: 0x62 (CMD)
+Byte 1: (ADDR[15:8] | 0x80)  (MSB with read bit set)
+Byte 2: ADDR[7:0]             (start address LSB)
+Byte 3: N                     (register count, 1–64)
+→ Response: DATA[0]_H, DATA[0]_L, ..., DATA[N-1]_H, DATA[N-1]_L within 5ms
+Total frame: 4 bytes TX, 2N bytes RX
+```
+
+**Error Response:**
+```
+0x15 (NAK) — sent by FPGA when:
+  - CMD byte not recognized (not 0x57, 0x52, 0x42, 0x62)
+  - Address out of valid range
+  - Write to read-only register
+  - Parser timeout (inter-byte gap > 50ms)
+```
+
+### 11.3 Protocol Timing Constraints
+| Parameter | Min | Typical | Max | Unit |
+|-----------|-----|---------|-----|------|
+| Inter-byte gap (TX side) | — | — | 50 | ms |
+| Single Write response time | — | 0.5 | 1 | ms |
+| Single Read response time | — | 1 | 2 | ms |
+| Bulk Write response time (N=64) | — | 3 | 5 | ms |
+| Bulk Read response time (N=64) | — | 3 | 5 | ms |
+| Parser reset on timeout | 50 | — | — | ms |
+
+### 11.4 Software Implementation Notes
+```c
+// Firmware register write wrapper — always use this macro
+#define FPGA_WRITE(addr, data)    UART_WriteReg((uint16_t)(addr), (uint16_t)(data))
+// Firmware register read wrapper
+#define FPGA_READ(addr, pdata)    UART_ReadReg((uint16_t)(addr) | 0x8000U, (pdata))
+// Block registers by base address
+#define REG_SYS_BASE    (0x0000U)
+#define REG_UART_BASE   (0x0100U)
+#define REG_SPI_BASE    (0x0200U)
+#define REG_I2C_BASE    (0x0300U)
+#define REG_GPIO_BASE   (0x0400U)
+#define REG_PLL_BASE    (0x0500U)
+#define REG_TEMP_BASE   (0x0600U)
+#define REG_PWR_BASE    (0x0700U)
+#define REG_RF_BASE     (0x0800U)
+#define REG_FLASH_BASE  (0x0900U)
+#define REG_DIAG_BASE   (0x0A00U)
+```
+
+---
+
+## 12. FPGA Resource Utilization Estimate
+
+| Resource | Available | Estimated Usage | Utilization % |
+|---------|-----------|----------------|--------------|
+| Slice LUTs | [from FPGA spec] | [estimate] | [X]% |
+| Slice Flip-Flops | [from FPGA spec] | [estimate] | [X]% |
+| Block RAM (36Kb) | [from FPGA spec] | [estimate] | [X]% |
+| DSP Slices | [from FPGA spec] | [estimate] | [X]% |
+| MMCM/PLL | [from FPGA spec] | [estimate] | [X]% |
+| I/O Buffers | [from FPGA spec] | [estimate] | [X]% |
+
+Synthesis tool: Vivado [version] / Quartus Prime [version]
+Target device: [FPGA part number]
+Timing constraint: [primary clock frequency] MHz
+
+---
+
 ## Annexure A — Requirement Traceability Matrix
 
-| S.No. | Requirement ID | Description | HRS Section | GLR Section |
-|-------|---------------|-------------|-------------|-------------|
-| 1 | HRS-001 | Serial Communication Interface | HRS §X | 9.1 |
-| 2 | HRS-002 | High Speed Communication | HRS §X | 9.2 |
-| 3 | HRS-003 | Power Supply Sequencing | HRS §X | 9.3 |
-| 4 | HRS-004 | Voltage/Current/Temperature Monitoring | HRS §X | 9.4 |
-| 5 | HRS-005 | Flash Interfaces | HRS §X | 9.5 |
-| 6 | HRS-006 | TRP Configuration | HRS §X | 9.6 |
-| 7 | HRS-007 | FPGA Remote Programming | HRS §X | 9.7 |
-| 8 | HRS-008 | Phase Shifter Control | HRS §X | 9.8 |
-| 9 | HRS-009 | Beam Steering | HRS §X | 9.9 |
+| S.No. | GLR-ID | Description | Source HRS Section | GLR Section | Verification Method | Status |
+|-------|--------|-------------|-------------------|-------------|--------------------|----|
+| 1 | GLR-001 | Serial Communication Interface | HRS §X | 9.1, 11 | Test | Open |
+| 2 | GLR-002 | High Speed Communication | HRS §X | 9.2 | Test | Open |
+| 3 | GLR-003 | Power Supply Sequencing | HRS §X | 9.3 | Test | Open |
+| 4 | GLR-004 | Voltage/Current/Temperature Monitoring | HRS §X | 9.4 | Test | Open |
+| 5 | GLR-005 | Flash Interfaces | HRS §X | 9.5 | Test | Open |
+| 6 | GLR-006 | TRP Configuration | HRS §X | 9.6 | Inspection | Open |
+| 7 | GLR-007 | FPGA Remote Programming | HRS §X | 9.7 | Demonstration | Open |
+| 8 | GLR-008 | Phase Shifter Control | HRS §X | 9.8 | Test | Open |
+| 9 | GLR-009 | Beam Steering | HRS §X | 9.9 | Analysis | Open |
+| 10 | GLR-010 | Register Address Map | HRS §X | 10 | Inspection | Open |
+| 11 | GLR-011 | UART Protocol Specification | HRS §X | 11 | Test | Open |
+| 12 | GLR-012 | FPGA Resource Budget | HRS §X | 12 | Analysis | Open |
 
 ---
 
@@ -289,7 +470,9 @@ Step-by-step sequence:
 - Voltage levels MUST match actual component datasheet values
 - Do NOT write TBD, TBC, or TBA anywhere — use actual values, engineering defaults, or explicit assumptions
 - The pinout table must have at minimum 35 rows
-- The RTM must reference every HRS requirement
+- Section 10 (Software Register Address Map) MUST be complete — this is a MANDATORY deliverable for firmware implementation
+- Section 11 (UART Protocol Specification) MUST include exact byte-level frame format tables
+- The RTM must reference every HRS requirement with Verification Method column
 - Be highly specific and project-relevant — generic placeholder text is not acceptable
 """
 
@@ -327,26 +510,29 @@ class GLRAgent(BaseAgent):
 **Date:** {today}
 
 ## Hardware Requirements (P1):
-{requirements[:3000] if requirements else '(not available — use component data below)'}
+{requirements[:5000] if requirements else '(not available — use component data below)'}
 
 ## Component BOM (P1):
-{components[:3500] if components else '(not available)'}
+{components[:5000] if components else '(not available)'}
 
 ## Netlist Signal Connections (P4):
-{netlist_vis[:4000] if netlist_vis else '(not available)'}
+{netlist_vis[:6000] if netlist_vis else '(not available)'}
 
 ## HRS Specification (P2):
-{hrs[:3000] if hrs else '(not available)'}
+{hrs[:4000] if hrs else '(not available)'}
 
 ## System Block Diagram (P1):
-{block_diag[:1000] if block_diag else '(not available)'}
+{block_diag[:2000] if block_diag else '(not available)'}
 
 ---
 Generate the FULL GLR document following EVERY section in your system prompt.
 - Include a complete pinout table with 35+ signals derived from the netlist above
 - Include ALL 9+ functional specification subsections with full detail
 - Use actual part numbers from the BOM, actual signal names from the netlist
-- Include the complete Requirement Traceability Matrix
+- Section 10 (Software Register Address Map) is MANDATORY — generate the complete register table for ALL blocks (System, UART, SPI, I2C, GPIO, PLL, Temp, Power, RF, Flash, Diagnostics) with base addresses, offsets, bit-field descriptions, R/W type, and reset values
+- Section 11 (UART Protocol Specification) is MANDATORY — include exact byte-level frame format tables for all 4 command types (Single Write, Single Read, Bulk Write, Bulk Read) + timing table
+- Section 12 (FPGA Resource Utilization) is MANDATORY — estimate LUTs, FFs, BRAM, DSP usage %
+- Include the complete Requirement Traceability Matrix (Annexure A) with Verification Method column
 - Write professional, engineering-grade content — no placeholder text
 """
 
@@ -358,23 +544,30 @@ Generate the FULL GLR document following EVERY section in your system prompt.
             )
             glr_content = response.get("content", "")
 
-            # Up to 3 continuation passes if truncated
+            # Up to 4 continuation passes if truncated
             _GLR_CONT_PROMPTS = [
                 (
                     "Continue the GLR document from exactly where you left off. "
                     "Do NOT repeat sections already written. "
-                    "Complete remaining functional specification sections, timing constraints, "
-                    "and resource utilisation estimates."
+                    "Complete remaining functional specification sections (Section 9), "
+                    "including all subsections not yet written."
                 ),
                 (
                     "Continue the GLR. Do NOT repeat content already written. "
-                    "Write the Verification & Validation requirements section, "
-                    "simulation test plan, and the full RTM Annexure table "
-                    "(GLR-ID | Description | Source REQ-HW | Verification Method | Status)."
+                    "Write Section 10: Software Register Address Map — ALL blocks with complete tables "
+                    "(base address, offset, register name, width, R/W, reset value, bit-field description). "
+                    "Write Section 11: UART Protocol Specification — byte-level frame format tables for "
+                    "Single Write, Single Read, Bulk Write, Bulk Read commands, plus timing constraints table. "
+                    "Write Section 12: FPGA Resource Utilization Estimate."
+                ),
+                (
+                    "Continue the GLR. Do NOT repeat content already written. "
+                    "Write Annexure A: Requirement Traceability Matrix with ALL GLR-IDs and Verification Method column. "
+                    "Write the Verification & Validation section with simulation test plan."
                 ),
                 (
                     "Finalize the GLR. Do NOT repeat content already written. "
-                    "Complete any remaining sub-sections, add the document revision history, "
+                    "Complete any remaining sub-sections, add the document revision history table, "
                     "and close with the approval sign-off block."
                 ),
             ]
@@ -382,6 +575,7 @@ Generate the FULL GLR document following EVERY section in your system prompt.
             for _pass_idx, _cont_prompt in enumerate(_GLR_CONT_PROMPTS, start=1):
                 if response.get("stop_reason") != "max_tokens" or not glr_content:
                     break
+
                 self.log(f"GLR truncated — continuation pass {_pass_idx}/3...")
                 _cont = await self.call_llm(
                     messages=[

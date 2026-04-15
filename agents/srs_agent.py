@@ -13,11 +13,19 @@ from generators.srs_generator import SRSGenerator
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a senior software architect generating a comprehensive, publication-quality IEEE 830/29148-compliant Software Requirements Specification (SRS) for an embedded hardware system.
+SYSTEM_PROMPT = """You are a senior software architect generating a comprehensive, publication-quality IEEE 830-1998 / ISO/IEC/IEEE 29148:2018-compliant Software Requirements Specification (SRS) for an embedded hardware system.
 
-This document must be thorough — equivalent to 50+ pages of professional content. Every section must be fully populated with project-specific, measurable, concrete requirements derived from the hardware context provided.
+This document must be thorough — equivalent to 60+ pages of professional content. Every section must be fully populated with project-specific, measurable, concrete, testable requirements derived from the hardware context provided.
 
-## DOCUMENT STRUCTURE (IEEE 830 / IEEE 29148:2018) — generate ALL sections in FULL:
+IEEE 29148:2018 defines a four-level requirements hierarchy:
+  Level 1 — Stakeholder Requirements (StRS) — what stakeholders need
+  Level 2 — System Requirements (SyRS) — what the system shall do
+  Level 3 — Software Requirements (SRS) — what the software shall implement
+  Level 4 — Software Architecture Requirements — design constraints
+
+This SRS is Level 3. Every requirement MUST include a Verification Method (T=Test, I=Inspection, A=Analysis, D=Demonstration).
+
+## DOCUMENT STRUCTURE (IEEE 830-1998 / IEEE 29148:2018) — generate ALL sections in FULL:
 
 # Software Requirements Specification (SRS)
 
@@ -41,20 +49,23 @@ Define the software system scope in detail:
 - Relationship to hardware components
 
 ## 1.3 Definitions, Acronyms, and Abbreviations
-Minimum 25 definitions. Include: SRS, SDD, HRS, GLR, RTOS, HAL, BSP, ISR, MISRA, UART, SPI, I2C, GPIO, ADC, DAC, DMA, FIFO, NVM, CRC, WDT, PLL, MCU, FPGA, API, BSS, etc.
+Minimum 30 definitions. Include: SRS, SDD, HRS, GLR, StRS, SyRS, RTOS, HAL, BSP, ISR, MISRA, UART, SPI, I2C, GPIO, ADC, DAC, DMA, FIFO, NVM, CRC, WDT, PLL, MCU, FPGA, API, BSS, RTM, JTAG, QSPI, TRP, ConOps, ASIL, SIL, IPC, RPC, etc.
 
 ## 1.4 References
-List minimum 8 references:
-- IEEE 830-1998 SRS standard
-- IEEE 29148:2018
-- MISRA C:2012
-- Hardware Requirements Specification (HRS)
-- Glue Logic Requirements (GLR)
-- Component datasheets (FPGA, EEPROM, Flash, sensors)
-- Project block diagram
+List minimum 10 references:
+- IEEE 830-1998: Recommended Practice for Software Requirements Specifications
+- ISO/IEC/IEEE 29148:2018: Systems and Software Engineering — Life Cycle Processes — Requirements Engineering
+- IEEE 1016-2009: Software Design Descriptions
+- MISRA C:2012: Guidelines for the Use of the C Language in Critical Systems
+- IEC 61508: Functional Safety of E/E/PE Safety-related Systems
+- Hardware Requirements Specification (HRS) — this project
+- Glue Logic Requirements (GLR) — this project
+- Component datasheets (FPGA, EEPROM, Flash, sensors, power monitors)
+- Project Block Diagram (P1)
+- Netlist Specification (P4)
 
 ## 1.5 Overview
-Describe the structure of this document and how to use it.
+Describe the structure of this document and how to use it. State which sections address functional requirements, non-functional requirements, and how the traceability matrix links this SRS to the HRS.
 
 ---
 
@@ -119,11 +130,10 @@ List all assumptions the software makes about:
 
 ### 3.1.1 Hardware Interfaces
 For EACH hardware interface, provide:
-- Interface name and protocol
-- C struct definition mapping registers
-- Driver API function prototypes
-- Timing constraints (setup, hold, clock frequency)
-- Error handling
+- Interface name and protocol (with exact timing: setup time, hold time, max clock frequency)
+- C struct definition mapping FPGA registers (base address + offsets in hex)
+- Driver API function prototypes with full Doxygen-style parameter docs
+- Error handling and recovery procedure
 
 **3.1.1.1 UART Interface**
 ```c
@@ -176,17 +186,32 @@ int32_t PowerMon_ReadCurrent(uint8_t channel, float *current_A);
 - Logging framework interface
 
 ### 3.1.3 Communication Interfaces
-Full protocol specification for the UART register command protocol:
-- Frame formats for Single Write, Single Read, Bulk Write, Bulk Read
-- Address encoding (BASE_ADDR + OFFSET from GLR)
-- ACK/NAK response codes
-- Timeout and retry behavior
-- CRC/checksum (if used)
+Full byte-level protocol specification for the UART register command protocol:
+
+**Frame Formats (from GLR):**
+
+| Command | CMD byte | Frame Structure | Response |
+|---------|----------|-----------------|----------|
+| Single Write | 0x57 ('W') | [0x57][ADDR_H][ADDR_L][DATA_H][DATA_L] | [0x06] ACK |
+| Single Read  | 0x52 ('R') | [0x52][ADDR_H\|0x80][ADDR_L] | [DATA_H][DATA_L] |
+| Bulk Write   | 0x42 ('B') | [0x42][ADDR_H][ADDR_L][N][D0_H][D0_L]...[Dn_H][Dn_L] | [0x06] ACK |
+| Bulk Read    | 0x62 ('b') | [0x62][ADDR_H\|0x80][ADDR_L][N] | [D0_H][D0_L]...[Dn_H][Dn_L] |
+| Error NAK    | 0x15 | Sent by FPGA on invalid command/address | — |
+
+- Address space: 16-bit (0x0000–0xFFFF); read addresses have bit15 set (OR 0x8000)
+- Maximum bulk count N: 64 registers per transaction
+- Timeout: host must respond within 10ms; FPGA resets parser after 50ms inter-byte gap
+- ACK byte: 0x06; NAK byte: 0x15
+- No CRC in baseline protocol; CRC-16 CCITT optional (feature flag in config flash)
 
 ## 3.2 Functional Requirements
 
-Generate MINIMUM 50 functional requirements with IDs REQ-SW-001 through REQ-SW-050+.
-Group them by subsystem:
+Generate MINIMUM 75 functional requirements with IDs REQ-SW-001 through REQ-SW-075+.
+Group them by subsystem. For EACH requirement, include:
+- **REQ-SW-xxx**: [The software SHALL ...] — measurable, testable statement
+- **Source**: REQ-HW-xxx or GLR §x.x (traceability up the hierarchy)
+- **Priority**: [M]andatory / [D]esirable / [O]ptional (MoSCoW)
+- **Verification**: [T]est / [I]nspection / [A]nalysis / [D]emonstration
 
 ### 3.2.1 System Initialization (REQ-SW-001 to REQ-SW-010)
 REQ-SW-001: The software SHALL complete power-on self-test within 500ms of reset de-assertion.
@@ -234,8 +259,15 @@ REQ-SW-042: The software SHALL assert a fault condition if any rail deviates >5%
 ### 3.2.6 RF / Application-Specific (REQ-SW-051+)
 (Generate RF-specific requirements if the project is RF, otherwise generate application-specific requirements from HRS)
 
+### 3.2.7 Diagnostics and Built-In Test (REQ-SW-071 to REQ-SW-075+)
+REQ-SW-071: The software SHALL implement a Power-On Self-Test (POST) covering RAM BIST, peripheral communication check, and PLL lock verification.
+REQ-SW-072: The software SHALL log all detected faults to a circular fault log buffer in EEPROM (minimum 64 entries, FIFO).
+REQ-SW-073: The software SHALL expose a UART diagnostic command (0xD0) that dumps the fault log buffer to the host.
+REQ-SW-074: The software SHALL maintain a software execution counter (uptime seconds) readable via UART register.
+REQ-SW-075: The software SHALL implement a built-in loopback test for the UART driver (internal Tx→Rx at startup).
+
 ## 3.3 Performance Requirements
-Minimum 10 performance requirements with concrete measurable values:
+Minimum 12 performance requirements with concrete measurable values. Include verification method:
 - REQ-PERF-001: Main loop execution cycle SHALL complete within [X] ms
 - REQ-PERF-002: UART register write SHALL complete within [X] µs end-to-end
 - REQ-PERF-003: Temperature read cycle SHALL complete within [X] ms
@@ -387,14 +419,163 @@ stateDiagram-v2
 
 ---
 
+## 3.6 Stakeholder Requirements Traceability (IEEE 29148:2018 §6.2)
+
+Provide a two-level trace showing how software requirements link to hardware/system requirements:
+
+| REQ-SW-xxx | SW Requirement Summary | Maps To (HRS/GLR/SyRS) | Verification |
+|-----------|------------------------|------------------------|-------------|
+(All 75+ requirements must appear as rows)
+
+---
+
+# 4. Verification and Validation
+
+## 4.1 Unit Test Requirements
+For each driver module, define minimum 3 test cases:
+- Normal operation path
+- Boundary condition (min/max values)
+- Fault injection (hardware not responding, timeout)
+
+## 4.2 Integration Test Requirements
+- UART loopback self-test (REQ-SW-075 verification)
+- SPI EEPROM write–read–verify (REQ-SW-006 verification)
+- Temperature sensor alert trigger test
+- Flash sector erase–write–read–CRC test
+- PLL lock acquisition and loss-of-lock recovery test
+
+## 4.3 System Test Requirements
+- Full power-on sequence test with timing measurements
+- Endurance test: 72 hours continuous operation at nominal temperature
+- Temperature stress test across rated operating range
+- EMC/EMI pre-compliance test (conducted emissions, radiated emissions)
+- UART protocol conformance test: all four command types with error injection
+
+## 4.4 Formal Verification (if SIL ≥ 2)
+- Static analysis tool coverage report (Polyspace, PC-lint)
+- Stack usage analysis (all call paths worst-case bounded)
+- Data flow analysis for all state machine transitions
+
+---
+
+# 5. Requirements Traceability Matrix
+
+| REQ-SW-xxx | Description | Source (REQ-HW/GLR §) | Priority | Verification | Status |
+|-----------|-------------|----------------------|----------|-------------|--------|
+(Map ALL REQ-SW-xxx to hardware requirements from HRS and GLR sections; include Priority and Verification columns)
+
+---
+
+# 6. Appendices
+
+## Appendix A — Error Codes
+```c
+typedef enum {
+    ERR_OK           = 0x00,
+    ERR_TIMEOUT      = 0x01,
+    ERR_COMM         = 0x02,
+    ERR_CHECKSUM     = 0x03,
+    ERR_PARAM        = 0x04,
+    ERR_NOT_INIT     = 0x05,
+    ERR_RESOURCE     = 0x06,
+    ERR_HARDWARE     = 0x07,
+    ERR_OVERFLOW     = 0x08,
+    ERR_UNDERFLOW    = 0x09,
+    ERR_FLASH_WRITE  = 0x0A,
+    ERR_FLASH_ERASE  = 0x0B,
+    ERR_EEPROM       = 0x0C,
+    ERR_PLL          = 0x0D,
+    ERR_TEMP_ALERT   = 0x0E,
+    ERR_VOLT_FAULT   = 0x0F,
+    ERR_LOOPBACK     = 0x10,
+    ERR_POST_FAIL    = 0x11,
+    ERR_WATCHDOG     = 0x12,
+    ERR_ADDR_RANGE   = 0x13,
+} ErrorCode_t;
+```
+
+## Appendix B — FPGA Register Map (Software View)
+Provide a complete table of all software-accessible FPGA registers:
+
+| Base Address | Block | Offset | Register Name | Width | R/W | Reset Value | Description |
+|-------------|-------|--------|--------------|-------|-----|-------------|-------------|
+(Derive all entries from GLR §10 register address map)
+
+## Appendix C — Mermaid Diagrams
+
+### System Initialization Sequence
+```mermaid
+sequenceDiagram
+    participant HW as Hardware
+    participant BSP as BSP/HAL
+    participant APP as Application
+    HW->>BSP: Power-on Reset released
+    BSP->>BSP: Clock init, PLL config
+    BSP->>BSP: Peripheral init UART SPI I2C
+    BSP->>APP: Board ready
+    APP->>APP: Load calibration from EEPROM
+    APP->>APP: POST self-test
+    APP->>HW: Enable outputs LED RF
+```
+
+### UART Register Command Flow
+```mermaid
+sequenceDiagram
+    participant HOST as Host PC
+    participant DRV as UART Driver
+    participant REG as Register Map
+    HOST->>DRV: Send Write Command 0x57 ADDR DATA
+    DRV->>REG: Write register ADDR equals DATA
+    REG-->>DRV: Write complete
+    DRV-->>HOST: ACK 0x06
+```
+
+### Temperature Alert State Machine
+```mermaid
+stateDiagram-v2
+    [*] --> NORMAL
+    NORMAL --> ALERT: temp above THRESH HIGH
+    ALERT --> NORMAL: temp below THRESH LOW hysteresis
+    ALERT --> SHUTDOWN: temp above THRESH CRITICAL
+    SHUTDOWN --> [*]: Power cycle required
+```
+
+### Software Layer Architecture
+```mermaid
+graph TD
+    APP[Application Layer] --> HAL[Hardware Abstraction Layer]
+    HAL --> UART[UART Driver]
+    HAL --> SPI[SPI Driver]
+    HAL --> I2C[I2C Driver]
+    HAL --> GPIO[GPIO Driver]
+    HAL --> WDT[Watchdog Driver]
+    UART --> FPGA[FPGA Register Map]
+    SPI --> EEPROM[EEPROM Device]
+    SPI --> FLASH[Flash Memory]
+    I2C --> TEMP[Temp Sensor]
+    I2C --> PWRMON[Power Monitor]
+```
+
+## Appendix D — Acronyms and Glossary
+(Full glossary of 30+ terms used in this document)
+
+## Appendix E — Document Revision History
+| Rev | Date | Author | Description |
+|-----|------|--------|-------------|
+| 1.0 | — | — | Initial Release |
+
+---
+
 ## ABSOLUTE RULES:
-1. Generate MINIMUM 50 REQ-SW-xxx requirements spread across all subsystems
-2. Every requirement must be specific, measurable, and testable — no vague language
-3. NEVER use TBD, TBC, or TBA — derive values from HRS/GLR or state explicit engineering assumptions
-4. All C code examples must be syntactically correct C99
-5. Include minimum 5 Mermaid diagrams (sequence, state, flowchart). STRICT Mermaid label rules: NO single-quotes ', double-quotes ", angle brackets < >, #, |, & or colons : inside node labels. NO 3+ consecutive dashes (---) inside labels. Use plain ASCII words only.
-6. The traceability matrix must map EVERY REQ-SW to at least one REQ-HW or GLR section
-7. Be highly specific to the actual project — generic boilerplate is not acceptable
+1. Generate MINIMUM 75 REQ-SW-xxx requirements spread across all subsystems
+2. Every requirement MUST include Source, Priority (M/D/O), and Verification (T/I/A/D)
+3. Every requirement must be specific, measurable, and testable — no vague language
+4. NEVER use TBD, TBC, or TBA — derive values from HRS/GLR or state explicit engineering assumptions
+5. All C code examples must be syntactically correct C99
+6. Include minimum 5 Mermaid diagrams (sequence, state, flowchart, graph TD). STRICT Mermaid label rules: NO single-quotes ', double-quotes ", angle brackets < >, #, |, & or colons : inside node labels. NO 3+ consecutive dashes (---) inside labels. Use plain ASCII words only in labels.
+7. The traceability matrix (Section 5) must include ALL REQ-SW-xxx with Source, Priority, Verification columns
+8. Section 3.1.3 MUST include the UART byte-level frame format table
+9. Be highly specific to the actual project — generic boilerplate is not acceptable
 """
 
 
@@ -428,24 +609,26 @@ class SRSAgent(BaseAgent):
 
         # PRIMARY PATH: LLM writes the full IEEE 830 SRS from project context
         user_message = (
-            f"Generate a COMPLETE, DETAILED, 50+ page IEEE 830/29148 Software Requirements Specification for:\n\n"
+            f"Generate a COMPLETE, DETAILED, 60+ page IEEE 830-1998 / IEEE 29148:2018 Software Requirements Specification for:\n\n"
             f"**Project:** {project_name}\n"
             f"**Date:** {today}\n\n"
-            f"## Hardware Requirements Specification (P2):\n"
-            f"{hrs[:5000] if hrs else 'Not yet generated — use P1 requirements below.'}\n\n"
+            f"## Hardware Requirements Specification (P2 — primary input):\n"
+            f"{hrs[:8000] if hrs else 'Not yet generated — use P1 requirements below.'}\n\n"
             f"## P1 Requirements & BOM:\n"
-            f"{requirements[:3000] if requirements else 'Not captured.'}\n\n"
-            f"## GLR Specification (P6):\n"
-            f"{glr[:4000] if glr else 'Not yet generated.'}\n\n"
+            f"{requirements[:5000] if requirements else 'Not captured.'}\n\n"
+            f"## GLR Specification (P6 — register addresses, UART protocol, pinout):\n"
+            f"{glr[:6000] if glr else 'Not yet generated.'}\n\n"
             "INSTRUCTIONS:\n"
             "1. Generate ALL sections from the IEEE 830/29148 structure in your system prompt\n"
-            "2. Generate MINIMUM 50 REQ-SW-xxx requirements — number them sequentially\n"
-            "3. Map every REQ-SW to at least one REQ-HW or GLR section in the traceability matrix\n"
+            "2. Generate MINIMUM 75 REQ-SW-xxx requirements — number them sequentially; each MUST have Source, Priority, Verification columns\n"
+            "3. Map every REQ-SW to at least one REQ-HW or GLR section in the traceability matrix (Section 5)\n"
             "4. Include actual C function prototypes and struct definitions for every hardware interface\n"
-            "5. Include minimum 5 Mermaid diagrams (sequenceDiagram, stateDiagram-v2, flowchart)\n"
-            "6. Derive all values from the HRS/GLR — no TBD/TBC/TBA placeholders anywhere\n"
-            "7. Each section must be fully written — no placeholders, no 'to be completed'\n"
-            "8. Be highly specific to this actual project — no generic boilerplate"
+            "5. Section 3.1.3 MUST contain the full UART byte-level frame format table (Single Write, Single Read, Bulk Write, Bulk Read, NAK)\n"
+            "6. Include Appendix B with complete FPGA register map table (base address, offset, name, R/W, reset value)\n"
+            "7. Include minimum 5 Mermaid diagrams (sequenceDiagram, stateDiagram-v2, graph TD)\n"
+            "8. Derive all values from the HRS/GLR — no TBD/TBC/TBA placeholders anywhere\n"
+            "9. Each section must be fully written — no placeholders, no 'to be completed'\n"
+            "10. Be highly specific to this actual project — no generic boilerplate"
         )
 
         srs_content = ""

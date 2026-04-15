@@ -679,6 +679,116 @@ src/
 
 ---
 
+## 2.9 Resource Viewpoint — Real-Time Constraints
+
+### 2.9.1 Task Scheduling Table
+Define all periodic tasks and their timing budget:
+
+| Task Name | Period | Worst-Case Exec Time | Priority | Deadline | CPU Load |
+|-----------|--------|---------------------|----------|----------|---------|
+| main_loop | 10ms | [X]µs | N/A | 10ms | [X]% |
+| TempMon_Task | 1000ms | [X]µs | Low | 1000ms | [X]% |
+| PwrMon_Task | 500ms | [X]µs | Low | 500ms | [X]% |
+| WDT_Pet | 5000ms | [X]µs | Highest | 5000ms | [X]% |
+| CmdHandler_Process | 1ms | [X]µs | Medium | 5ms | [X]% |
+
+### 2.9.2 ISR Latency Budget
+| Interrupt Source | Latency Requirement | Worst-Case Measured | Margin |
+|-----------------|--------------------|--------------------|--------|
+| UART RX | < [X]µs | [X]µs | [X]% |
+| SPI Transfer Complete | < [X]µs | [X]µs | [X]% |
+| Timer Tick | < [X]µs | [X]µs | [X]% |
+| Temperature Alert GPIO | < [X]µs | [X]µs | [X]% |
+
+### 2.9.3 Memory Budget
+| Region | Total Available | Used | Remaining |
+|--------|----------------|------|-----------|
+| Code Flash | [X] KB | [X] KB | [X] KB |
+| Data Flash | [X] KB | [X] KB | [X] KB |
+| SRAM | [X] KB | [X] KB | [X] KB |
+| EEPROM | [X] KB | [X] KB | [X] KB |
+| Stack (worst path) | [X] KB | [X] KB | [X] KB |
+
+---
+
+## 2.10 Build System Viewpoint
+
+### 2.10.1 CMakeLists.txt Structure
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project([ProjectName] VERSION 1.0.0 LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+
+# Driver library (C)
+add_library(drivers STATIC
+    drivers/uart_driver.c
+    drivers/spi_driver.c
+    drivers/i2c_driver.c
+    drivers/gpio_driver.c
+    drivers/pll_driver.c
+    drivers/flash_driver.c
+    drivers/eeprom_driver.c
+    utils/crc32.c
+    utils/ring_buffer.c
+)
+
+# Application (C)
+add_executable(firmware
+    src/main.c
+    src/board/board_init.c
+    src/app/cmd_handler.c
+    src/app/temp_monitor.c
+    src/app/power_monitor.c
+    src/app/watchdog.c
+)
+target_link_libraries(firmware PRIVATE drivers)
+target_compile_options(firmware PRIVATE
+    -Wall -Wextra -Werror
+    -fstack-usage      # generate .su files for stack analysis
+    -ffunction-sections -fdata-sections  # dead-code elimination
+)
+
+# Qt6 C++ GUI (optional)
+find_package(Qt6 COMPONENTS Widgets SerialPort QUIET)
+if (Qt6_FOUND)
+    add_subdirectory(qt_gui)
+endif()
+
+# Unit Tests (CTest + Google Test)
+enable_testing()
+add_subdirectory(tests)
+```
+
+### 2.10.2 Cross-Compilation for ARM Target
+```cmake
+# Toolchain file: arm-none-eabi.cmake
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+set(CMAKE_CXX_COMPILER arm-none-eabi-g++)
+set(CMAKE_EXE_LINKER_FLAGS "-specs=nosys.specs -specs=nano.specs" CACHE STRING "" FORCE)
+```
+
+### 2.10.3 Unit Test Infrastructure
+```cmake
+# tests/CMakeLists.txt
+find_package(GTest REQUIRED)
+add_executable(test_drivers
+    test_uart_driver.cpp
+    test_spi_driver.cpp
+    test_i2c_driver.cpp
+    test_flash_driver.cpp
+    mock_hardware.cpp   # hardware mock layer for host testing
+)
+target_link_libraries(test_drivers PRIVATE drivers GTest::gtest_main)
+include(GoogleTest)
+gtest_discover_tests(test_drivers)
+```
+
+---
+
 ## ABSOLUTE RULES:
 1. ALL modules must have complete, syntactically correct C99 function prototypes
 2. ALL Mermaid diagrams must be valid (sequenceDiagram, stateDiagram-v2, graph TD, classDiagram). STRICT label rules: NO single-quotes ', double-quotes ", angle brackets < >, #, |, & or colons : inside node labels. NO 3+ consecutive dashes (---) inside labels. Use plain ASCII words only.
@@ -687,6 +797,8 @@ src/
 5. Include minimum 8 Mermaid diagrams across all viewpoints
 6. Design must be 100% MISRA-C:2012 compliant — no exceptions
 7. Be highly specific to the actual project hardware — derive module names, register addresses, and constants from the SRS/GLR context provided
+8. Section 2.9 (Resource Viewpoint) MUST include the task scheduling table, ISR latency budget, and memory budget
+9. Section 2.10 (Build System) MUST include the CMakeLists.txt structure for drivers + firmware + Qt6 GUI + unit tests
 """
 
 
@@ -727,20 +839,23 @@ class SDDAgent(BaseAgent):
 
         # PRIMARY PATH: LLM writes the full IEEE 1016 SDD from SRS context
         user_message = (
-            f"Generate a COMPLETE, DETAILED, 50+ page IEEE 1016-2009 Software Design Document for:\n\n"
+            f"Generate a COMPLETE, DETAILED, 60+ page IEEE 1016-2009 Software Design Document for:\n\n"
             f"**Project:** {project_name}\n"
             f"**Date:** {today}\n\n"
-            f"## Software Requirements Specification (SRS):\n{srs[:6000]}\n\n"
-            f"## GLR Specification (register addresses, signals):\n{glr[:3000] if glr else 'Not available.'}\n\n"
-            f"## HRS (hardware context):\n{hrs[:2000] if hrs else 'Not available.'}\n\n"
+            f"## Software Requirements Specification (SRS — primary input):\n{srs[:10000]}\n\n"
+            f"## GLR Specification (FPGA registers, signal names, UART protocol):\n{glr[:5000] if glr else 'Not available.'}\n\n"
+            f"## HRS (hardware context, power rails, interfaces):\n{hrs[:3000] if hrs else 'Not available.'}\n\n"
             "INSTRUCTIONS:\n"
             "1. Generate ALL sections from the IEEE 1016 structure in your system prompt\n"
             "2. Include complete C struct definitions and ALL function prototypes for every module\n"
             "3. Include minimum 8 Mermaid diagrams (sequenceDiagram, stateDiagram-v2, graph TD, classDiagram)\n"
             "4. Every design element must trace back to a REQ-SW-xxx from the SRS\n"
             "5. Design must be MISRA-C:2012 compliant throughout\n"
-            "6. Derive module names, register addresses, constants from the SRS/GLR — no generic boilerplate\n"
-            "7. NEVER use TBD/TBC/TBA — use actual values or explicit engineering assumptions"
+            "6. Section 2.9 (Resource Viewpoint) MUST include: task scheduling table, ISR latency budget, and memory budget derived from HRS\n"
+            "7. Section 2.10 (Build System) MUST include: CMakeLists.txt structure for drivers + firmware + Qt6 GUI + unit tests (Google Test)\n"
+            "8. Appendix B MUST include: full FPGA register map (base address, offset, name, R/W, reset value) from GLR\n"
+            "9. Derive module names, register addresses, constants from the SRS/GLR — no generic boilerplate\n"
+            "10. NEVER use TBD/TBC/TBA — use actual values or explicit engineering assumptions"
         )
 
         sdd_content = ""

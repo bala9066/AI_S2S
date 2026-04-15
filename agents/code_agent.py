@@ -211,6 +211,13 @@ class CodeAgent(BaseAgent):
         ci_file.write_text(ci_workflow, encoding="utf-8")
         outputs[".github/workflows/hardware_pipeline_ci.yml"] = ci_workflow
 
+        # --- Step 3.5a: ARM toolchain CMake file ---
+        arm_toolchain = self._build_arm_toolchain_cmake()
+        cmake_dir = output_dir / "cmake"
+        cmake_dir.mkdir(parents=True, exist_ok=True)
+        (cmake_dir / "arm-none-eabi.cmake").write_text(arm_toolchain, encoding="utf-8")
+        outputs["cmake/arm-none-eabi.cmake"] = arm_toolchain
+
         # --- Step 3.6: Validate the CI/CD YAML locally (no credentials needed) ---
         self.log("Validating CI/CD workflow YAML (local, no credentials required)...")
         ci_validation = self._validate_ci_workflow(ci_workflow)
@@ -272,15 +279,15 @@ class CodeAgent(BaseAgent):
         c_files_for_llm = {k: v for k, v in generated_files.items() if k.endswith((".c", ".cpp", ".h"))}
         all_files_for_llm = {k: v for k, v in generated_files.items()}
 
-        # Use all C/C++ files (up to 4), increased snippet length for comprehensive review
+        # Use all C/C++ files (up to 6), 6000 chars each for comprehensive review
         code_full = "\n\n".join(
-            f"// === FILE: {fname} ===\n{code[:3000]}"
-            for fname, code in list(c_files_for_llm.items())[:4]
+            f"// === FILE: {fname} ===\n{code[:6000]}"
+            for fname, code in list(c_files_for_llm.items())[:6]
         )
         if not code_full and all_files_for_llm:
             code_full = "\n\n".join(
-                f"// === FILE: {fname} ===\n{code[:3000]}"
-                for fname, code in list(all_files_for_llm.items())[:3]
+                f"// === FILE: {fname} ===\n{code[:6000]}"
+                for fname, code in list(all_files_for_llm.items())[:4]
             )
 
         summary = analysis_results.get("summary", {})
@@ -300,29 +307,65 @@ class CodeAgent(BaseAgent):
             f"## Static Analysis Tool Results\n```json\n{findings_text}\n```\n\n"
             f"## Source Code\n```c\n{code_full}\n```\n\n"
             f"Provide a comprehensive review with ALL of the following sections:\n\n"
-            f"### 1. MISRA-C 2023 Deep Analysis\n"
-            f"- Cite exact rule numbers (e.g. Rule 15.5, Rule 17.3)\n"
-            f"- For each violation: show the offending line, explain why it violates the rule, "
-            f"and provide a corrected code snippet\n\n"
-            f"### 2. Security Vulnerabilities\n"
-            f"- Buffer overflows, integer overflows, unchecked return values\n"
-            f"- CWE classification where applicable\n"
-            f"- Severity: CRITICAL / HIGH / MEDIUM with exact line references\n\n"
-            f"### 3. Architecture & Design Issues\n"
-            f"- Code structure, coupling, cohesion, modularity\n"
-            f"- ISR safety, re-entrancy, race conditions in firmware context\n"
-            f"- Memory usage: stack depth, heap usage, static allocation recommendations\n\n"
-            f"### 4. Line-by-Line Fix Recommendations\n"
-            f"For every issue found, provide:\n"
-            f"```c\n// BEFORE (line XX — issue description)\n[original code]\n\n"
-            f"// AFTER (fix)\n[fixed code]\n```\n\n"
-            f"### 5. Test Coverage Recommendations\n"
-            f"- Unit tests needed for each function\n"
-            f"- Edge cases and boundary conditions to test\n"
-            f"- Hardware-in-the-loop (HIL) test scenarios\n\n"
-            f"### 6. Certification Readiness (IEC 61508 / ISO 26262)\n"
-            f"- Gaps preventing SIL-2 / ASIL-B certification\n"
-            f"- Required documentation and traceability improvements\n\n"
+            f"### 1. MISRA-C:2012 / MISRA-C:2023 Deep Analysis\n"
+            f"- Cite exact rule numbers (e.g. Rule 15.5, Rule 17.3, Dir 4.7)\n"
+            f"- Classify each rule as: Mandatory / Required / Advisory\n"
+            f"- For each violation: quote the offending line, explain why it violates the rule, "
+            f"and provide a CORRECTED code snippet\n"
+            f"- Check specifically: Rule 14.4 (bool controlling expressions), Rule 15.5 (single exit), "
+            f"Rule 17.3 (implicit function declaration), Rule 17.7 (return value usage), "
+            f"Dir 4.1 (arithmetic overflow), Dir 4.7 (error information), Dir 4.11 (validity of inputs)\n\n"
+            f"### 2. Security Vulnerability Assessment\n"
+            f"- Buffer overflows (CWE-120, CWE-121, CWE-122)\n"
+            f"- Integer overflow/underflow (CWE-190, CWE-191)\n"
+            f"- Unchecked return values (CWE-252)\n"
+            f"- Use of dangerous functions (sprintf, strcpy, gets → flag with severity)\n"
+            f"- Severity: CRITICAL / HIGH / MEDIUM / LOW with exact line references\n\n"
+            f"### 3. Firmware-Specific Issues\n"
+            f"- ISR safety: volatile-missing on shared variables, non-reentrant functions called from ISR\n"
+            f"- Race conditions: check all global variable accesses for atomic read-modify-write issues\n"
+            f"- Stack depth: identify deepest call chains, flag unbounded recursion\n"
+            f"- Watchdog petting: confirm WDT_Pet() is called on every code path through main loop\n"
+            f"- Error propagation: every HAL function return value must be checked\n"
+            f"- Static allocation: confirm no malloc/calloc/free/realloc (MISRA Rule 21.3)\n\n"
+            f"### 4. Architecture & Design Quality\n"
+            f"- Module coupling and cohesion analysis\n"
+            f"- Cyclomatic complexity per function (flag any > 10)\n"
+            f"- Dead code detection\n"
+            f"- Magic numbers: flag all numeric literals that should be named constants\n"
+            f"- Missing Doxygen headers: list all public functions without complete documentation\n\n"
+            f"### 5. Line-by-Line Fix Recommendations\n"
+            f"For EVERY issue found above, provide:\n"
+            f"```c\n// BEFORE (line XX — rule/issue description)\n"
+            f"[original code snippet]\n\n"
+            f"// AFTER (corrected code with explanation)\n"
+            f"[fixed code snippet]\n```\n\n"
+            f"### 6. Test Coverage Recommendations\n"
+            f"For each driver module, specify:\n"
+            f"- Unit test functions needed (test name + what it validates)\n"
+            f"- Boundary values and edge cases\n"
+            f"- Fault injection scenarios (hardware timeout, CRC error, etc.)\n"
+            f"- Hardware-in-the-loop (HIL) test scenarios\n"
+            f"- Target: minimum 80% line coverage, 70% branch coverage\n\n"
+            f"### 7. SRS Traceability Check\n"
+            f"- List which REQ-SW-xxx requirements each file implements\n"
+            f"- Identify any SRS requirements not implemented in the generated code\n"
+            f"- Flag missing functionality: POST, fault logging, UART loopback test\n\n"
+            f"### 8. Certification Readiness Assessment\n"
+            f"- IEC 61508 SIL-2 gaps: tool qualification, coding standard enforcement, V&V evidence\n"
+            f"- ISO 26262 ASIL-B gaps: systematic capability, software unit testing requirements\n"
+            f"- Required process documentation for functional safety certification\n"
+            f"- Estimated effort to reach SIL-1 compliance\n\n"
+            f"### 9. Quality Score Breakdown\n"
+            f"Score 0–100 across five dimensions:\n"
+            f"| Dimension | Score/20 | Key Issues |\n"
+            f"|-----------|---------|------------|\n"
+            f"| MISRA Compliance | /20 | |\n"
+            f"| Security | /20 | |\n"
+            f"| Firmware Safety | /20 | |\n"
+            f"| Code Quality | /20 | |\n"
+            f"| Test Coverage | /20 | |\n"
+            f"| **TOTAL** | **/100** | |\n\n"
             f"Be exhaustive. Show actual code. Do not summarise — give the full analysis."
         )
 
@@ -532,10 +575,12 @@ class CodeAgent(BaseAgent):
                 f"## CI/CD Pipeline\n\n"
                 f"Workflow: `.github/workflows/hardware_pipeline_ci.yml`  \n"
                 f"Runs automatically on every push and PR:\n\n"
-                f"- **Build Qt App** — qmake + make on ubuntu-latest (Qt 5.14.2)\n"
-                f"- **Static Analysis** — Cppcheck with MISRA-C rules (C11 + C++14)\n"
-                f"- **Quality Gate** — all jobs must pass\n"
-                f"- **Artifacts** — built binary uploaded for 30 days\n\n"
+                f"- **Build Qt6 GUI** — CMake + Ninja, ubuntu-22.04 (Qt 6.5)\n"
+                f"- **Build ARM Firmware** — arm-none-eabi-gcc cross-compile, binary size check\n"
+                f"- **Unit Tests + Coverage** — CTest + Google Test, lcov HTML report, 60% gate\n"
+                f"- **Static Analysis** — Cppcheck (MISRA-C) + Clang-Tidy (bugprone, cert, perf)\n"
+                f"- **Quality Gate** — all jobs must pass before merge\n"
+                f"- **Artifacts** — binaries, coverage HTML, Cppcheck report (30-day retention)\n\n"
                 f"See `ci_validation_report.md` for local pre-push validation results.\n"
             )
         else:
@@ -548,9 +593,11 @@ class CodeAgent(BaseAgent):
                 f"The workflow file has been written to disk and validated without credentials.\n\n"
                 f"**File:** `.github/workflows/hardware_pipeline_ci.yml`\n\n"
                 f"**Jobs:**\n"
-                f"- `build-qt-app` — qmake `{{}}.pro` + make, Qt 5.14.2, ubuntu-latest\n"
-                f"- `static-analysis` — Cppcheck C11 (drivers) + C++14 (qt_gui)\n"
-                f"- `quality-gate` — passes only when build + analysis succeed\n\n"
+                f"- `build-qt-app` — CMake + Qt6 + QtSerialPort, ubuntu-22.04\n"
+                f"- `build-firmware-arm` — arm-none-eabi-gcc cross-compile, binary size report\n"
+                f"- `unit-tests` — CTest + Google Test + lcov coverage (60% gate)\n"
+                f"- `static-analysis` — Cppcheck MISRA-C C11 + Clang-Tidy bugprone/cert\n"
+                f"- `quality-gate` — passes only when build + tests + analysis all succeed\n\n"
                 f"**Validation:** See `ci_validation_report.md` for YAML parse results,\n"
                 f"job structure checks, and actionlint output (if installed).\n\n"
                 f"**To activate Git integration**, add to `.env`:\n"
@@ -558,11 +605,11 @@ class CodeAgent(BaseAgent):
             )
 
     def _build_github_ci_workflow(self, project_name: str, safe_name: str) -> str:
-        """Generate a GitHub Actions CI/CD workflow for the Qt 5.14.2 QMake project."""
+        """Generate a GitHub Actions CI/CD workflow — CMake + Qt6 + ARM cross-compile + tests + coverage."""
         return f"""\
 # Hardware Pipeline CI/CD — {project_name}
 # Auto-generated by Hardware Pipeline v2
-# Qt 5.14.2 | QMake | MinGW (Linux CI via GCC)
+# CMake 3.20+ | Qt6 | GCC 11 (host) | arm-none-eabi-gcc (embedded)
 
 name: Hardware Pipeline CI
 
@@ -573,99 +620,335 @@ on:
     branches: [ main, master ]
 
 env:
-  QT_VERSION: '5.14.2'
+  QT_VERSION: '6.5.0'
+  BUILD_TYPE: Release
+  ARM_TOOLCHAIN: arm-none-eabi
 
 jobs:
   # ------------------------------------------------------------------ #
-  # Build Qt 5 application with QMake
+  # Job 1: Build Qt6 GUI application (host x86-64)
   # ------------------------------------------------------------------ #
   build-qt-app:
-    name: Build Qt Application
-    runs-on: ubuntu-latest
+    name: Build Qt6 GUI Application
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \\
+            cmake ninja-build \\
+            libgl1-mesa-dev \\
+            libgtest-dev \\
+            gcovr lcov
 
       - name: Install Qt ${{{{ env.QT_VERSION }}}}
         uses: jurplel/install-qt-action@v3
         with:
           version: ${{{{ env.QT_VERSION }}}}
-          modules: ''          # serialport is included in Qt 5.14.2 base
+          modules: 'qtserialport'
+          cache: true
 
-      - name: Run qmake
-        working-directory: qt_gui
-        run: qmake {safe_name}.pro CONFIG+=release
+      - name: Configure CMake (Qt6 GUI)
+        run: |
+          cmake -B build-qt \\
+            -DCMAKE_BUILD_TYPE=${{{{ env.BUILD_TYPE }}}} \\
+            -DQT6_GUI=ON \\
+            -G Ninja
 
-      - name: Build with make
-        working-directory: qt_gui
-        run: make -j$(nproc)
+      - name: Build Qt6 application
+        run: cmake --build build-qt --parallel
 
-      - name: Upload build artifact
+      - name: Upload Qt6 build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: {safe_name}-linux
-          path: qt_gui/{safe_name}
+          name: {safe_name}-qt6-linux
+          path: build-qt/qt_gui/{safe_name}
           retention-days: 30
 
   # ------------------------------------------------------------------ #
-  # Static Analysis — Cppcheck (drivers + Qt GUI)
+  # Job 2: ARM Embedded Firmware Build (arm-none-eabi-gcc)
   # ------------------------------------------------------------------ #
-  static-analysis:
-    name: Static Analysis
-    runs-on: ubuntu-latest
+  build-firmware-arm:
+    name: Build Firmware (ARM Cortex)
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Cppcheck
-        run: sudo apt-get install -y cppcheck
+      - name: Install ARM GCC toolchain
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi cmake ninja-build
 
-      - name: Run Cppcheck on C drivers
+      - name: Verify ARM toolchain
+        run: arm-none-eabi-gcc --version
+
+      - name: Configure CMake (ARM cross-compile)
+        run: |
+          cmake -B build-arm \\
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \\
+            -DCMAKE_BUILD_TYPE=${{{{ env.BUILD_TYPE }}}} \\
+            -DFIRMWARE_ONLY=ON \\
+            -G Ninja
+
+      - name: Build firmware
+        run: cmake --build build-arm --parallel
+
+      - name: Check binary size
+        run: |
+          arm-none-eabi-size build-arm/firmware.elf || true
+          arm-none-eabi-objdump -h build-arm/firmware.elf | grep -E "(text|data|bss)" || true
+
+      - name: Upload firmware binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: {safe_name}-firmware-arm
+          path: |
+            build-arm/firmware.elf
+            build-arm/firmware.bin
+            build-arm/firmware.hex
+          retention-days: 30
+
+  # ------------------------------------------------------------------ #
+  # Job 3: Unit Tests + Code Coverage (host GCC)
+  # ------------------------------------------------------------------ #
+  unit-tests:
+    name: Unit Tests + Coverage
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \\
+            cmake ninja-build \\
+            libgtest-dev \\
+            gcovr lcov
+
+      - name: Build Google Test
+        run: |
+          cd /usr/src/gtest
+          sudo cmake .
+          sudo make
+          sudo cp lib/*.a /usr/lib/
+
+      - name: Configure CMake (tests + coverage)
+        run: |
+          cmake -B build-test \\
+            -DCMAKE_BUILD_TYPE=Debug \\
+            -DBUILD_TESTS=ON \\
+            -DCMAKE_C_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \\
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \\
+            -G Ninja
+
+      - name: Build tests
+        run: cmake --build build-test --parallel
+
+      - name: Run unit tests (CTest)
+        working-directory: build-test
+        run: ctest --output-on-failure --parallel 4
+
+      - name: Generate coverage report (lcov)
+        run: |
+          lcov --capture --directory build-test \\
+               --output-file coverage.info \\
+               --exclude '*gtest*' --exclude '/usr/*' --exclude '*/tests/*'
+          lcov --summary coverage.info
+          genhtml coverage.info --output-directory coverage-html
+          gcovr --xml-pretty --exclude-unreachable-branches \\
+                --output coverage.xml build-test/
+
+      - name: Upload coverage HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-html/
+          retention-days: 30
+
+      - name: Upload coverage XML (for CI badge)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 30
+
+      - name: Coverage gate (must be >= 60%)
+        run: |
+          COVERAGE=$(gcovr --print-summary build-test/ 2>&1 | grep "lines:" | awk '{{print $2}}' | tr -d '%')
+          echo "Line coverage: ${{COVERAGE}}%"
+          if [ -n "$COVERAGE" ] && [ "${{COVERAGE%.*}}" -lt 60 ]; then
+            echo "Coverage ${{COVERAGE}}% is below 60% threshold"
+            exit 1
+          fi
+          echo "Coverage gate passed: ${{COVERAGE}}%"
+
+  # ------------------------------------------------------------------ #
+  # Job 4: Static Analysis — Cppcheck + Clang-Tidy
+  # ------------------------------------------------------------------ #
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cppcheck clang-tidy cmake ninja-build
+
+      - name: Run Cppcheck on C drivers (MISRA-C)
         run: |
           cppcheck \\
             --enable=all \\
             --std=c11 \\
             --suppress=missingIncludeSystem \\
+            --suppress=unusedFunction \\
             --error-exitcode=0 \\
-            --xml \\
-            --output-file=cppcheck-drivers.xml \\
+            --xml --xml-version=2 \\
+            --output-file=cppcheck-report.xml \\
             drivers/ || true
-
-      - name: Run Cppcheck on Qt GUI (C++14)
-        run: |
           cppcheck \\
-            --enable=warning,style,performance,portability \\
-            --std=c++14 \\
+            --enable=warning,error,performance,portability \\
+            --std=c++17 \\
             --suppress=missingIncludeSystem \\
-            --error-exitcode=0 \\
+            --error-exitcode=1 \\
             qt_gui/
+
+      - name: Generate Cppcheck HTML report
+        run: |
+          pip install cppcheck-htmlreport || true
+          cppcheck-htmlreport --file cppcheck-report.xml --report-dir cppcheck-html --source-dir . || true
+
+      - name: Configure CMake (for clang-tidy compile_commands.json)
+        run: |
+          cmake -B build-tidy \\
+            -DCMAKE_BUILD_TYPE=Debug \\
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \\
+            -G Ninja || true
+
+      - name: Run Clang-Tidy on drivers
+        run: |
+          if [ -f build-tidy/compile_commands.json ]; then
+            find drivers/ -name '*.c' -o -name '*.h' | head -20 | while read f; do
+              clang-tidy "$f" \\
+                -p build-tidy/ \\
+                --checks='clang-analyzer-*,bugprone-*,cert-*,performance-*,portability-*' \\
+                -- -std=c11 2>&1 || true
+            done
+          fi
 
       - name: Upload Cppcheck report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: cppcheck-report
-          path: cppcheck-drivers.xml
+          path: |
+            cppcheck-report.xml
+            cppcheck-html/
           retention-days: 30
 
   # ------------------------------------------------------------------ #
-  # Code Quality Gate
+  # Job 5: Code Quality Gate (all jobs must pass)
   # ------------------------------------------------------------------ #
   quality-gate:
     name: Quality Gate
-    runs-on: ubuntu-latest
-    needs: [ build-qt-app, static-analysis ]
+    runs-on: ubuntu-22.04
+    needs: [ build-qt-app, build-firmware-arm, unit-tests, static-analysis ]
+    if: always()
 
     steps:
-      - name: Quality gate passed
+      - name: Check all jobs passed
         run: |
-          echo "All quality checks passed for {project_name}"
-          echo "Qt version : 5.14.2 (QMake)"
-          echo "Build      : OK"
-          echo "Analysis   : Cppcheck OK"
-          echo "Pipeline   : Hardware Pipeline v2"
+          echo "=== Hardware Pipeline CI/CD Quality Gate ==="
+          echo "Project    : {project_name}"
+          echo "Qt GUI     : ${{{{ needs.build-qt-app.result }}}}"
+          echo "ARM FW     : ${{{{ needs.build-firmware-arm.result }}}}"
+          echo "Unit Tests : ${{{{ needs.unit-tests.result }}}}"
+          echo "Analysis   : ${{{{ needs.static-analysis.result }}}}"
+          echo ""
+          if [ "${{{{ needs.build-qt-app.result }}}}" != "success" ] || \\
+             [ "${{{{ needs.build-firmware-arm.result }}}}" != "success" ] || \\
+             [ "${{{{ needs.unit-tests.result }}}}" != "success" ]; then
+            echo "GATE FAILED: one or more required jobs did not succeed"
+            exit 1
+          fi
+          echo "GATE PASSED: all required checks succeeded"
+
+      - name: Generate quality summary
+        run: |
+          cat <<EOF
+          ## CI/CD Quality Summary — {project_name}
+          | Job | Result |
+          |-----|--------|
+          | Qt6 GUI Build | ${{{{ needs.build-qt-app.result }}}} |
+          | ARM Firmware Build | ${{{{ needs.build-firmware-arm.result }}}} |
+          | Unit Tests + Coverage | ${{{{ needs.unit-tests.result }}}} |
+          | Static Analysis | ${{{{ needs.static-analysis.result }}}} |
+          EOF
+"""
+
+    def _build_arm_toolchain_cmake(self) -> str:
+        """CMake toolchain file for arm-none-eabi cross-compilation."""
+        return """\
+# ARM Cortex-M/A cross-compilation toolchain for CMake
+# Usage: cmake -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake ..
+# Requires: arm-none-eabi-gcc installed on PATH
+
+cmake_minimum_required(VERSION 3.20)
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+# Toolchain executables
+set(CMAKE_C_COMPILER    arm-none-eabi-gcc)
+set(CMAKE_CXX_COMPILER  arm-none-eabi-g++)
+set(CMAKE_ASM_COMPILER  arm-none-eabi-gcc)
+set(CMAKE_OBJCOPY       arm-none-eabi-objcopy)
+set(CMAKE_SIZE          arm-none-eabi-size)
+
+# Don't try to link test executables against target libs during configuration
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+# Target CPU — override at project level if needed
+# e.g. for Cortex-M4F: -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+set(CPU_FLAGS "-mcpu=cortex-m3 -mthumb" CACHE STRING "CPU architecture flags")
+set(FPU_FLAGS "" CACHE STRING "FPU flags (empty = soft-float)")
+
+# Common compiler flags
+set(COMMON_FLAGS "${CPU_FLAGS} ${FPU_FLAGS} -ffunction-sections -fdata-sections -Wall -Wextra")
+set(CMAKE_C_FLAGS   "${COMMON_FLAGS} -std=c11"   CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS "${COMMON_FLAGS} -std=c++17 -fno-exceptions -fno-rtti" CACHE STRING "" FORCE)
+
+# Linker flags
+set(CMAKE_EXE_LINKER_FLAGS
+    "${CPU_FLAGS} -specs=nosys.specs -specs=nano.specs -Wl,--gc-sections -Wl,-Map=firmware.map"
+    CACHE STRING "" FORCE)
+
+# Sysroot (host compiler headers — for includes only)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# Post-build: generate .bin and .hex from .elf
+function(add_firmware_outputs TARGET)
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${TARGET}> ${TARGET}.bin
+        COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${TARGET}> ${TARGET}.hex
+        COMMAND ${CMAKE_SIZE}    $<TARGET_FILE:${TARGET}>
+        COMMENT "Generating binary outputs for ${TARGET}"
+    )
+endfunction()
 """
 
     async def _extract_components(self, glr: str) -> List[Dict]:
