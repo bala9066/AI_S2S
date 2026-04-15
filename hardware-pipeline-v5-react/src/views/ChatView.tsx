@@ -78,12 +78,12 @@ function sanitizeMermaid(raw: string): string {
   code = code.replace(/"([^"]+)"/g, (_m, inner: string) => `"${sanitizeLabel(inner)}"`);
   // Edge labels: --> |label| node
   code = code.replace(/\|([^|]+)\|/g, (_m, inner: string) => `|${sanitizeLabel(inner)}|`);
-  // State diagram colon-label sanitization
+  // State diagram colon-label sanitization — use spaces NOT parentheses
   if (first.startsWith('statediagram')) {
     code = code.split('\n').map(line => {
       const m = line.match(/^(\s*.*?-->\s*\S+\s*:)(.*)$/);
       if (m) {
-        const label = m[2].replace(/>/g, ')').replace(/</g, '(').replace(/:/g, ',');
+        const label = m[2].replace(/>/g, ' ').replace(/</g, ' ').replace(/:/g, ',');
         return m[1] + label;
       }
       return line;

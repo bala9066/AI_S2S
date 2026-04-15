@@ -170,11 +170,12 @@ function sanitizeMermaidCode(raw: string): string {
   code = code.replace(/\|([^|]+)\|/g, (_m, inner: string) => `|${sanitizeLabel(inner)}|`);
 
   // ── 11. State diagram colon-label sanitization
+  // Use spaces for angle brackets (NOT parentheses) to avoid parse errors
   if (first.startsWith('statediagram')) {
     code = code.split('\n').map(line => {
       const m = line.match(/^(\s*.*?-->\s*\S+\s*:)(.*)$/);
       if (m) {
-        const label = m[2].replace(/>/g, ')').replace(/</g, '(').replace(/:/g, ',');
+        const label = m[2].replace(/>/g, ' ').replace(/</g, ' ').replace(/:/g, ',');
         return m[1] + label;
       }
       return line;
