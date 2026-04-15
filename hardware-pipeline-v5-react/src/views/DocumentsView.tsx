@@ -66,6 +66,10 @@ function sanitizeMermaidCode(raw: string): string {
   // Single dashes used as arrows: -> → --> (flowchart needs double dash)
   // Only replace standalone -> when surrounded by word chars / spaces (avoids mangling ->>)
   code = code.replace(/(\w)\s*->\s*(\w)/g, '$1 --> $2');
+  // Single dash between nodes " - " → " --> " (LLMs use English prose style)
+  // Careful: only match " - " with spaces on both sides between word-boundary tokens
+  // so we don't mangle node IDs like EXT-REF or label hyphens
+  code = code.replace(/(\b[\w\-]+\b)\s+-\s+(\b[\w\-]+[\s\[\(])/g, '$1 --> $2');
 
   // ── 2. Normalise graph → flowchart
   code = code.replace(/^graph\s+(TD|LR|TB|RL|BT)/im, 'flowchart $1');
@@ -107,6 +111,20 @@ function sanitizeMermaidCode(raw: string): string {
   // ── 7. Strip all HTML tags (no <br/> either — causes parse errors in Mermaid 10)
   code = code.replace(/<[^>]+>/gi, ' ');
 
+  // ── 7b. Fix two word-tokens on same line with NO arrow — agent forgot the arrow
+  // Pattern: "  NODEA NODEB[" (no --> between them on a non-subgraph line)
+  // Convert to: "  NODEA --> NODEB["
+  code = code.split('\n').map(line => {
+    const stripped = line.trim();
+    if (!stripped || /^\s*subgraph\b/.test(line) || /^\s*end\b/.test(line)) return line;
+    if (/^\s*%%/.test(line)) return line; // comment
+    // Match: indent + NODEID  NODEID[ (two identifiers, second followed by bracket — no arrow between)
+    return line.replace(
+      /^(\s*)([\w][\w\-]*)(\s+)([\w][\w\-]*[\[\(])/,
+      (_m, indent, n1, _sp, n2) => `${indent}${n1} --> ${n2}`
+    );
+  }).join('\n');
+
   // ── 8. Fix "NODE [label]" → "NODE[label]" (space before bracket)
   code = code.split('\n').map(line => {
     if (/^\s*subgraph\b/.test(line)) {
@@ -121,8 +139,11 @@ function sanitizeMermaidCode(raw: string): string {
     // Strip arrow operators FIRST — before any > → ) replacement
     // Prevents "LNA(LNA --> Filter)" from becoming "LNA(LNA --) Filter)"
     s = s.replace(/-->/g, ' ').replace(/->/g, ' ');
-    // Remove any remaining angle brackets
-    s = s.replace(/</g, '(').replace(/>/g, ')');
+    // Remove angle brackets — convert to space (NOT parentheses, which cause parse errors)
+    s = s.replace(/</g, ' ').replace(/>/g, ' ');
+    // Remove parentheses entirely — they confuse Mermaid's node parser
+    // Pattern like "Component (PartNumber)" breaks parsing
+    s = s.replace(/\(/g, ' ').replace(/\)/g, ' ');
     // Underscores trigger subscript parsing in Mermaid — replace with hyphen or space
     s = s.replace(/_/g, '-');
     // & outside HTML entity → 'and'
@@ -704,40 +725,82 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, filteredFiles.length]);
 
+  // Stable key that changes whenever the ACTUAL files change (phase switch, new files added).
+  // Using only .length caused bugs when two phases had the same file count — the effect
+  // would not re-run and would keep running with stale closures from the previous phase.
+  const filteredFilesKey = filteredFiles.map(f => f.name).join('|');
+
   // Background pre-convert all .md files to DOCX so downloads are instant.
   // Shows "Preparing…" label on DOCX button while background conversion is in progress.
   // With backend disk caching, second run is instant (served from cached .docx on disk).
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
+
     let cancelled = false;
+    const abortControllers: AbortController[] = [];
+    // Track which file names THIS run started preparing, so we can clean them up on cancel
+    const thisRunFiles: string[] = [];
+
     const preconvert = async () => {
       const mdFiles = filteredFiles.filter(f => getExt(f.name) === 'md');
       // Convert one at a time — DOCX conversion is CPU-heavy on backend
       for (const file of mdFiles) {
         if (cancelled) return;
         if (docxPreconvertingRef.current.has(file.name)) continue;
-        // Skip if already converted this session
-        // (docxBlobUrls read from closure may be stale — use ref check first)
+
+        // Mark as in-flight BEFORE the async fetch
         docxPreconvertingRef.current.add(file.name);
+        thisRunFiles.push(file.name);
         setDocxPreconverting(prev => ({ ...prev, [file.name]: true }));
+
+        // AbortController with 90s timeout — prevents infinite "Preparing…" when
+        // backend is busy running another AI phase
+        const controller = new AbortController();
+        abortControllers.push(controller);
+        const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
         try {
-          const resp = await fetch(`/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`);
+          const resp = await fetch(
+            `/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`,
+            { signal: controller.signal }
+          );
+          clearTimeout(timeoutId);
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           const blob = await resp.blob();
           const url = URL.createObjectURL(blob);
           if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
-        } catch { /* silent — user will see on-demand spinner if needed */ }
+        } catch {
+          clearTimeout(timeoutId);
+          /* silent — user will see on-demand spinner if needed */
+        }
+
+        // Always clean up after each file (success, error, or abort)
         docxPreconvertingRef.current.delete(file.name);
-        if (!cancelled) setDocxPreconverting(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+        setDocxPreconverting(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+
         // Small gap between files so other UI interactions stay responsive
-        await new Promise(r => setTimeout(r, 200));
+        if (!cancelled) await new Promise(r => setTimeout(r, 200));
       }
     };
-    // Start immediately — no artificial delay needed now that we show "Preparing…" label
+
     preconvert();
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      abortControllers.forEach(c => c.abort());
+      // Clear "Preparing…" state for every file this run started but didn't finish.
+      // Without this, switching phases leaves the previous phase's files stuck at "Preparing…".
+      thisRunFiles.forEach(name => docxPreconvertingRef.current.delete(name));
+      if (thisRunFiles.length > 0) {
+        setDocxPreconverting(prev => {
+          const n = { ...prev };
+          thisRunFiles.forEach(name => delete n[name]);
+          return n;
+        });
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, filteredFiles.length]);
+  }, [project?.id, filteredFilesKey]);
 
   const fetchContent = async (file: DocFile) => {
     if (!project) return;
@@ -1192,3 +1255,4 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     </div>
   );
 }
+     

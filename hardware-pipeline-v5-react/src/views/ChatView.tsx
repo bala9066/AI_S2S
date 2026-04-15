@@ -57,16 +57,20 @@ function sanitizeMermaid(raw: string): string {
     if (/^\s*subgraph\b/.test(line)) return line.replace(/^(\s*subgraph\s+[\w-]+)\s+\[/, '$1[');
     return line.replace(/(\w)\s+\[/g, '$1[');
   }).join('\n');
-  // Sanitize node labels — strip arrow operators FIRST before > → ) replacement
-  // to prevent "LNA(LNA --> Filter)" becoming "LNA(LNA --) Filter)"
+  // Sanitize node labels — strip arrows FIRST
+  // Angle brackets → spaces (NOT parentheses — they cause parse errors)
+  // Parentheses → spaces (node labels like "Component (PartNumber)" break Mermaid)
   const sanitizeLabel = (inner: string) =>
     inner
-      .replace(/-->/g, ' ').replace(/->/g, ' ')  // strip arrows before angle-bracket swap
-      .replace(/</g, '(').replace(/>/g, ')')
+      .replace(/-->/g, ' ').replace(/->/g, ' ')  // strip arrows before anything else
+      .replace(/</g, ' ').replace(/>/g, ' ')  // angle brackets to spaces, NOT parens
+      .replace(/\(/g, ' ').replace(/\)/g, ' ')  // parens break Mermaid's node parser
+      .replace(/_/g, '-')  // underscores trigger subscript parsing
       .replace(/&(?!amp;|lt;|gt;|#)/g, 'and')
       .replace(/"/g, ' ').replace(/'/g, ' ')  // quotes confuse the parser
       .replace(/#/g, ' ')
       .replace(/\|/g, '/')
+      .replace(/@/g, ' ')  // @ can cause issues in some Mermaid versions
       .replace(/-{3,}/g, '--');  // long dash sequences break arrow detection
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
