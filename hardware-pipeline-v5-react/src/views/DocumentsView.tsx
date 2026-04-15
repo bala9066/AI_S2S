@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { marked } from 'marked';
 import type { Project, PhaseMeta, PhaseStatusValue } from '../types';
 import { api } from '../api';
@@ -123,6 +123,8 @@ function sanitizeMermaidCode(raw: string): string {
     s = s.replace(/-->/g, ' ').replace(/->/g, ' ');
     // Remove any remaining angle brackets
     s = s.replace(/</g, '(').replace(/>/g, ')');
+    // Underscores trigger subscript parsing in Mermaid — replace with hyphen or space
+    s = s.replace(/_/g, '-');
     // & outside HTML entity → 'and'
     s = s.replace(/&(?!amp;|lt;|gt;|#)/g, 'and');
     // Single and double quotes confuse the parser (single quotes act as string delimiters)
@@ -133,6 +135,8 @@ function sanitizeMermaidCode(raw: string): string {
     s = s.replace(/\|/g, '/');
     // Long dash sequences (---) get mistaken for edge arrows — collapse to double dash
     s = s.replace(/-{3,}/g, '--');
+    // Remove @ which can cause issues in some Mermaid versions
+    s = s.replace(/@/g, ' ');
     return s;
   };
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
@@ -185,30 +189,30 @@ function patchSvg(raw: string, accentColor: string): string {
   // Append our CSS overrides before </style> (or inject a new <style> block)
   const overrideCss = `
     /* Hardware Pipeline — Mermaid visual overrides */
-    svg { background: #0f1e33 !important; }
+    svg { background: #0a0f1a !important; }
     .node rect, .node circle, .node ellipse, .node polygon, .node path {
-      fill: #1a2235 !important;
-      stroke: ${accentColor} !important; stroke-width: 1.5px !important;
-      rx: 6; ry: 6;
+      fill: #142030 !important;
+      stroke: ${accentColor} !important; stroke-width: 1px !important;
+      rx: 4; ry: 4;
     }
-    .edgePath .path { stroke: ${accentColor} !important; stroke-width: 1.5px !important; }
+    .edgePath .path { stroke: ${accentColor}66 !important; stroke-width: 1px !important; }
     .arrowheadPath { fill: ${accentColor} !important; stroke: none !important; }
-    .edgeLabel .label rect { fill: #0f1e33 !important; }
-    .edgeLabel .label span, .edgeLabel span { color: #e2e8f0 !important; font-size: 11px !important; }
-    .cluster rect { fill: #0d1423 !important; stroke: #2a3a50 !important; stroke-width: 1px !important; rx: 8; ry: 8; }
-    .cluster text, .cluster tspan, .cluster span { fill: #94a3b8 !important; font-size: 11px !important; font-weight: 600 !important; letter-spacing: 0.06em !important; }
-    text, tspan { fill: #e2e8f0 !important; font-family: 'DM Mono', monospace !important; font-size: 12px !important; }
-    .nodeLabel, .label, .label span, .labelText { color: #e2e8f0 !important; fill: #e2e8f0 !important; font-size: 12px !important; }
-    .nodeLabel p { margin: 0 !important; color: #e2e8f0 !important; }
-    foreignObject div, foreignObject span, foreignObject p { color: #e2e8f0 !important; font-size: 12px !important; font-family: 'DM Mono', monospace !important; }
-    .messageText, .actor text, .note text, .labelBox text { fill: #e2e8f0 !important; }
-    .actor rect, .actor line { fill: #1a2235 !important; stroke: ${accentColor} !important; }
-    .messageLine0, .messageLine1 { stroke: ${accentColor} !important; }
-    .activation0, .activation1, .activation2 { fill: #2a3a50 !important; stroke: ${accentColor} !important; }
-    .loopLine { stroke: #2a3a50 !important; }
-    .loopText, .loopText tspan { fill: #94a3b8 !important; }
-    .noteText, .noteText tspan { fill: #e2e8f0 !important; }
-    .note { fill: #1a2235 !important; stroke: #2a3a50 !important; }
+    .edgeLabel .label rect { fill: #0a0f1a !important; }
+    .edgeLabel .label span, .edgeLabel span { color: #ffffff !important; font-size: 11px !important; }
+    .cluster rect { fill: #0c1220 !important; stroke: ${accentColor}44 !important; stroke-width: 1px !important; rx: 6; ry: 6; }
+    .cluster text, .cluster tspan, .cluster span { fill: #b4c4d4 !important; font-size: 11px !important; font-weight: 500 !important; letter-spacing: 0.04em !important; }
+    text, tspan { fill: #ffffff !important; font-family: 'DM Mono', monospace !important; font-size: 11px !important; }
+    .nodeLabel, .label, .label span, .labelText { color: #ffffff !important; fill: #ffffff !important; font-size: 11px !important; }
+    .nodeLabel p { margin: 0 !important; color: #ffffff !important; }
+    foreignObject div, foreignObject span, foreignObject p { color: #ffffff !important; font-size: 11px !important; font-family: 'DM Mono', monospace !important; }
+    .messageText, .actor text, .note text, .labelBox text { fill: #ffffff !important; }
+    .actor rect, .actor line { fill: #142030 !important; stroke: ${accentColor} !important; stroke-width: 1px !important; }
+    .messageLine0, .messageLine1 { stroke: ${accentColor}66 !important; stroke-width: 1px !important; }
+    .activation0, .activation1, .activation2 { fill: #1a2840 !important; stroke: ${accentColor} !important; stroke-width: 1px !important; }
+    .loopLine { stroke: #2a3a50 !important; stroke-width: 1px !important; }
+    .loopText, .loopText tspan { fill: #b4c4d4 !important; }
+    .noteText, .noteText tspan { fill: #ffffff !important; }
+    .note { fill: #142030 !important; stroke: ${accentColor}44 !important; stroke-width: 1px !important; }
   `;
 
   if (s.includes('</style>')) {
@@ -504,7 +508,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [docxConverting, setDocxConverting] = useState<Record<string, boolean>>({});
   // docxBlobUrls: pre-converted blob URLs — download is instant when ready
   const [docxBlobUrls, setDocxBlobUrls] = useState<Record<string, string>>({});
-  // docxPreconverting: background conversion in progress — NOT shown in UI button
+  // docxPreconverting STATE — triggers re-render so button shows "Preparing…" during bg conversion
+  const [docxPreconverting, setDocxPreconverting] = useState<Record<string, boolean>>({});
+  // docxPreconvertingRef: same info but safe to read inside async callbacks without stale closure
   const docxPreconvertingRef = useRef<Set<string>>(new Set());
   // docxError: per-file error message shown under DOCX button (auto-clears)
   const [docxError, setDocxError] = useState<Record<string, string>>({});
@@ -548,9 +554,27 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // Pipeline-internal JSON files are kept on disk for agent use but hidden from the UI.
   // Human-readable equivalents (netlist_visual.md, sbom_summary.md) cover them.
   const HIDDEN_FILES = new Set(['netlist.json', 'netlist_validation.json', 'sbom.json']);
-  const filteredFiles = files.filter(f =>
-    visibleFilenames.has(f.name) && !HIDDEN_FILES.has(f.name)
-  );
+  const filteredFiles = useMemo(() => {
+    const unique = new Set<string>();
+    // Collect all visible filenames first so we can suppress redundant .docx rows
+    const allVisible = files.filter(f => visibleFilenames.has(f.name));
+    // Build a set of stems that have a .md counterpart (backend caches DOCX next to .md)
+    const mdStems = new Set(
+      allVisible.filter(f => getExt(f.name) === 'md').map(f => f.name.replace(/\.md$/i, ''))
+    );
+    return allVisible.filter(f => {
+      // Skip duplicates and hidden files
+      if (unique.has(f.name) || HIDDEN_FILES.has(f.name)) return false;
+      unique.add(f.name);
+      // Hide the backend-cached .docx file when a same-stem .md already exists —
+      // the .md row provides the "↓ DOCX" button for on-demand conversion.
+      if (getExt(f.name) === 'docx') {
+        const stem = f.name.replace(/\.docx$/i, '');
+        if (mdStems.has(stem)) return false;
+      }
+      return true;
+    });
+  }, [files, visibleFilenames]);
 
   const fetchList = useCallback((silent = false, currentPhaseId?: string) => {
     if (!project) return;
@@ -678,43 +702,42 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     prefetch();
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, filteredFiles.map(f => f.name).join(',')]);
+  }, [project?.id, filteredFiles.length]);
 
   // Background pre-convert all .md files to DOCX so downloads are instant.
-  // Runs silently — no spinner shown until user actually clicks ↓ DOCX.
-  // With backend disk caching, repeat conversions are near-instant.
+  // Shows "Preparing…" label on DOCX button while background conversion is in progress.
+  // With backend disk caching, second run is instant (served from cached .docx on disk).
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
     let cancelled = false;
     const preconvert = async () => {
       const mdFiles = filteredFiles.filter(f => getExt(f.name) === 'md');
-      // Fetch in parallel batches of 2 (DOCX conversion is heavier)
-      const BATCH = 2;
-      for (let i = 0; i < mdFiles.length; i += BATCH) {
+      // Convert one at a time — DOCX conversion is CPU-heavy on backend
+      for (const file of mdFiles) {
         if (cancelled) return;
-        const batch = mdFiles.slice(i, i + BATCH);
-        await Promise.all(batch.map(async file => {
-          if (cancelled) return;
-          if (docxBlobUrls[file.name] || docxPreconvertingRef.current.has(file.name)) return;
-          docxPreconvertingRef.current.add(file.name);
-          try {
-            const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const blob = await resp.blob();
-            const url = URL.createObjectURL(blob);
-            if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
-          } catch { /* silent — user will see spinner on click if needed */ }
-          docxPreconvertingRef.current.delete(file.name);
-        }));
-        // Small stagger between batches
-        if (i + BATCH < mdFiles.length) await new Promise(r => setTimeout(r, 100));
+        if (docxPreconvertingRef.current.has(file.name)) continue;
+        // Skip if already converted this session
+        // (docxBlobUrls read from closure may be stale — use ref check first)
+        docxPreconvertingRef.current.add(file.name);
+        setDocxPreconverting(prev => ({ ...prev, [file.name]: true }));
+        try {
+          const resp = await fetch(`/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
+        } catch { /* silent — user will see on-demand spinner if needed */ }
+        docxPreconvertingRef.current.delete(file.name);
+        if (!cancelled) setDocxPreconverting(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+        // Small gap between files so other UI interactions stay responsive
+        await new Promise(r => setTimeout(r, 200));
       }
     };
-    // Reduced delay: start after 500ms to let text prefetch go first
-    const timer = setTimeout(preconvert, 500);
-    return () => { cancelled = true; clearTimeout(timer); };
+    // Start immediately — no artificial delay needed now that we show "Preparing…" label
+    preconvert();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project, filteredFiles.map(f => f.name).join(',')]);
+  }, [project?.id, filteredFiles.length]);
 
   const fetchContent = async (file: DocFile) => {
     if (!project) return;
@@ -1047,32 +1070,42 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                   {/* ↓ DOCX button — only for .md files */}
                   {getExt(file.name) === 'md' && (() => {
                     const isConverting = !!docxConverting[file.name];
+                    const isPreparing = !isConverting && !!docxPreconverting[file.name];
+                    const isReady    = !!docxBlobUrls[file.name];
+                    const busy = isConverting || isPreparing;
+                    const btnColor = isConverting ? '#3b82f6' : isPreparing ? '#f59e0b' : 'var(--text3)';
+                    const btnBg    = isConverting ? 'rgba(59,130,246,0.08)' : isPreparing ? 'rgba(245,158,11,0.08)' : 'var(--panel2)';
+                    const btnBorder= isConverting ? '#3b82f666' : isPreparing ? '#f59e0b66' : 'var(--panel3)';
                     return (
                       <button
-                        onClick={(e) => { e.stopPropagation(); triggerDocxDownload(file); }}
+                        onClick={(e) => { e.stopPropagation(); if (!busy) triggerDocxDownload(file); }}
                         disabled={isConverting}
-                        title={isConverting ? 'Converting to Word document…' : `Convert ${file.name} to Word document (.docx)`}
+                        title={
+                          isConverting ? 'Converting to Word document…' :
+                          isPreparing  ? 'Preparing Word document in background — click to download when ready' :
+                          isReady      ? `Word document ready — click to download` :
+                          `Convert ${file.name} to Word document (.docx)`
+                        }
                         style={{
                           fontSize: 12,
-                          color: isConverting ? '#3b82f6' : 'var(--text3)',
-                          background: isConverting ? 'rgba(59,130,246,0.08)' : 'var(--panel2)',
-                          border: `1px solid ${isConverting ? '#3b82f666' : 'var(--panel3)'}`,
+                          color: btnColor,
+                          background: btnBg,
+                          border: `1px solid ${btnBorder}`,
                           borderRadius: 6,
                           cursor: isConverting ? 'not-allowed' : 'pointer',
                           fontFamily: "'DM Mono', monospace",
                           padding: '5px 12px', transition: 'all 0.15s',
                           display: 'flex', alignItems: 'center', gap: 6,
-                          whiteSpace: 'nowrap', opacity: isConverting ? 0.85 : 1,
+                          whiteSpace: 'nowrap', opacity: busy ? 0.9 : 1,
                         }}
-                        onMouseEnter={e => { if (!isConverting) { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f666'; e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}}
-                        onMouseLeave={e => { if (!isConverting) { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; e.currentTarget.style.background = 'var(--panel2)'; }}}
+                        onMouseEnter={e => { if (!busy) { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f666'; e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; }}}
+                        onMouseLeave={e => { if (!busy) { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; e.currentTarget.style.background = 'var(--panel2)'; }}}
                       >
                         {isConverting ? (
-                          <>
-                            <span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #3b82f6', borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
-                            Converting…
-                          </>
-                        ) : docxBlobUrls[file.name] ? '↓ DOCX ✓' : '↓ DOCX'}
+                          <><span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #3b82f6', borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />Converting…</>
+                        ) : isPreparing ? (
+                          <><span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #f59e0b', borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />Preparing…</>
+                        ) : isReady ? '↓ DOCX ✓' : '↓ DOCX'}
                       </button>
                     );
                   })()}
