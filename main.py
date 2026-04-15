@@ -386,11 +386,12 @@ async def list_documents(project_id: int):
         return []
 
     try:
+        _HIDDEN_DIRS = {".docx_cache"}
         files = []
         for entry in os.scandir(output_dir):
             if entry.is_file():
                 files.append({"name": entry.name, "size": entry.stat().st_size})
-            elif entry.is_dir():
+            elif entry.is_dir() and entry.name not in _HIDDEN_DIRS:
                 # Include one level of subdirectory files (e.g. qt_gui/, .github/workflows/)
                 try:
                     for sub in os.scandir(entry.path):
@@ -707,7 +708,7 @@ async def export_project_zip(project_id: int):
     if not out_path.exists():
         raise HTTPException(404, "Output directory does not exist")
 
-    doc_files = [f for f in out_path.rglob("*") if f.is_file()]
+    doc_files = [f for f in out_path.rglob("*") if f.is_file() and ".docx_cache" not in f.parts]
     if not doc_files:
         raise HTTPException(404, "No documents found to export")
 
@@ -850,7 +851,11 @@ async def convert_document_to_docx(project_id: int, filename: str):
     out_filename = f"{stem}.docx"
 
     # ── Disk cache: serve cached .docx if source hasn't changed ───────────────
-    cache_path = src_path.parent / out_filename
+    # Cache lives in a hidden sub-folder so it never appears in document lists
+    # and old pre-mermaid cached files are automatically bypassed.
+    cache_dir = src_path.parent / ".docx_cache"
+    cache_dir.mkdir(exist_ok=True)
+    cache_path = cache_dir / out_filename
     if cache_path.exists() and cache_path.stat().st_mtime >= src_path.stat().st_mtime:
         log.info("docx.cache_hit", extra={"file": filename})
         cached_data = cache_path.read_bytes()
@@ -904,10 +909,27 @@ async def convert_document_to_docx(project_id: int, filename: str):
     # ── Fallback: python-docx full markdown parser ────────────────────────────
     try:
         from docx import Document as DocxDocument  # type: ignore
-        from docx.shared import Pt, RGBColor  # type: ignore
+        from docx.shared import Pt, RGBColor, Inches  # type: ignore
         from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
+        import io as _io
 
-        md_text = src_path.read_text(encoding="utf-8")
+        raw_md_text = src_path.read_text(encoding="utf-8")
+
+        # Pre-render mermaid blocks → PNG images (same as pandoc path)
+        import asyncio
+        import functools
+        import tempfile as _tempfile
+        _fallback_tmpdir_obj = _tempfile.TemporaryDirectory()
+        _fallback_tmpdir = _fallback_tmpdir_obj.name
+        try:
+            loop2 = asyncio.get_event_loop()
+            md_text = await loop2.run_in_executor(
+                None, functools.partial(_render_mermaid_diagrams_sync, raw_md_text, _fallback_tmpdir)
+            )
+        except Exception as _merm_exc:
+            log.warning("docx.fallback.mermaid_failed", extra={"error": str(_merm_exc)})
+            md_text = raw_md_text
+
         doc = DocxDocument()
 
         # Style the default Normal paragraph
@@ -972,7 +994,27 @@ async def convert_document_to_docx(project_id: int, filename: str):
             elif len(s) > 1 and s[0].isdigit() and s[1] in '.):':
                 doc.add_paragraph(s[2:].strip(), style='List Number')
 
-            # ── Code block (skip) ─────────────────────────────────────────────
+            # ── Inline image: ![alt](path) ────────────────────────────────────
+            elif s.startswith("![") and "](" in s and s.endswith(")"):
+                import re as _re2
+                img_m = _re2.match(r'!\[([^\]]*)\]\(([^)]+)\)', s)
+                if img_m:
+                    img_alt, img_path = img_m.group(1), img_m.group(2).strip()
+                    import pathlib as _pl2
+                    _img_p = _pl2.Path(img_path)
+                    if _img_p.exists() and _img_p.suffix.lower() == ".png":
+                        try:
+                            doc.add_picture(str(_img_p), width=Inches(5.5))
+                            if img_alt:
+                                cap = doc.add_paragraph(img_alt)
+                                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        except Exception as _img_err:
+                            log.debug("docx.fallback.img_err: %s", _img_err)
+                            doc.add_paragraph(f"[Diagram: {img_alt}]")
+                    else:
+                        doc.add_paragraph(f"[Diagram: {img_alt}]")
+
+            # ── Code block (skip non-mermaid fenced blocks) ───────────────────
             elif s.startswith("```"):
                 i += 1
                 while i < len(lines) and not lines[i].strip().startswith("```"):
@@ -991,6 +1033,12 @@ async def convert_document_to_docx(project_id: int, filename: str):
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
             doc.save(tmp.name)
             data = pathlib.Path(tmp.name).read_bytes()
+
+        # Clean up the mermaid temp dir
+        try:
+            _fallback_tmpdir_obj.cleanup()
+        except Exception:
+            pass
 
         # Write to disk cache for future requests
         try:
