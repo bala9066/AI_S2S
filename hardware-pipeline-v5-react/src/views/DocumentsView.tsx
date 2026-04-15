@@ -53,17 +53,26 @@ const VIEWABLE = new Set(['md', 'txt', 'json', 'html', 'csv', 'net', 'xdc', 'py'
 
 function sanitizeMermaidCode(raw: string): string {
   let code = raw.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  // Fix em-dash arrows: LLMs sometimes emit — (em-dash) instead of -- in arrows
-  // ——> (two em-dashes) or —> (one em-dash) → -->
+
+  // ── 0. Strip %%{ init }%% frontmatter and %% comments (cause parse errors in some versions)
+  code = code.replace(/^%%\{[\s\S]*?\}%%\s*/m, '');
+  code = code.replace(/%%[^\n]*/g, '');
+
+  // ── 1. Arrow fixes: em-dash → --, ——> → -->
   code = code.replace(/\u2014\u2014>/g, '-->').replace(/\u2014>/g, '-->');
-  // Also handle encoded/smart versions
   code = code.replace(/——>/g, '-->').replace(/—>/g, '-->');
-  // Normalise graph → flowchart
+  // LLMs sometimes write ==> meaning heavy arrow — convert to -->
+  code = code.replace(/==>/g, '-->');
+  // Single dashes used as arrows: -> → --> (flowchart needs double dash)
+  // Only replace standalone -> when surrounded by word chars / spaces (avoids mangling ->>)
+  code = code.replace(/(\w)\s*->\s*(\w)/g, '$1 --> $2');
+
+  // ── 2. Normalise graph → flowchart
   code = code.replace(/^graph\s+(TD|LR|TB|RL|BT)/im, 'flowchart $1');
-  // Step 0: join lines where [ is opened but not closed.
-  // LLMs split node labels across lines (e.g. SINK[Heatsink\n  AIR[...]]),
-  // which places the "end" subgraph keyword inside what looks like a label body,
-  // causing "got 'STR'" parse errors.
+  // Some agents write "flowchart" on line 1 and "TD" alone on line 2 — merge them
+  code = code.replace(/^(flowchart)\n(TD|LR|TB|RL|BT)\b/m, '$1 $2');
+
+  // ── 3. Join lines where [ is opened but not closed (multi-line labels)
   {
     const joinedLines: string[] = [];
     for (const line of code.split('\n')) {
@@ -80,67 +89,87 @@ function sanitizeMermaidCode(raw: string): string {
     }
     code = joinedLines.join('\n');
   }
-  // Ensure known diagram type on line 1
+
+  // ── 4. Ensure known diagram type on line 1
   const first = code.split('\n')[0].trim().toLowerCase();
   const known = ['flowchart', 'sequencediagram', 'classdiagram', 'statediagram',
     'erdiagram', 'gantt', 'pie', 'gitgraph', 'mindmap', 'timeline'];
   if (!known.some(t => first.startsWith(t))) code = 'flowchart TD\n' + code;
-  // Replace literal \n escape sequences with Mermaid HTML line-break
-  // LLMs often emit \n inside labels thinking it's a newline escape
-  code = code.replace(/\\n/g, '<br/>');
-  // Decode HTML entities that agents mistakenly encode in Mermaid source
-  // e.g. &lt;br/&gt; → <br/>,  &lt;  → < (will be re-sanitized below)
-  code = code.replace(/&lt;br\s*\/?&gt;/gi, '<br/>');
-  code = code.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-  // Strip HTML tags (except <br/>) from the whole diagram body
-  code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
-  // Fix: "PSU [+28V Input]" → "PSU[+28V Input]" — space before bracket breaks Mermaid parser
-  // For regular lines: remove space between word-char and [
-  // For subgraph lines: only fix the ID-to-title bracket (e.g. "subgraph PS [title]" → "subgraph PS[title]")
+
+  // ── 5. Literal \n escape → space (LLMs think it's a newline inside a label)
+  code = code.replace(/\\n/g, ' ');
+
+  // ── 6. Decode HTML entities the agent mistakenly encoded
+  code = code.replace(/&lt;br\s*\/?&gt;/gi, ' ');
+  code = code.replace(/&lt;/g, '(').replace(/&gt;/g, ')');
+  code = code.replace(/&amp;/g, 'and').replace(/&nbsp;/g, ' ');
+
+  // ── 7. Strip all HTML tags (no <br/> either — causes parse errors in Mermaid 10)
+  code = code.replace(/<[^>]+>/gi, ' ');
+
+  // ── 8. Fix "NODE [label]" → "NODE[label]" (space before bracket)
   code = code.split('\n').map(line => {
     if (/^\s*subgraph\b/.test(line)) {
-      // Only collapse space between subgraph ID and its title bracket
-      // "subgraph PS [Processing System]" → "subgraph PS[Processing System]"
-      return line.replace(/^(\s*subgraph\s+\w+)\s+\[/, '$1[');
+      return line.replace(/^(\s*subgraph\s+[\w-]+)\s+\[/, '$1[');
     }
-    // Replace word-char + space + [ with word-char + [ (node ID parsing fix)
     return line.replace(/(\w)\s+\[/g, '$1[');
   }).join('\n');
 
-  // Sanitize flowchart node labels: [ ... ], ( ... ), { ... }
-  // Preserve <br/> for multi-line labels; neutralise other angle-bracket chars.
-  const sanitizeLabel = (inner: string) =>
-    inner
-      // protect <br/> tokens before we touch angle brackets
-      .replace(/<br\s*\/?>/gi, '\x00BR\x00')
-      .replace(/&(?!amp;|lt;|gt;|#)/g, 'and')
-      .replace(/</g, '(')   // convert bare < to ( so Mermaid doesn't choke
-      .replace(/>/g, ')')   // convert bare > to )
-      // restore <br/>
-      .replace(/\x00BR\x00/g, '<br/>');
+  // ── 9. Sanitize node labels: remove characters that break the parser
+  const sanitizeLabel = (inner: string) => {
+    let s = inner;
+    // Strip arrow operators FIRST — before any > → ) replacement
+    // Prevents "LNA(LNA --> Filter)" from becoming "LNA(LNA --) Filter)"
+    s = s.replace(/-->/g, ' ').replace(/->/g, ' ');
+    // Remove any remaining angle brackets
+    s = s.replace(/</g, '(').replace(/>/g, ')');
+    // & outside HTML entity → 'and'
+    s = s.replace(/&(?!amp;|lt;|gt;|#)/g, 'and');
+    // Single and double quotes confuse the parser (single quotes act as string delimiters)
+    s = s.replace(/"/g, ' ').replace(/'/g, ' ');
+    // Hash # can be interpreted as a color — escape it
+    s = s.replace(/#/g, ' ');
+    // Pipe | in labels is the Mermaid cell-separator — replace with /
+    s = s.replace(/\|/g, '/');
+    // Long dash sequences (---) get mistaken for edge arrows — collapse to double dash
+    s = s.replace(/-{3,}/g, '--');
+    return s;
+  };
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
   code = code.replace(/\{([^}]*)\}/g, (_m, inner: string) => `{${sanitizeLabel(inner)}}`);
-  // Sanitize state diagram transition labels (after '-->...:'): remove > < and extra colons
+  // Also sanitize double-quoted Mermaid strings: ["label"]
+  code = code.replace(/"([^"]+)"/g, (_m, inner: string) => `"${sanitizeLabel(inner)}"`);
+
+  // ── 10. Sanitize edge/transition labels  (flowchart: --> |label| nextNode)
+  code = code.replace(/\|([^|]+)\|/g, (_m, inner: string) => `|${sanitizeLabel(inner)}|`);
+
+  // ── 11. State diagram colon-label sanitization
   if (first.startsWith('statediagram')) {
     code = code.split('\n').map(line => {
       const m = line.match(/^(\s*.*?-->\s*\S+\s*:)(.*)$/);
       if (m) {
-        const label = m[2]
-          .replace(/>/g, ' gt ')
-          .replace(/</g, ' lt ')
-          .replace(/:/g, ',');
+        const label = m[2].replace(/>/g, ')').replace(/</g, '(').replace(/:/g, ',');
         return m[1] + label;
       }
       return line;
     }).join('\n');
   }
+
+  // ── 12. Remove lines that are clearly garbage (only punctuation, empty after strip)
+  code = code.split('\n').filter(line => {
+    const stripped = line.trim();
+    if (!stripped) return true; // keep blank lines (they're fine)
+    // Remove lines that are just punctuation/numbers with no alphanumeric or arrow chars
+    if (/^[^\w\s\-\[\]\(\)\{\}\|">]+$/.test(stripped)) return false;
+    return true;
+  }).join('\n');
+
   return code;
 }
 
-// ── Marked setup ──────────────────────────────────────────────────────────────
-
-marked.setOptions({ gfm: true, breaks: false });
+// ── Marked setup (marked v17 — use marked.use() not deprecated setOptions) ───
+marked.use({ gfm: true, breaks: false });
 
 // ── MermaidBlock component ────────────────────────────────────────────────────
 
@@ -427,15 +456,9 @@ function PhaseDetails({ phase, color, collapsed = false }: { phase: PhaseMeta; c
 }
 
 // ── GeneratingState — shown when phase is in_progress but no files yet ─────────
+// elapsed / startTs are lifted from the parent so switching phases doesn't reset the timer.
 
-function GeneratingState({ phase }: { phase: PhaseMeta }) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const t = setInterval(() => setElapsed(s => s + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
-
+function GeneratingState({ phase, elapsed }: { phase: PhaseMeta; elapsed: number }) {
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
   const elapsedStr = mins > 0
@@ -483,7 +506,40 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [docxBlobUrls, setDocxBlobUrls] = useState<Record<string, string>>({});
   // docxPreconverting: background conversion in progress — NOT shown in UI button
   const docxPreconvertingRef = useRef<Set<string>>(new Set());
+  // docxError: per-file error message shown under DOCX button (auto-clears)
+  const [docxError, setDocxError] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+
+  // ── Persistent elapsed timer — keyed by phase.id so switching phases doesn't reset it ──
+  // phaseStartTs: maps phase.id → wall-clock ms when that phase first went in_progress
+  const phaseStartTsRef = useRef<Record<string, number>>({});
+  const [elapsedByPhase, setElapsedByPhase] = useState<Record<string, number>>({});
+
+  // Record start time when a phase first enters in_progress
+  useEffect(() => {
+    if (status === 'in_progress' && !phaseStartTsRef.current[phase.id]) {
+      phaseStartTsRef.current[phase.id] = Date.now();
+    }
+    // Clear stored start time when phase completes/fails so next run starts fresh
+    if (status === 'completed' || status === 'failed') {
+      delete phaseStartTsRef.current[phase.id];
+    }
+  }, [phase.id, status]);
+
+  // Tick every second when ANY phase is in_progress
+  useEffect(() => {
+    const anyRunning = Object.keys(phaseStartTsRef.current).length > 0;
+    if (!anyRunning && status !== 'in_progress') return;
+    const t = setInterval(() => {
+      const now = Date.now();
+      const updates: Record<string, number> = {};
+      for (const [pid, startMs] of Object.entries(phaseStartTsRef.current)) {
+        updates[pid] = Math.floor((now - startMs) / 1000);
+      }
+      setElapsedByPhase(prev => ({ ...prev, ...updates }));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [status]);
 
   const visibleFilenames = project
     ? new Set(getVisibleDocuments(phase.id, project.name))
@@ -588,56 +644,74 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingList, filteredFiles.length, status, phase.id, project?.id]);
 
-  // Background prefetch all viewable documents after file list loads
-  // This makes "Preview" feel instant — no spinner on click
+  // Keep a ref always pointing at the latest contents map — avoids stale-closure in prefetch.
+  const contentsRef = useRef<Record<string, string>>({});
+  useEffect(() => { contentsRef.current = contents; }, [contents]);
+
+  // Background prefetch all viewable documents after file list loads.
+  // Uses parallel batches of 3 for speed — makes "Preview" feel instant.
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
     let cancelled = false;
     const prefetch = async () => {
-      const viewable = filteredFiles.filter(f => VIEWABLE.has(getExt(f.name)));
-      for (const file of viewable) {
+      const viewable = filteredFiles.filter(f => VIEWABLE.has(getExt(f.name))
+        && contentsRef.current[f.name] === undefined);
+      // Fetch in parallel batches of 3
+      const BATCH = 3;
+      for (let i = 0; i < viewable.length; i += BATCH) {
         if (cancelled) return;
-        if (contents[file.name] !== undefined) continue; // already cached
-        try {
-          const text = await api.getDocumentText(project.id, file.name);
-          if (!cancelled) setContents(prev => ({ ...prev, [file.name]: text }));
-        } catch { /* silent — user can still click to retry */ }
-        // Stagger requests to avoid hammering the backend
-        await new Promise(r => setTimeout(r, 80));
+        const batch = viewable.slice(i, i + BATCH);
+        await Promise.all(batch.map(async file => {
+          if (cancelled || contentsRef.current[file.name] !== undefined) return;
+          try {
+            const text = await api.getDocumentText(project.id, file.name);
+            if (!cancelled) {
+              contentsRef.current = { ...contentsRef.current, [file.name]: text };
+              setContents(prev => ({ ...prev, [file.name]: text }));
+            }
+          } catch { /* silent — user can still click to retry */ }
+        }));
+        // Small stagger between batches only
+        if (i + BATCH < viewable.length) await new Promise(r => setTimeout(r, 30));
       }
     };
     prefetch();
     return () => { cancelled = true; };
-  // Only re-run when the file list changes — not on every contents update
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, filteredFiles.map(f => f.name).join(',')]);
 
   // Background pre-convert all .md files to DOCX so downloads are instant.
-  // Runs silently — no spinner shown in the UI until user actually clicks ↓ DOCX.
+  // Runs silently — no spinner shown until user actually clicks ↓ DOCX.
+  // With backend disk caching, repeat conversions are near-instant.
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
     let cancelled = false;
     const preconvert = async () => {
       const mdFiles = filteredFiles.filter(f => getExt(f.name) === 'md');
-      for (const file of mdFiles) {
+      // Fetch in parallel batches of 2 (DOCX conversion is heavier)
+      const BATCH = 2;
+      for (let i = 0; i < mdFiles.length; i += BATCH) {
         if (cancelled) return;
-        // Skip if already converted or currently converting
-        if (docxBlobUrls[file.name] || docxPreconvertingRef.current.has(file.name)) continue;
-        docxPreconvertingRef.current.add(file.name);
-        try {
-          const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const blob = await resp.blob();
-          const url = URL.createObjectURL(blob);
-          if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
-        } catch { /* silent — user will see spinner on click if needed */ }
-        docxPreconvertingRef.current.delete(file.name);
-        // Stagger to avoid overwhelming the backend
-        await new Promise(r => setTimeout(r, 300));
+        const batch = mdFiles.slice(i, i + BATCH);
+        await Promise.all(batch.map(async file => {
+          if (cancelled) return;
+          if (docxBlobUrls[file.name] || docxPreconvertingRef.current.has(file.name)) return;
+          docxPreconvertingRef.current.add(file.name);
+          try {
+            const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
+          } catch { /* silent — user will see spinner on click if needed */ }
+          docxPreconvertingRef.current.delete(file.name);
+        }));
+        // Small stagger between batches
+        if (i + BATCH < mdFiles.length) await new Promise(r => setTimeout(r, 100));
       }
     };
-    // Delay start by 1s to let text prefetch (higher priority) go first
-    const timer = setTimeout(preconvert, 1000);
+    // Reduced delay: start after 500ms to let text prefetch go first
+    const timer = setTimeout(preconvert, 500);
     return () => { cancelled = true; clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project, filteredFiles.map(f => f.name).join(',')]);
@@ -666,12 +740,23 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     setLoadingFile(prev => ({ ...prev, [file.name]: false }));
   };
 
+  /** Reliably trigger a browser download — appends anchor to body to satisfy Firefox/Safari */
+  const clickDownload = (href: string, filename: string) => {
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); }, 200);
+  };
+
   const triggerDownload = (file: DocFile) => {
     if (!project) return;
-    const a = document.createElement('a');
-    a.href = `/api/v1/projects/${project.id}/documents/${encodeURIComponent(file.name)}`;
-    a.download = file.name;
-    a.click();
+    clickDownload(
+      `/api/v1/projects/${project.id}/documents/${encodeURIComponent(file.name)}`,
+      file.name,
+    );
   };
 
   const triggerDocxDownload = async (file: DocFile) => {
@@ -681,10 +766,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
     // If pre-conversion already finished, use cached blob URL — instant download
     if (docxBlobUrls[file.name]) {
-      const a = document.createElement('a');
-      a.href = docxBlobUrls[file.name];
-      a.download = docxName;
-      a.click();
+      clickDownload(docxBlobUrls[file.name], docxName);
       // Revoke and clear so it can be re-fetched if needed (e.g. file changed)
       setTimeout(() => {
         URL.revokeObjectURL(docxBlobUrls[file.name]);
@@ -696,17 +778,22 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     // Pre-convert not ready yet — show "Converting…" spinner while we wait
     setDocxConverting(prev => ({ ...prev, [file.name]: true }));
     try {
-      const resp = await fetch(`/api/v1/projects/${project.id}/docx/${file.name}`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const resp = await fetch(`/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`);
+      if (!resp.ok) {
+        let detail = '';
+        try { const j = await resp.json(); detail = j.detail || ''; } catch { /* ignore */ }
+        throw new Error(`HTTP ${resp.status}${detail ? ': ' + detail : ''}`);
+      }
       const blob = await resp.blob();
+      if (blob.size === 0) throw new Error('Empty response from server');
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = docxName;
-      a.click();
+      clickDownload(url, docxName);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (err) {
       console.error('DOCX download failed:', err);
+      // Surface error to user
+      setDocxError(prev => ({ ...prev, [file.name]: String(err) }));
+      setTimeout(() => setDocxError(prev => { const n = { ...prev }; delete n[file.name]; return n; }), 6000);
     } finally {
       setDocxConverting(prev => ({ ...prev, [file.name]: false }));
     }
@@ -749,7 +836,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           textAlign: 'center', marginBottom: 20,
         }}>
           {status === 'in_progress' ? (
-            <GeneratingState phase={phase} />
+            <GeneratingState phase={phase} elapsed={elapsedByPhase[phase.id] ?? 0} />
           ) : status === 'pending' ? (
             <>
               <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.25 }}>📁</div>
@@ -951,7 +1038,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                       onMouseEnter={e => { if (!isOpen) { e.currentTarget.style.color = phase.color; e.currentTarget.style.borderColor = `${phase.color}44`; }}}
                       onMouseLeave={e => { if (!isOpen) { e.currentTarget.style.color = 'var(--text3)'; e.currentTarget.style.borderColor = 'var(--panel3)'; }}}
                     >
-                      {isOpen ? '▲ Close' : '▼ Preview'}
+                      {isLoading
+                        ? <><span style={{ width: 9, height: 9, borderRadius: '50%', border: `2px solid ${phase.color}`, borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', marginRight: 5 }} />Loading…</>
+                        : isOpen ? '▲ Close' : contentsRef.current[file.name] !== undefined ? '▼ Preview ✓' : '▼ Preview'}
                     </button>
                   )}
 
@@ -983,10 +1072,16 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
                             <span style={{ width: 10, height: 10, borderRadius: '50%', border: '2px solid #3b82f6', borderTopColor: 'transparent', display: 'inline-block', animation: 'spin 0.7s linear infinite', flexShrink: 0 }} />
                             Converting…
                           </>
-                        ) : '↓ DOCX'}
+                        ) : docxBlobUrls[file.name] ? '↓ DOCX ✓' : '↓ DOCX'}
                       </button>
                     );
                   })()}
+                  {/* Inline error message when DOCX conversion fails */}
+                  {docxError[file.name] && (
+                    <span style={{ fontSize: 11, color: '#dc2626', fontFamily: "'DM Mono',monospace", maxWidth: 200 }}>
+                      ⚠ {docxError[file.name]}
+                    </span>
+                  )}
 
                   <button
                     onClick={(e) => { e.stopPropagation(); triggerDownload(file); }}

@@ -753,10 +753,7 @@ def _render_mermaid_local(code: str, out_path: str) -> bool:
             log.debug("mermaid.node.skip: %s", result.stderr[:200])
             return False
 
-        # Convert SVG → PNG via cairosvg
-        _svg_mod_path = "/sessions/pensive-laughing-clarke/.local/lib/python3.10/site-packages"
-        if _svg_mod_path not in _sys.path:
-            _sys.path.insert(0, _svg_mod_path)
+        # Convert SVG → PNG via cairosvg (site-packages auto-discovered)
         from cairosvg import svg2png  # type: ignore
         png_data = svg2png(bytestring=svg_str.encode("utf-8"), scale=2.0,
                            background_color="white")
@@ -828,6 +825,7 @@ async def convert_document_to_docx(project_id: int, filename: str):
     Convert a Markdown (.md) file to .docx and stream it for download.
     Mermaid diagrams are pre-rendered to PNG via mermaid.ink before conversion.
     Uses pandoc if available, falls back to python-docx.
+    Converted .docx files are cached on disk next to the source .md file.
     """
     import subprocess
     import tempfile
@@ -850,6 +848,17 @@ async def convert_document_to_docx(project_id: int, filename: str):
 
     stem = src_path.stem
     out_filename = f"{stem}.docx"
+
+    # ── Disk cache: serve cached .docx if source hasn't changed ───────────────
+    cache_path = src_path.parent / out_filename
+    if cache_path.exists() and cache_path.stat().st_mtime >= src_path.stat().st_mtime:
+        log.info("docx.cache_hit", extra={"file": filename})
+        cached_data = cache_path.read_bytes()
+        return StreamingResponse(
+            iter([cached_data]),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+        )
 
     # ── Try pandoc first (installed in Docker image) ───────────────────────────
     try:
@@ -878,23 +887,41 @@ async def convert_document_to_docx(project_id: int, filename: str):
             )
             if result.returncode == 0 and out_path.exists():
                 data = out_path.read_bytes()
+                # Write to disk cache for future requests
+                try:
+                    cache_path.write_bytes(data)
+                except Exception as cache_err:
+                    log.warning("docx.cache_write_failed", extra={"error": str(cache_err)})
                 return StreamingResponse(
                     iter([data]),
                     media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
                 )
             log.warning("pandoc.failed", extra={"stderr": result.stderr, "file": filename})
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, Exception) as exc:
         log.warning("pandoc.unavailable", extra={"error": str(exc)})
 
-    # ── Fallback: python-docx heading/paragraph parser ────────────────────────
+    # ── Fallback: python-docx full markdown parser ────────────────────────────
     try:
         from docx import Document as DocxDocument  # type: ignore
+        from docx.shared import Pt, RGBColor  # type: ignore
+        from docx.enum.text import WD_ALIGN_PARAGRAPH  # type: ignore
 
         md_text = src_path.read_text(encoding="utf-8")
         doc = DocxDocument()
-        for line in md_text.splitlines():
+
+        # Style the default Normal paragraph
+        style = doc.styles['Normal']
+        style.font.name = 'Calibri'
+        style.font.size = Pt(11)
+
+        lines = md_text.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
             s = line.strip()
+
+            # ── Headings ──────────────────────────────────────────────────────
             if s.startswith("#### "):
                 doc.add_heading(s[5:], level=4)
             elif s.startswith("### "):
@@ -903,12 +930,73 @@ async def convert_document_to_docx(project_id: int, filename: str):
                 doc.add_heading(s[3:], level=2)
             elif s.startswith("# "):
                 doc.add_heading(s[2:], level=1)
+
+            # ── Table: collect all pipe-rows ──────────────────────────────────
+            elif s.startswith("|") and s.endswith("|"):
+                # Gather contiguous table rows
+                table_lines = []
+                while i < len(lines) and lines[i].strip().startswith("|") and lines[i].strip().endswith("|"):
+                    table_lines.append(lines[i].strip())
+                    i += 1
+                # Parse header row (first line) and separator (second line)
+                def _split_row(row: str):
+                    parts = [c.strip() for c in row.strip('|').split('|')]
+                    return parts
+                header_cells = _split_row(table_lines[0])
+                # Find data rows (skip separator row which only has --- chars)
+                data_rows = [_split_row(r) for r in table_lines[1:]
+                             if not all(c.strip('-:') == '' for c in _split_row(r))]
+                num_cols = len(header_cells)
+                tbl = doc.add_table(rows=1 + len(data_rows), cols=num_cols)
+                tbl.style = 'Table Grid'
+                # Header row
+                hdr = tbl.rows[0]
+                for ci, cell_text in enumerate(header_cells[:num_cols]):
+                    cell = hdr.cells[ci]
+                    cell.text = cell_text
+                    cell.paragraphs[0].runs[0].bold = True if cell.paragraphs[0].runs else None
+                    p = cell.paragraphs[0]
+                    if p.runs:
+                        p.runs[0].bold = True
+                # Data rows
+                for ri, row_cells in enumerate(data_rows):
+                    row = tbl.rows[ri + 1]
+                    for ci, cell_text in enumerate(row_cells[:num_cols]):
+                        row.cells[ci].text = cell_text
+                doc.add_paragraph("")  # spacing after table
+                continue  # i was already advanced inside the while loop
+
+            # ── Bullet list ───────────────────────────────────────────────────
+            elif s.startswith("- ") or s.startswith("* "):
+                doc.add_paragraph(s[2:], style='List Bullet')
+            elif len(s) > 1 and s[0].isdigit() and s[1] in '.):':
+                doc.add_paragraph(s[2:].strip(), style='List Number')
+
+            # ── Code block (skip) ─────────────────────────────────────────────
+            elif s.startswith("```"):
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith("```"):
+                    i += 1
+
+            # ── Horizontal rule ───────────────────────────────────────────────
+            elif s in ('---', '***', '___'):
+                pass  # skip
+
+            # ── Regular paragraph ─────────────────────────────────────────────
             elif s:
                 doc.add_paragraph(s)
+
+            i += 1
 
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
             doc.save(tmp.name)
             data = pathlib.Path(tmp.name).read_bytes()
+
+        # Write to disk cache for future requests
+        try:
+            cache_path.write_bytes(data)
+        except Exception as cache_err:
+            log.warning("docx.cache_write_failed", extra={"error": str(cache_err)})
 
         return StreamingResponse(
             iter([data]),

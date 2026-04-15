@@ -39,8 +39,8 @@ CLARIFICATION_TOOL = {
             },
             "questions": {
                 "type": "array",
-                "minItems": 3,
-                "maxItems": 5,
+                "minItems": 5,
+                "maxItems": 10,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -59,9 +59,12 @@ CLARIFICATION_TOOL = {
 
 _CLARIFICATION_SYSTEM = (
     "You are a senior hardware design engineer at Data Patterns India. "
-    "When given a hardware specification, identify the 3-5 most critical clarifying questions "
-    "needed before beginning design — parameters that fundamentally affect component selection, "
-    "architecture, and compliance requirements. "
+    "When given a hardware specification, identify up to 10 clarifying questions (minimum 5) "
+    "needed before beginning design — covering every parameter that could meaningfully affect "
+    "component selection, architecture, performance, interfaces, power, environmental conditions, "
+    "and compliance requirements. Be thorough: ask about supply voltage, frequency range, "
+    "noise figure, dynamic range, temperature range, interfaces/protocols, form factor, "
+    "regulatory standards, output power, and any RF-specific specs. "
     "You MUST call the show_clarification_cards tool. Do NOT respond with free text."
 )
 
@@ -106,16 +109,21 @@ Instead say: "Phase 1 complete. Click 'Run Full Pipeline' to generate HRS, Compl
 
 ### PHASE A — Clarification (FIRST message only):
 When the user sends their FIRST message describing a design, DO NOT call `generate_requirements` yet.
-Instead, ask **3–5 concise, targeted clarifying questions** to resolve ambiguities that would meaningfully change the design. Cover the most impactful unknowns only:
-- Supply voltage / power budget
-- Key performance specs (frequency, current, speed, accuracy)
-- Temperature / environmental range
-- Interface protocols needed (UART, SPI, I2C, CAN, USB, etc.)
-- Any critical form-factor or regulatory constraints
+Instead, ask **5–10 targeted clarifying questions** to fully resolve all ambiguities that affect component selection, architecture, and compliance. Cover ALL of the following that apply:
+- Supply voltage(s) / power budget / battery vs mains
+- Key RF/analog specs (frequency range, noise figure, output power, dynamic range, IP3)
+- Key digital specs (data rate, resolution, accuracy, latency)
+- Temperature / environmental / humidity range
+- Interface protocols needed (UART, SPI, I2C, CAN, USB, Ethernet, etc.)
+- Form factor / board size / connector types
+- Regulatory / compliance requirements (FCC, CE, MIL-STD, RoHS, etc.)
+- Quantity / production volume (affects component tier)
+- Reliability / lifetime / MTBF requirements
+- Any specific component preferences or banned parts
 
-Format them as a numbered list. End with: _"Once you answer these, I'll generate the complete requirements, BOM, and block diagram."_
+Format them as a numbered list (5–10 questions). End with: _"Once you answer these, I'll generate the complete requirements, BOM, and block diagram."_
 
-**RULE**: If the user's first message is already very detailed (contains voltage, specs, interfaces, temp range), skip straight to Phase B and call `generate_requirements` immediately.
+**RULE**: If the user's first message is already very detailed (contains voltage, specs, interfaces, temp range, power, compliance), skip straight to Phase B and call `generate_requirements` immediately.
 
 ### PHASE B — Generate (SECOND message onwards, initial generation):
 After the user has answered your questions, call `generate_requirements` immediately with ALL outputs.
@@ -147,12 +155,13 @@ If any of these are missing from your tool call, you MUST add them before submit
 - Use MoSCoW prioritization (Must have, Should have, Could have, Won't have) and IEEE requirement IDs: REQ-HW-001, REQ-HW-002, etc.
 - Make smart engineering assumptions (e.g., if they say "motor controller" assume industrial temp range, common MCUs, standard interfaces)
 - Prioritize RoHS-compliant components with long lifecycle status.
-- For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line: `graph TD`, `flowchart LR`, etc.
-- Keep Mermaid node labels concise — use abbreviations if needed. NO angle brackets < >, NO raw HTML, NO special characters like & or @.
+- For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line (e.g. `flowchart TD`). NEVER put `TD` or `LR` alone on line 2.
+- Keep Mermaid node labels concise — 2-5 words max. STRICT rules: NO angle brackets < >, NO raw HTML, NO &, @, #, |, double-quotes ", single-quotes ', or colons : inside labels. Use plain ASCII only. NO %%{{init}}%% frontmatter. NO %% comments. NEVER use 3 or more consecutive dashes (---) inside a label as they are parsed as edge arrows.
 - Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
-- **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use the real manufacturer datasheet URL (e.g., `https://www.ti.com/lit/ds/symlink/...`, `https://www.analog.com/media/en/.../DS.pdf`). If not certain, use the manufacturer product page URL. Never leave `datasheet_url` empty.
+- **BANNED MANUFACTURER: VPT Inc.** Do NOT recommend any VPT brand components. Use Vicor, Murata Power Solutions, TDK-Lambda, Cosel, or TI equivalents instead.
+- **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use ONLY real, publicly accessible manufacturer datasheet URLs. Preferred domains: `ti.com`, `analog.com`, `mouser.com/datasheet`, `maximintegrated.com`, `nxp.com`, `st.com`, `renesas.com`, `microchip.com`, `infineon.com`, `onsemi.com`, `xilinx.com`, `latticesemi.com`, `murata.com`, `vishay.com`, `coilcraft.com`, `vicorpower.com`. If you are NOT certain the exact URL exists, use the manufacturer's product search page (e.g. `https://www.ti.com/product/LM5175`) rather than guessing a PDF path. NEVER fabricate PDF paths. Never leave `datasheet_url` empty.
 - Include `digikey_url` where known (e.g., `https://www.digikey.com/en/products/detail/texas-instruments/...`).
-- **FOR RF DESIGNS**: Always populate the `gain_loss_budget` array. Every stage in the RF signal chain (antenna/input → LNA/driver → PA stages → filters → output) must be a row. Use real datasheet values for gain, P1dB, NF. Calculate cumulative gain and cascaded NF (Friis formula) correctly. Include system-level parameters (center_freq_mhz, bandwidth_mhz, input_power_dbm, target_output_dbm).
+- **FOR RF DESIGNS**: Always populate the `gain_loss_budget` array. Every stage in the RF signal chain (antenna/input → LNA/driver → PA stages → filters → output) must be a row. Use real datasheet values for gain, P1dB, NF. Calculate cumulative gain and cascaded NF (Friis formula) correctly. Include system-level parameters (center_freq_mhz, bandwidth_mhz, input_power_dbm, target_output_dbm). Additionally populate these sub-arrays **only when the design requirement specifically calls for it**: `harmonic_rejection` (when spurious/harmonic spec is mentioned), `power_vs_frequency` (when flatness across band is specified), `power_vs_input` (when dynamic range, linearity or 1 dB compression is specified), `cable_loss` (when cable runs, antenna feed, or connector budget is mentioned). Add `input_return_loss_db` and `output_return_loss_db` per stage whenever return loss / VSWR is a requirement.
 - **NEVER use XML tags in your responses.** No `<output>`, `<field_name>`, `<safety_flag>`, or any other XML/HTML wrapper tags.
   Use ONLY markdown: `**bold**`, `## headers`, `- lists`, `| tables |`, code blocks. XML tags will break the UI renderer.
 
@@ -295,8 +304,69 @@ GENERATE_REQUIREMENTS_TOOL = {
                                 "cumulative_gain_db":  {"type": "number",  "description": "Total gain from system input to output of this stage"},
                                 "cumulative_nf_db":    {"type": "number",  "description": "Cascaded noise figure up to and including this stage (Friis)"},
                                 "notes":               {"type": "string",  "description": "Brief note, e.g. 'bias tee required', 'temperature-compensated'"},
+                                "input_return_loss_db": {"type": "number", "description": "Input return loss (S11) of this stage in dB (positive value, e.g. 15 = 15 dB return loss). Omit if not applicable."},
+                                "output_return_loss_db": {"type": "number", "description": "Output return loss (S22) of this stage in dB. Omit if not applicable."},
                             },
                             "required": ["stage_name", "component", "gain_db", "output_power_dbm", "cumulative_gain_db"],
+                        },
+                    },
+                    "harmonic_rejection": {
+                        "type": "array",
+                        "description": "Harmonic rejection table — include ONLY when requirement specifies harmonic suppression (e.g. transmitter spurs spec). One entry per harmonic order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "harmonic_order": {"type": "integer", "description": "2 for 2nd harmonic, 3 for 3rd, etc."},
+                                "frequency_mhz":  {"type": "number",  "description": "Frequency of this harmonic in MHz"},
+                                "rejection_db":   {"type": "number",  "description": "Expected harmonic suppression relative to carrier in dBc (positive = more rejection)"},
+                                "spec_db":        {"type": "number",  "description": "Required rejection per specification in dBc"},
+                                "meets_spec":     {"type": "boolean", "description": "Does the expected rejection meet the spec?"},
+                            },
+                            "required": ["harmonic_order", "frequency_mhz", "rejection_db"],
+                        },
+                    },
+                    "power_vs_frequency": {
+                        "type": "array",
+                        "description": "Output power variation across frequency — include ONLY when a flat power vs. frequency spec is required (e.g. flatness +/-1 dB). One entry per frequency spot.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "frequency_mhz":  {"type": "number", "description": "Spot frequency in MHz"},
+                                "output_power_dbm": {"type": "number", "description": "Expected output power at this frequency in dBm"},
+                                "gain_db":        {"type": "number", "description": "System gain at this frequency in dB"},
+                                "flatness_db":    {"type": "number", "description": "Power deviation from nominal (positive or negative) in dB"},
+                            },
+                            "required": ["frequency_mhz", "output_power_dbm"],
+                        },
+                    },
+                    "power_vs_input": {
+                        "type": "array",
+                        "description": "Output power vs. input drive level (AM-AM characteristic) — include ONLY when dynamic range or linearity spec requires it. One entry per input power level.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "input_power_dbm":  {"type": "number", "description": "Input signal level in dBm"},
+                                "output_power_dbm": {"type": "number", "description": "Corresponding output power in dBm"},
+                                "gain_db":          {"type": "number", "description": "Instantaneous gain at this input level"},
+                                "gain_compression_db": {"type": "number", "description": "Gain compression relative to small-signal gain, in dB"},
+                            },
+                            "required": ["input_power_dbm", "output_power_dbm"],
+                        },
+                    },
+                    "cable_loss": {
+                        "type": "array",
+                        "description": "Cable / transmission-line loss budget — include ONLY when the requirement specifies cable runs, connector losses, or waveguide routing (e.g. antenna feed cables). One entry per cable/connector segment.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "segment":          {"type": "string", "description": "Label, e.g. 'Antenna feed cable', 'SMA to board connector'"},
+                                "cable_type":       {"type": "string", "description": "e.g. 'RG-58', 'LMR-400', 'SMA connector', 'waveguide WR-90'"},
+                                "length_m":         {"type": "number", "description": "Physical length in metres (0 for connectors/adapters)"},
+                                "loss_db_per_m":    {"type": "number", "description": "Cable attenuation in dB/m at the operating frequency"},
+                                "total_loss_db":    {"type": "number", "description": "Total loss for this segment in dB"},
+                                "frequency_mhz":    {"type": "number", "description": "Frequency at which loss is specified"},
+                            },
+                            "required": ["segment", "cable_type", "total_loss_db"],
                         },
                     },
                 },
@@ -684,8 +754,27 @@ class RequirementsAgent(BaseAgent):
             lines.append("")
 
         # Components — show ALL, no truncation
+        # Note: full URL verification runs in _build_components_md; the summary
+        # table here uses the same live-check helper imported at module level.
         comps = tool_input.get("component_recommendations", [])
         if comps:
+            import urllib.request as _ur2
+            def _quick_head(url: str) -> bool:
+                if not url or not url.startswith('http'):
+                    return False
+                try:
+                    req = _ur2.Request(url, method='HEAD')
+                    req.add_header('User-Agent', 'Mozilla/5.0 (compatible; HardwarePipelineBot/1.0)')
+                    with _ur2.urlopen(req, timeout=4) as r:
+                        return r.status < 400
+                except Exception:
+                    return False
+            from concurrent.futures import ThreadPoolExecutor as _TPE2
+            raw_urls = [comp.get("datasheet_url", "").strip() for comp in comps]
+            with _TPE2(max_workers=min(10, len(raw_urls))) as pool:
+                results = list(pool.map(_quick_head, raw_urls))
+            url_live = dict(zip(raw_urls, results))
+
             lines += [f"## Component Selections ({len(comps)} components)", ""]
             lines.append("| # | Function | Part Number | Manufacturer | Datasheet |")
             lines.append("|---|---|---|---|---|")
@@ -694,7 +783,20 @@ class RequirementsAgent(BaseAgent):
                 mfr    = comp.get("primary_manufacturer", "")
                 func   = comp.get("function", "")
                 ds_url = comp.get("datasheet_url", "").strip()
-                ds_link = f"[Datasheet]({ds_url})" if ds_url else "—"
+                if ds_url and url_live.get(ds_url, False):
+                    ds_link = f"[Datasheet]({ds_url})"
+                elif ds_url:
+                    # Dead link — fall back to manufacturer search
+                    mfr_key = mfr.strip().lower()
+                    fallback = {
+                        'analog devices': f'https://www.analog.com/en/search.html#q={part}',
+                        'analog':         f'https://www.analog.com/en/search.html#q={part}',
+                        'texas instruments': f'https://www.ti.com/product/{part}',
+                        'ti':             f'https://www.ti.com/product/{part}',
+                    }.get(mfr_key, f'https://www.google.com/search?q={part}+datasheet')
+                    ds_link = f"[Datasheet ↗]({fallback})"
+                else:
+                    ds_link = "—"
                 lines.append(f"| {i} | {func} | {part} | {mfr} | {ds_link} |")
             lines.append("")
 
@@ -970,33 +1072,53 @@ class RequirementsAgent(BaseAgent):
             }
             rows.append(row)
 
-        # Build markdown table
-        h1 = "| SI NO | DESCRIPTION | Package | PART NO | QTY"
-        h2 = "|-------|-------------|---------|---------|----"
-        for label in RAIL_LABELS:
-            h1 += f" | {label} TYP (W) | {label} MAX (W) | {label} TOT TYP (W) | {label} TOT MAX (W)"
-            h2 += " |-----------|-----------|--------------|--------------|"
-        h1 += " | TOT MAX POW (W) | TOT TYP POW (W) |"
-        h2 += "-----------------|-----------------|"
-
-        table_lines = [h1, h2]
-        for row in rows:
-            line = f"| {row['si']} | {row['desc']} | {row['pkg']} | {row['part']} | {row['qty']}"
-            for c in row["cells"]:
-                line += f" | {c}"
-            line += f" | {row['tot_max']} | {row['tot_typ']} |"
-            table_lines.append(line)
-
-        # Totals row
-        tot_line = f"| | **TOTAL** | | | "
-        for idx in range(len(RAILS)):
-            t_typ = round(rail_totals_typ[idx], 3)
-            t_max = round(rail_totals_max[idx], 3)
-            tot_line += f" | | | {t_typ} | {t_max}"
+        # Build split markdown tables (one per rail group) to avoid column overflow.
+        # RAIL groups: [0]=5V, [1]=3.3V, [2]=2.5V, [3]=1.8V  → split 0-1 and 2-3
         grand_max = round(sum(rail_totals_max), 3)
         grand_typ = round(sum(rail_totals_typ), 3)
-        tot_line += f" | **{grand_max}** | **{grand_typ}** |"
-        table_lines.append(tot_line)
+
+        def build_rail_table(rail_indices: list) -> list:
+            """Emit a compact markdown table for the given rail indices."""
+            sel_labels = [RAIL_LABELS[i] for i in rail_indices]
+            # Header
+            h1 = "| SI | Description | Part No | Qty"
+            h2 = "|----|-------------|---------|----"
+            for lbl in sel_labels:
+                h1 += f" | {lbl} TYP (W) | {lbl} MAX (W)"
+                h2 += " |-----------|-----------|"
+            h1 += " | Total TYP (W) | Total MAX (W) |"
+            h2 += "---------------|---------------|"
+            t_lines = [h1, h2]
+            for row in rows:
+                tot_typ_row = 0.0
+                tot_max_row = 0.0
+                line = f"| {row['si']} | {row['desc']} | {row['part']} | {row['qty']}"
+                for ri in rail_indices:
+                    # cells layout: 4 values per rail [typ, max, tot_typ, tot_max]
+                    base = ri * 4
+                    typ_w = row["cells"][base]
+                    max_w = row["cells"][base + 1]
+                    line += f" | {typ_w if typ_w != '' else '—'} | {max_w if max_w != '' else '—'}"
+                    if isinstance(typ_w, float):
+                        tot_typ_row += typ_w
+                    if isinstance(max_w, float):
+                        tot_max_row += max_w
+                line += f" | {round(tot_typ_row, 3) if tot_typ_row else '—'} | {round(tot_max_row, 3) if tot_max_row else '—'} |"
+                t_lines.append(line)
+            # Totals row
+            tot_line = "| | **TOTALS** | | "
+            for ri in rail_indices:
+                t_typ = round(rail_totals_typ[ri], 3)
+                t_max = round(rail_totals_max[ri], 3)
+                tot_line += f" | **{t_typ}** | **{t_max}**"
+            sub_typ = round(sum(rail_totals_typ[i] for i in rail_indices), 3)
+            sub_max = round(sum(rail_totals_max[i] for i in rail_indices), 3)
+            tot_line += f" | **{sub_typ}** | **{sub_max}** |"
+            t_lines.append(tot_line)
+            return t_lines
+
+        table_a = build_rail_table([0, 1])   # 5V and 3.3V
+        table_b = build_rail_table([2, 3])   # 2.5V and 1.8V
 
         lines = [
             f"# Power Calculation",
@@ -1004,13 +1126,19 @@ class RequirementsAgent(BaseAgent):
             "",
             f"**Date:** {date}",
             "",
-            "## Power Budget — Per Component Per Rail",
-            "",
             "> All values in Watts (W). TYP = typical operating power, MAX = worst-case (130% of TYP).",
             "> Rail assignment is based on component operating voltage from BOM.",
             "",
+            "## Power Budget — 5 V & 3.3 V Rails",
+            "",
         ]
-        lines.extend(table_lines)
+        lines.extend(table_a)
+        lines += [
+            "",
+            "## Power Budget — 2.5 V & 1.8 V Rails",
+            "",
+        ]
+        lines.extend(table_b)
         lines += [
             "",
             "---",
@@ -1146,11 +1274,136 @@ class RequirementsAgent(BaseAgent):
                 lines.append(f"| Output Power Margin   | {margin_str} | dB  |")
             lines.append("")
 
+        # Determine next section number dynamically
+        sec = 4
+
+        # --- Return Loss per stage (if at least one stage has S11/S22 data) ---
+        rl_stages = [s for s in stages if s.get("input_return_loss_db") is not None or s.get("output_return_loss_db") is not None]
+        if rl_stages:
+            lines += [
+                f"## {sec}. Return Loss — Per Stage",
+                "",
+                "| # | Stage | Component | S11 — Input RL (dB) | S22 — Output RL (dB) | Notes |",
+                "|---|-------|-----------|---------------------|----------------------|-------|",
+            ]
+            for i, st in enumerate(rl_stages, 1):
+                s11 = st.get("input_return_loss_db")
+                s22 = st.get("output_return_loss_db")
+                lines.append(
+                    f"| {i} | {st.get('stage_name', '—')} | {st.get('component', '—')}"
+                    f" | {f'{s11:.1f}' if s11 is not None else '—'}"
+                    f" | {f'{s22:.1f}' if s22 is not None else '—'}"
+                    f" | {st.get('notes', '')} |"
+                )
+            lines += ["", "> Return loss values are referenced to 50 Ω. Higher value = better match.", ""]
+            sec += 1
+
+        # --- Harmonic Rejection (only when data provided) ---
+        harmonics = glb.get("harmonic_rejection") or []
+        if harmonics:
+            lines += [
+                f"## {sec}. Harmonic Rejection",
+                "",
+                "| Harmonic Order | Frequency (MHz) | Expected Rejection (dBc) | Required Spec (dBc) | Pass/Fail |",
+                "|----------------|-----------------|--------------------------|---------------------|-----------|",
+            ]
+            for h in harmonics:
+                order    = h.get("harmonic_order", "?")
+                freq     = h.get("frequency_mhz", "?")
+                rej      = h.get("rejection_db")
+                spec     = h.get("spec_db")
+                meets    = h.get("meets_spec")
+                rej_str  = f"{rej:.1f}" if isinstance(rej, (int, float)) else "—"
+                spec_str = f"{spec:.1f}" if isinstance(spec, (int, float)) else "—"
+                pf       = ("✓ PASS" if meets else "✗ FAIL") if meets is not None else "—"
+                lines.append(f"| {order}H | {freq} | {rej_str} | {spec_str} | {pf} |")
+            lines += ["", "> Higher rejection (more negative dBc) is better. Filter may be required if spec is not met.", ""]
+            sec += 1
+
+        # --- Output Power vs Frequency (flatness) ---
+        pvf = glb.get("power_vs_frequency") or []
+        if pvf:
+            lines += [
+                f"## {sec}. Output Power vs Frequency",
+                "",
+                "| Frequency (MHz) | Output Power (dBm) | Gain (dB) | Flatness (dB) |",
+                "|-----------------|--------------------|-----------|---------------|",
+            ]
+            for row in pvf:
+                f_mhz = row.get("frequency_mhz", "?")
+                pout  = row.get("output_power_dbm")
+                gain  = row.get("gain_db")
+                flat  = row.get("flatness_db")
+                lines.append(
+                    f"| {f_mhz}"
+                    f" | {f'{pout:.1f}' if isinstance(pout, (int, float)) else '—'}"
+                    f" | {f'{gain:.1f}' if isinstance(gain, (int, float)) else '—'}"
+                    f" | {f'{flat:+.1f}' if isinstance(flat, (int, float)) else '—'} |"
+                )
+            lines += ["", "> Flatness measured relative to midband output power.", ""]
+            sec += 1
+
+        # --- Output Power vs Input Power (AM-AM / compression) ---
+        pvi = glb.get("power_vs_input") or []
+        if pvi:
+            lines += [
+                f"## {sec}. Output Power vs Input Drive Level (AM-AM)",
+                "",
+                "| Input (dBm) | Output (dBm) | Gain (dB) | Compression (dB) |",
+                "|-------------|--------------|-----------|------------------|",
+            ]
+            for row in pvi:
+                pin  = row.get("input_power_dbm")
+                pout = row.get("output_power_dbm")
+                gain = row.get("gain_db")
+                comp = row.get("gain_compression_db")
+                lines.append(
+                    f"| {f'{pin:.1f}' if isinstance(pin, (int, float)) else '—'}"
+                    f" | {f'{pout:.1f}' if isinstance(pout, (int, float)) else '—'}"
+                    f" | {f'{gain:.1f}' if isinstance(gain, (int, float)) else '—'}"
+                    f" | {f'{comp:.1f}' if isinstance(comp, (int, float)) else '—'} |"
+                )
+            lines += ["", "> Compression > 0 dB indicates onset of saturation.", ""]
+            sec += 1
+
+        # --- Cable Loss Budget ---
+        cable = glb.get("cable_loss") or []
+        if cable:
+            lines += [
+                f"## {sec}. Cable & Connector Loss Budget",
+                "",
+                "| Segment | Cable/Connector Type | Length (m) | Loss/m (dB/m) | Total Loss (dB) | Frequency (MHz) |",
+                "|---------|----------------------|------------|---------------|-----------------|-----------------|",
+            ]
+            total_cable_loss = 0.0
+            for row in cable:
+                seg   = row.get("segment", "—")
+                ctype = row.get("cable_type", "—")
+                length = row.get("length_m", 0)
+                loss_m = row.get("loss_db_per_m")
+                total  = row.get("total_loss_db", 0)
+                f_mhz  = row.get("frequency_mhz", "—")
+                total_cable_loss += total if isinstance(total, (int, float)) else 0
+                lines.append(
+                    f"| {seg} | {ctype}"
+                    f" | {length if length else '—'}"
+                    f" | {f'{loss_m:.3f}' if isinstance(loss_m, (int, float)) else '—'}"
+                    f" | {f'{total:.2f}' if isinstance(total, (int, float)) else '—'}"
+                    f" | {f_mhz} |"
+                )
+            lines += [
+                f"| **TOTAL** | | | | **{round(total_cable_loss, 2)}** | |",
+                "",
+                "> Cable loss must be compensated by additional gain or accepted as part of system link budget.",
+                "",
+            ]
+            sec += 1
+
         # --- Friis formula reminder ---
         lines += [
-            "## 4. Cascade Noise Figure — Friis Formula",
+            f"## {sec}. Cascade Noise Figure — Friis Formula",
             "",
-            "$$F_{sys} = F_1 + \\frac{F_2 - 1}{G_1} + \\frac{F_3 - 1}{G_1 G_2} + \\cdots$$",
+            "$$F_{{sys}} = F_1 + \\frac{{F_2 - 1}}{{G_1}} + \\frac{{F_3 - 1}}{{G_1 G_2}} + \\cdots$$",
             "",
             "Where *F* = linear noise factor (not dB), *G* = linear gain.",
             "The first stage NF dominates — minimise LNA/driver NF for best system sensitivity.",
@@ -1163,24 +1416,129 @@ class RequirementsAgent(BaseAgent):
         return "\n".join(lines)
 
     def _build_components_md(self, tool_input: dict, project_name: str) -> str:
-        """Build component recommendations markdown."""
+        """Build component recommendations markdown.
+        All datasheet URLs are verified via HTTP HEAD before inclusion —
+        dead links are replaced with a manufacturer product-search fallback.
+        """
+        import re as _re
+        import urllib.request as _urllib
+        import urllib.parse as _urllib_parse
+        import urllib.error as _urllib_err
+        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
+
+        # ── URL bad-pattern filter (fast, no network) ──────────────────────────
+        _BAD_PATTERNS = [
+            r'/vpt[/-]', r'vptpower\.com', r'\bvpt\b',
+        ]
+        def _filter_url(url: str) -> str:
+            if not url or not url.startswith('http'):
+                return ''
+            for pat in _BAD_PATTERNS:
+                if _re.search(pat, url, _re.IGNORECASE):
+                    return ''
+            return url
+
+        # ── Manufacturer → product-search fallback URL builder ─────────────────
+        _MFR_SEARCH: dict = {
+            'analog devices':        'https://www.analog.com/en/search.html#q={part}',
+            'analog':                'https://www.analog.com/en/search.html#q={part}',
+            'texas instruments':     'https://www.ti.com/product/{part}',
+            'ti':                    'https://www.ti.com/product/{part}',
+            'nxp':                   'https://www.nxp.com/search#q={part}',
+            'nxp semiconductors':    'https://www.nxp.com/search#q={part}',
+            'st':                    'https://www.st.com/en/search.html#q={part}',
+            'stmicroelectronics':    'https://www.st.com/en/search.html#q={part}',
+            'microchip':             'https://www.microchip.com/search/searchresults/{part}',
+            'microchip technology':  'https://www.microchip.com/search/searchresults/{part}',
+            'infineon':              'https://www.infineon.com/cms/en/product/search/?q={part}',
+            'infineon technologies': 'https://www.infineon.com/cms/en/product/search/?q={part}',
+            'onsemi':                'https://www.onsemi.com/search?q={part}',
+            'on semiconductor':      'https://www.onsemi.com/search?q={part}',
+            'xilinx':                'https://www.xilinx.com/search/site-keyword-search.html#q={part}',
+            'amd':                   'https://www.amd.com/en/search/site-keyword-search.html#q={part}',
+            'amd (xilinx)':          'https://www.amd.com/en/search/site-keyword-search.html#q={part}',
+            'lattice':               'https://www.latticesemi.com/products#{part}',
+            'lattice semiconductor': 'https://www.latticesemi.com/products#{part}',
+            'renesas':               'https://www.renesas.com/en/search?keywords={part}',
+            'murata':                'https://www.murata.com/en-us/partdetail/{part}',
+            'vicor':                 'https://www.vicorpower.com/search?q={part}',
+            'te connectivity':       'https://www.te.com/en/search.html#q={part}',
+            'mouser':                'https://www.mouser.com/Search/Refine?Keyword={part}',
+        }
+        def _fallback_url(part: str, mfr: str) -> str:
+            """Build a manufacturer search page URL for the given part number."""
+            key = mfr.strip().lower()
+            template = _MFR_SEARCH.get(key, 'https://www.google.com/search?q={part}+datasheet')
+            return template.format(part=_urllib_parse.quote(part, safe=''))
+
+        # ── Live HTTP HEAD check (5 s timeout, follows one redirect) ───────────
+        def _head_ok(url: str) -> bool:
+            try:
+                req = _urllib.Request(url, method='HEAD')
+                req.add_header('User-Agent',
+                               'Mozilla/5.0 (compatible; HardwarePipelineBot/1.0)')
+                with _urllib.urlopen(req, timeout=5) as resp:
+                    return resp.status < 400
+            except Exception:
+                # Try GET as fallback (some servers block HEAD)
+                try:
+                    req2 = _urllib.Request(url)
+                    req2.add_header('User-Agent',
+                                    'Mozilla/5.0 (compatible; HardwarePipelineBot/1.0)')
+                    with _urllib.urlopen(req2, timeout=5) as resp2:
+                        return resp2.status < 400
+                except Exception:
+                    return False
+
+        # ── Collect all URLs that need validation ──────────────────────────────
+        comps = tool_input.get("component_recommendations", [])
+        # Build list of (url, part, mfr) tuples to check in parallel
+        to_check: list[tuple[str, str, str]] = []
+        for comp in comps:
+            part = comp.get('primary_part', '')
+            mfr  = comp.get('primary_manufacturer', '')
+            raw_ds = _filter_url(comp.get('datasheet_url', '').strip())
+            if raw_ds:
+                to_check.append((raw_ds, part, mfr))
+            for alt in comp.get('alternatives', []):
+                raw_alt = _filter_url(alt.get('datasheet_url', '').strip())
+                if raw_alt:
+                    to_check.append((raw_alt, alt.get('part_number', part), mfr))
+
+        # Parallel HEAD checks — max 10 workers
+        url_ok: dict[str, bool] = {}
+        if to_check:
+            urls_unique = list({u for u, _, _ in to_check})
+            with _TPE(max_workers=min(10, len(urls_unique))) as pool:
+                fut_map = {pool.submit(_head_ok, u): u for u in urls_unique}
+                for fut in _as_completed(fut_map):
+                    url_ok[fut_map[fut]] = fut.result()
+
+        def _verified_url(raw_url: str, part: str, mfr: str) -> str:
+            """Return raw_url if live, else a manufacturer search page fallback."""
+            filtered = _filter_url(raw_url)
+            if not filtered:
+                return _fallback_url(part, mfr)
+            if url_ok.get(filtered, False):
+                return filtered
+            # URL is dead — use manufacturer search page
+            return _fallback_url(part, mfr)
+
+        # ── Build markdown ─────────────────────────────────────────────────────
         lines = [
-            f"# Component Recommendations",
+            "# Component Recommendations",
             f"## {project_name}",
             "",
         ]
 
-        for i, comp in enumerate(tool_input.get("component_recommendations", []), 1):
+        for i, comp in enumerate(comps, 1):
             part = comp.get('primary_part', 'See BOM')
             mfr  = comp.get('primary_manufacturer', '')
-            ds_url  = comp.get('datasheet_url', '').strip()
-            dk_url  = comp.get('digikey_url', '').strip()
+            ds_url = _verified_url(comp.get('datasheet_url', '').strip(), part, mfr)
+            dk_url = comp.get('digikey_url', '').strip()
 
             # Primary heading with part number as a link if datasheet available
-            if ds_url:
-                part_str = f"[{part}]({ds_url})"
-            else:
-                part_str = part
+            part_str = f"[{part}]({ds_url})" if ds_url else part
 
             lines.extend([
                 f"### {i}. {comp.get('function', 'Component')}",
@@ -1216,11 +1574,12 @@ class RequirementsAgent(BaseAgent):
             if alts:
                 lines.append("**Alternatives:**")
                 for alt in alts:
-                    alt_ds = alt.get('datasheet_url', '').strip()
-                    alt_pn = alt.get('part_number', '')
+                    alt_pn  = alt.get('part_number', '')
+                    alt_mfr = alt.get('manufacturer', mfr)
+                    alt_ds  = _verified_url(alt.get('datasheet_url', '').strip(), alt_pn, alt_mfr)
                     alt_pn_str = f"[{alt_pn}]({alt_ds})" if alt_ds else alt_pn
                     lines.append(
-                        f"- **{alt_pn_str}** ({alt.get('manufacturer', '')}): "
+                        f"- **{alt_pn_str}** ({alt_mfr}): "
                         f"{alt.get('trade_off', '')}"
                     )
                 lines.append("")

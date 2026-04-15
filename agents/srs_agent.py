@@ -392,7 +392,7 @@ stateDiagram-v2
 2. Every requirement must be specific, measurable, and testable — no vague language
 3. NEVER use TBD, TBC, or TBA — derive values from HRS/GLR or state explicit engineering assumptions
 4. All C code examples must be syntactically correct C99
-5. Include minimum 5 Mermaid diagrams (sequence, state, flowchart)
+5. Include minimum 5 Mermaid diagrams (sequence, state, flowchart). STRICT Mermaid label rules: NO single-quotes ', double-quotes ", angle brackets < >, #, |, & or colons : inside node labels. NO 3+ consecutive dashes (---) inside labels. Use plain ASCII words only.
 6. The traceability matrix must map EVERY REQ-SW to at least one REQ-HW or GLR section
 7. Be highly specific to the actual project — generic boilerplate is not acceptable
 """

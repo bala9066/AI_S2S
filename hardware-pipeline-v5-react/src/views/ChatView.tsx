@@ -12,15 +12,21 @@ function truncateQuestion(text: string, maxLength: number): string {
   return text.slice(0, maxLength - 3) + '...';
 }
 
-/** Sanitise AI-generated Mermaid code */
+/** Sanitise AI-generated Mermaid code — shared logic kept in sync with DocumentsView */
 function sanitizeMermaid(raw: string): string {
   let code = raw.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  // Strip %%{ init }%% frontmatter and %% comments
+  code = code.replace(/^%%\{[\s\S]*?\}%%\s*/m, '');
+  code = code.replace(/%%[^\n]*/g, '');
+  // Arrow normalisations
+  code = code.replace(/\u2014\u2014>/g, '-->').replace(/\u2014>/g, '-->');
+  code = code.replace(/——>/g, '-->').replace(/—>/g, '-->');
+  code = code.replace(/==>/g, '-->');
+  code = code.replace(/(\w)\s*->\s*(\w)/g, '$1 --> $2');
   // Normalise graph → flowchart
   code = code.replace(/^graph\s+(TD|LR|TB|RL|BT)/im, 'flowchart $1');
-  // Step 0: join lines where [ is opened but not closed on the same line.
-  // LLMs sometimes split a node label across multiple lines with a real newline,
-  // e.g.  SINK[Heatsink\n  AIR["Ambient Air"]  which becomes two lines in the file.
-  // The "end" keyword on the next line then causes a parser crash.
+  code = code.replace(/^(flowchart)\n(TD|LR|TB|RL|BT)\b/m, '$1 $2');
+  // Join lines where [ is opened but not closed (multi-line node labels)
   {
     const joinedLines: string[] = [];
     for (const line of code.split('\n')) {
@@ -42,32 +48,38 @@ function sanitizeMermaid(raw: string): string {
   const known = ['flowchart', 'sequencediagram', 'classdiagram', 'statediagram',
     'erdiagram', 'gantt', 'pie', 'gitgraph', 'mindmap', 'timeline'];
   if (!known.some(t => first.startsWith(t))) code = 'flowchart TD\n' + code;
-  // Strip HTML tags (except <br/>) inside labels
-  code = code.replace(/<(?!br\s*\/?)[^>]+>/gi, ' ');
-  // Replace literal \n escape sequences (backslash + n) with a space.
-  // LLMs often emit \n inside node labels thinking it's a newline escape.
+  // Literal \n → space; strip all HTML tags; decode HTML entities
   code = code.replace(/\\n/g, ' ');
-  // Sanitize flowchart node labels: [ ... ], ( ... ), { ... }
-  // Replace & and angle brackets that break the parser
+  code = code.replace(/&lt;/g, '(').replace(/&gt;/g, ')').replace(/&amp;/g, 'and').replace(/&nbsp;/g, ' ');
+  code = code.replace(/<[^>]+>/gi, ' ');
+  // Fix "NODE [label]" → "NODE[label]"
+  code = code.split('\n').map(line => {
+    if (/^\s*subgraph\b/.test(line)) return line.replace(/^(\s*subgraph\s+[\w-]+)\s+\[/, '$1[');
+    return line.replace(/(\w)\s+\[/g, '$1[');
+  }).join('\n');
+  // Sanitize node labels — strip arrow operators FIRST before > → ) replacement
+  // to prevent "LNA(LNA --> Filter)" becoming "LNA(LNA --) Filter)"
   const sanitizeLabel = (inner: string) =>
     inner
+      .replace(/-->/g, ' ').replace(/->/g, ' ')  // strip arrows before angle-bracket swap
+      .replace(/</g, '(').replace(/>/g, ')')
       .replace(/&(?!amp;|lt;|gt;|#)/g, 'and')
-      .replace(/</g, 'lt ')
-      .replace(/>/g, ' gt');
+      .replace(/"/g, ' ').replace(/'/g, ' ')  // quotes confuse the parser
+      .replace(/#/g, ' ')
+      .replace(/\|/g, '/')
+      .replace(/-{3,}/g, '--');  // long dash sequences break arrow detection
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
   code = code.replace(/\{([^}]*)\}/g, (_m, inner: string) => `{${sanitizeLabel(inner)}}`);
-  // Sanitize state diagram transition labels (after '-->...:'): remove > < and extra colons
-  // e.g.  STATE --> FAULT : VSWR > 10:1  →  STATE --> FAULT : VSWR gt 10,1
+  code = code.replace(/"([^"]+)"/g, (_m, inner: string) => `"${sanitizeLabel(inner)}"`);
+  // Edge labels: --> |label| node
+  code = code.replace(/\|([^|]+)\|/g, (_m, inner: string) => `|${sanitizeLabel(inner)}|`);
+  // State diagram colon-label sanitization
   if (first.startsWith('statediagram')) {
     code = code.split('\n').map(line => {
-      // Match lines with a state transition label:  ... --> ... : label
       const m = line.match(/^(\s*.*?-->\s*\S+\s*:)(.*)$/);
       if (m) {
-        const label = m[2]
-          .replace(/>/g, ' gt ')
-          .replace(/</g, ' lt ')
-          .replace(/:/g, ',');
+        const label = m[2].replace(/>/g, ')').replace(/</g, '(').replace(/:/g, ',');
         return m[1] + label;
       }
       return line;
@@ -1023,16 +1035,29 @@ function QuickReplyPanel({
   const allAnswered = questions.every(q => selected[q.id]);
   const selectedCount = questions.filter(q => selected[q.id]).length;
 
+  // ── Optional "Any Specific Requirements?" free-text card ─────────────────
+  const [specificReqs, setSpecificReqs] = useState('');
+
+  // Reset when question set changes
+  useEffect(() => {
+    setSpecificReqs('');
+  }, [questionKey]);
+
   const buildReply = () => {
-    return questions
+    const lines = questions
       .filter(q => selected[q.id])
       .map(q => {
         const val = selected[q.id];
         const display = val.startsWith('__other__:') ? val.slice(10) : val;
         return `${q.label}: ${display}`;
-      })
-      .join('\n');
+      });
+    if (specificReqs.trim()) {
+      lines.push(`Additional requirements: ${specificReqs.trim()}`);
+    }
+    return lines.join('\n');
   };
+
+  const canSend = selectedCount > 0 || specificReqs.trim().length > 0;
 
   return (
     /* Sticky popup anchored to bottom of chat scroll area */
@@ -1080,6 +1105,33 @@ function QuickReplyPanel({
             onSelect={val => setSelected(prev => ({ ...prev, [q.id]: val }))}
           />
         ))}
+
+        {/* ── Optional free-text card ── */}
+        <div style={{
+          background: 'var(--panel)', border: `1px dashed ${color}33`,
+          borderRadius: 8, padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 11, color: color, fontFamily: "'DM Mono',monospace", letterSpacing: '0.06em', marginBottom: 4 }}>
+            SPECIFIC REQUIREMENTS
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text2)', marginBottom: 10, lineHeight: 1.5 }}>
+            Any specific requirements? <span style={{ color: 'var(--text4)', fontSize: 11 }}>(optional)</span>
+          </div>
+          <textarea
+            value={specificReqs}
+            onChange={e => setSpecificReqs(e.target.value)}
+            placeholder="e.g. Must pass MIL-STD-810G, operating altitude >10,000m, conformal coating required…"
+            rows={2}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              background: 'var(--panel2)', border: `1px solid ${specificReqs.trim() ? color + '55' : color + '22'}`,
+              borderRadius: 5, padding: '7px 10px', fontSize: 12,
+              color: 'var(--text)', fontFamily: "'DM Mono',monospace",
+              outline: 'none', resize: 'vertical', lineHeight: 1.5,
+              transition: 'border-color 0.15s',
+            }}
+          />
+        </div>
       </div>
 
       {/* Footer / send */}
@@ -1093,14 +1145,14 @@ function QuickReplyPanel({
         </span>
         <button
           onClick={() => { onSend(buildReply()); setDismissed(true); }}
-          disabled={disabled || selectedCount === 0}
+          disabled={disabled || !canSend}
           style={{
             padding: '8px 20px', borderRadius: 6,
-            background: selectedCount > 0 ? color : 'var(--panel3)',
-            color: selectedCount > 0 ? '#070b14' : 'var(--text4)',
+            background: canSend ? color : 'var(--panel3)',
+            color: canSend ? '#070b14' : 'var(--text4)',
             border: 'none', fontSize: 12,
             fontFamily: "'DM Mono',monospace", fontWeight: 700,
-            cursor: disabled || selectedCount === 0 ? 'default' : 'pointer',
+            cursor: disabled || !canSend ? 'default' : 'pointer',
             transition: 'all 0.15s',
           }}>
           Send {selectedCount > 0 ? `${selectedCount} answer${selectedCount > 1 ? 's' : ''}` : 'answers'} →
@@ -1206,6 +1258,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   // "Other" option state for clarification cards
   const [otherActiveQId, setOtherActiveQId] = useState<string | null>(null);
   const [otherInputValues, setOtherInputValues] = useState<Record<string, string>>({});
+  // Optional free-text field shown after all question cards
+  const [clarifySpecificReqs, setClarifySpecificReqs] = useState('');
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
@@ -1379,7 +1433,10 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     const lines = clarification.questions
       .map(q => `${q.question} -> ${clarifyAnswers[q.id]}`)
       .join('\n');
-    const fullMessage = `${requirement}\n\n${lines}`;
+    const extra = clarifySpecificReqs.trim()
+      ? `\n\nAdditional requirements: ${clarifySpecificReqs.trim()}`
+      : '';
+    const fullMessage = `${requirement}\n\n${lines}${extra}`;
     setPreStage('done');
     setInput(''); // Clear the chat input field
     sendMessage(fullMessage);
@@ -1496,12 +1553,29 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                   );
                 })}
                 {allClarifyAnswered && (
-                  <div style={{ paddingBottom: 16 }}>
-                    <button onClick={handleConfirmAnswers}
-                      style={{ width: '100%', padding: '11px 0', background: `${color}12`, border: `0.5px solid ${color}80`, borderRadius: 4, color, fontSize: 13, fontFamily: "'DM Mono',monospace", cursor: 'pointer', letterSpacing: '0.02em' }}>
-                      Generate requirements spec &rarr;
-                    </button>
-                  </div>
+                  <>
+                    {/* Optional free-text card */}
+                    <div style={{ marginBottom: 18, marginTop: 4 }}>
+                      <div style={{ fontSize: 10, color: 'var(--text4)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, fontWeight: 600, fontFamily: "'DM Mono',monospace", marginBottom: 4 }}>
+                        ANY SPECIFIC REQUIREMENTS? <span style={{ opacity: 0.6, textTransform: 'none' as const, letterSpacing: 0, fontWeight: 400 }}>optional</span>
+                      </div>
+                      <textarea
+                        value={clarifySpecificReqs}
+                        onChange={e => setClarifySpecificReqs(e.target.value)}
+                        placeholder="e.g. Must operate at -40\xB0C to +85\xB0C, use SMA connectors, IPC Class 3..."
+                        rows={3}
+                        style={{ width: '100%', background: 'var(--panel)', border: `1px solid ${clarifySpecificReqs.trim() ? color + '66' : 'var(--panel3)'}`, borderRadius: 5, padding: '9px 12px', fontSize: 12, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'vertical' as const, outline: 'none', lineHeight: 1.65, boxSizing: 'border-box' as const, transition: 'border-color 0.2s' }}
+                        onFocus={e => { e.target.style.borderColor = color + '99'; }}
+                        onBlur={e => { e.target.style.borderColor = clarifySpecificReqs.trim() ? color + '66' : 'var(--panel3)'; }}
+                      />
+                    </div>
+                    <div style={{ paddingBottom: 16 }}>
+                      <button onClick={handleConfirmAnswers}
+                        style={{ width: '100%', padding: '11px 0', background: `${color}12`, border: `0.5px solid ${color}80`, borderRadius: 4, color, fontSize: 13, fontFamily: "'DM Mono',monospace", cursor: 'pointer', letterSpacing: '0.02em' }}>
+                        Generate requirements spec &rarr;
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             )}

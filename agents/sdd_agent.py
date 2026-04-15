@@ -681,7 +681,7 @@ src/
 
 ## ABSOLUTE RULES:
 1. ALL modules must have complete, syntactically correct C99 function prototypes
-2. ALL Mermaid diagrams must be valid (sequenceDiagram, stateDiagram-v2, graph TD, classDiagram)
+2. ALL Mermaid diagrams must be valid (sequenceDiagram, stateDiagram-v2, graph TD, classDiagram). STRICT label rules: NO single-quotes ', double-quotes ", angle brackets < >, #, |, & or colons : inside node labels. NO 3+ consecutive dashes (---) inside labels. Use plain ASCII words only.
 3. NEVER use TBD, TBC, or TBA — use actual values from the SRS/HRS/GLR or state explicit assumptions
 4. The traceability matrix must map EVERY design element to its REQ-SW-xxx from the SRS
 5. Include minimum 8 Mermaid diagrams across all viewpoints
