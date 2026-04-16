@@ -544,6 +544,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const [docxError, setDocxError] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
+  // ── Generation tracker: prevents stale async operations from setting state after phase switch ──
+  // Each phase gets a unique generation number. When an async operation completes,
+  // it checks if the generation still matches. If not, it skips the state update.
+  const generationRef = useRef<number>(0);
+
   // ── Persistent elapsed timer — keyed by phase.id so switching phases doesn't reset it ──
   // phaseStartTs: maps phase.id → wall-clock ms when that phase first went in_progress
   const phaseStartTsRef = useRef<Record<string, number>>({});
@@ -561,16 +566,29 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   }, [phase.id, status]);
 
   // Clear all loading/preparing states when switching phases
+  // IMPORTANT: Clear states IMMEDIATELY when phase.id changes, not just in cleanup.
+  // This prevents stuck "Loading..." and "Converting..." states in all phases.
   useEffect(() => {
+    // Increment generation to invalidate all in-flight async operations from previous phase
+    generationRef.current += 1;
+
+    // Clear all states immediately on phase change
+    setLoadingFile({});
+    setDocxConverting({});
+    setDocxPreconverting({});
+    docxPreconvertingRef.current.clear();
+    setDocxError({});
+    // Also clear cached content and blob URLs to prevent cross-phase contamination
+    setContents({});
+    setExpanded(null);
+    setDocxBlobUrls({});
+
     return () => {
-      // Clear loading states for all files
+      // Double-clear in cleanup to catch any async operations
       setLoadingFile({});
-      // Clear converting states
       setDocxConverting({});
-      // Clear pre-converting states and ref
       setDocxPreconverting({});
       docxPreconvertingRef.current.clear();
-      // Clear error states
       setDocxError({});
     };
   }, [phase.id]);
@@ -726,6 +744,10 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
     if (pipelineRunning) return;  // defer — backend busy with AI phase
+
+    // Capture the generation at effect start — async ops check this before setting state
+    const startGeneration = generationRef.current;
+
     let cancelled = false;
     const prefetch = async () => {
       const viewable = filteredFiles.filter(f => VIEWABLE.has(getExt(f.name))
@@ -734,19 +756,26 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       const BATCH = 3;
       for (let i = 0; i < viewable.length; i += BATCH) {
         if (cancelled) return;
+        // Skip if generation changed (phase switched)
+        if (generationRef.current !== startGeneration) return;
         const batch = viewable.slice(i, i + BATCH);
         await Promise.all(batch.map(async file => {
           if (cancelled || contentsRef.current[file.name] !== undefined) return;
+          // Skip if generation changed (phase switched)
+          if (generationRef.current !== startGeneration) return;
           try {
             const text = await api.getDocumentText(project.id, file.name);
-            if (!cancelled) {
+            // Only set state if generation hasn't changed
+            if (!cancelled && generationRef.current === startGeneration) {
               contentsRef.current = { ...contentsRef.current, [file.name]: text };
               setContents(prev => ({ ...prev, [file.name]: text }));
             }
           } catch { /* silent — user can still click to retry */ }
         }));
         // Small stagger between batches only
-        if (i + BATCH < viewable.length) await new Promise(r => setTimeout(r, 30));
+        if (i + BATCH < viewable.length && generationRef.current === startGeneration) {
+          await new Promise(r => setTimeout(r, 30));
+        }
       }
     };
     prefetch();
@@ -764,6 +793,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     if (!project || filteredFiles.length === 0) return;
     if (pipelineRunning) return;  // defer — backend busy with AI phase
 
+    // Capture the generation at effect start — async ops check this before setting state
+    const startGeneration = generationRef.current;
+
     let cancelled = false;
     const abortControllers: AbortController[] = [];
     // Track which file names THIS run started preparing, so we can clean them up on cancel
@@ -774,12 +806,18 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       // Convert one at a time — DOCX conversion is CPU-heavy on backend
       for (const file of mdFiles) {
         if (cancelled) return;
+        // Skip if generation changed (phase switched)
+        if (generationRef.current !== startGeneration) return;
         if (docxPreconvertingRef.current.has(file.name)) continue;
 
         // Mark as in-flight BEFORE the async fetch
         docxPreconvertingRef.current.add(file.name);
         thisRunFiles.push(file.name);
-        setDocxPreconverting(prev => ({ ...prev, [file.name]: true }));
+
+        // Only set state if generation hasn't changed
+        if (generationRef.current === startGeneration) {
+          setDocxPreconverting(prev => ({ ...prev, [file.name]: true }));
+        }
 
         // AbortController with 90s timeout — prevents infinite "Preparing…" when
         // backend is busy running another AI phase
@@ -796,7 +834,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           const blob = await resp.blob();
           const url = URL.createObjectURL(blob);
-          if (!cancelled) setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
+
+          // Only set state if generation hasn't changed (phase didn't switch)
+          if (generationRef.current === startGeneration && !cancelled) {
+            setDocxBlobUrls(prev => ({ ...prev, [file.name]: url }));
+          }
         } catch {
           clearTimeout(timeoutId);
           /* silent — user will see on-demand spinner if needed */
@@ -804,10 +846,16 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
         // Always clean up after each file (success, error, or abort)
         docxPreconvertingRef.current.delete(file.name);
-        setDocxPreconverting(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+
+        // Only set state if generation hasn't changed
+        if (generationRef.current === startGeneration) {
+          setDocxPreconverting(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+        }
 
         // Small gap between files so other UI interactions stay responsive
-        if (!cancelled) await new Promise(r => setTimeout(r, 200));
+        if (!cancelled && generationRef.current === startGeneration) {
+          await new Promise(r => setTimeout(r, 200));
+        }
       }
     };
 
@@ -819,7 +867,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       // Clear "Preparing…" state for every file this run started but didn't finish.
       // Without this, switching phases leaves the previous phase's files stuck at "Preparing…".
       thisRunFiles.forEach(name => docxPreconvertingRef.current.delete(name));
-      if (thisRunFiles.length > 0) {
+      if (thisRunFiles.length > 0 && generationRef.current === startGeneration) {
         setDocxPreconverting(prev => {
           const n = { ...prev };
           thisRunFiles.forEach(name => delete n[name]);
@@ -842,16 +890,29 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       setExpanded(expanded === file.name ? null : file.name);
       return;
     }
+
+    // Capture the generation at fetch start — check before setting state
+    const startGeneration = generationRef.current;
+
     setLoadingFile(prev => ({ ...prev, [file.name]: true }));
     try {
       const text = await api.getDocumentText(project.id, file.name);
-      setContents(prev => ({ ...prev, [file.name]: text }));
-      setExpanded(file.name);
+      // Only set state if generation hasn't changed (phase didn't switch during fetch)
+      if (generationRef.current === startGeneration) {
+        setContents(prev => ({ ...prev, [file.name]: text }));
+        setExpanded(file.name);
+      }
     } catch {
-      setContents(prev => ({ ...prev, [file.name]: 'Could not load document.' }));
-      setExpanded(file.name);
+      // Only set state if generation hasn't changed
+      if (generationRef.current === startGeneration) {
+        setContents(prev => ({ ...prev, [file.name]: 'Could not load document.' }));
+        setExpanded(file.name);
+      }
     }
-    setLoadingFile(prev => ({ ...prev, [file.name]: false }));
+    // Only clear loading state if generation hasn't changed
+    if (generationRef.current === startGeneration) {
+      setLoadingFile(prev => ({ ...prev, [file.name]: false }));
+    }
   };
 
   /** Reliably trigger a browser download — appends anchor to body to satisfy Firefox/Safari */
@@ -876,6 +937,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const triggerDocxDownload = async (file: DocFile) => {
     if (!project || docxConverting[file.name]) return;
 
+    // Capture the generation at download start — check before setting state
+    const startGeneration = generationRef.current;
+
     const docxName = file.name.replace(/\.md$/i, '.docx');
 
     // If pre-conversion already finished, use cached blob URL — instant download
@@ -883,8 +947,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       clickDownload(docxBlobUrls[file.name], docxName);
       // Revoke and clear so it can be re-fetched if needed (e.g. file changed)
       setTimeout(() => {
-        URL.revokeObjectURL(docxBlobUrls[file.name]);
-        setDocxBlobUrls(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+        // Only clear if generation hasn't changed
+        if (generationRef.current === startGeneration) {
+          URL.revokeObjectURL(docxBlobUrls[file.name]);
+          setDocxBlobUrls(prev => { const n = { ...prev }; delete n[file.name]; return n; });
+        }
       }, 5000);
       return;
     }
@@ -905,11 +972,17 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (err) {
       console.error('DOCX download failed:', err);
-      // Surface error to user
-      setDocxError(prev => ({ ...prev, [file.name]: String(err) }));
-      setTimeout(() => setDocxError(prev => { const n = { ...prev }; delete n[file.name]; return n; }), 6000);
+      // Only show error if generation hasn't changed
+      if (generationRef.current === startGeneration) {
+        // Surface error to user
+        setDocxError(prev => ({ ...prev, [file.name]: String(err) }));
+        setTimeout(() => setDocxError(prev => { const n = { ...prev }; delete n[file.name]; return n; }), 6000);
+      }
     } finally {
-      setDocxConverting(prev => ({ ...prev, [file.name]: false }));
+      // Only clear converting state if generation hasn't changed
+      if (generationRef.current === startGeneration) {
+        setDocxConverting(prev => ({ ...prev, [file.name]: false }));
+      }
     }
   };
 

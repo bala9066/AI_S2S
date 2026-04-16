@@ -918,7 +918,7 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
         log.debug(f"mermaid.render.start idx={idx} path={img_path}")
         success = _render_mermaid_local(code, img_path)
         if success:
-            log.info(f"mermaid.render.ok idx={idx} size={Path(img_path).stat().st_size if Path(img_path).exists() else 0}")
+            log.info(f"mermaid.render.ok idx={idx} size={_pl.Path(img_path).stat().st_size if _pl.Path(img_path).exists() else 0}")
         else:
             log.warning(f"mermaid.render.failed idx={idx}")
         return idx, img_path if success else None
@@ -938,9 +938,10 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
         idx = i + 1
         img_path = results.get(idx)
         if img_path:
-            # Use absolute path for both pandoc and python-docx
-            # This ensures the image can be found regardless of working directory
-            replacement = f"\n\n**System Architecture Diagram {idx}**\n\n![Diagram {idx}]({img_path})\n\n"
+            # Convert Windows backslashes to forward slashes for markdown compatibility
+            # Pandoc and python-docx work with forward slashes even on Windows
+            img_path_md = img_path.replace('\\', '/')
+            replacement = f"\n\n**System Architecture Diagram {idx}**\n\n![Diagram {idx}]({img_path_md})\n\n"
         else:
             replacement = (
                 f"\n\n**System Architecture Diagram {idx}** "
