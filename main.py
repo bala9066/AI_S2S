@@ -1242,7 +1242,14 @@ async def serve_frontend():
     import pathlib
     p = pathlib.Path(__file__).parent / "frontend" / "bundle.html"
     if p.exists():
-        return HTMLResponse(content=p.read_text(encoding="utf-8", errors="replace"), status_code=200)
+        return HTMLResponse(
+            content=p.read_text(encoding="utf-8", errors="replace"),
+            status_code=200,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
     return HTMLResponse(content="<h1>Frontend not built yet. Run the React build.</h1>", status_code=404)
 
 
