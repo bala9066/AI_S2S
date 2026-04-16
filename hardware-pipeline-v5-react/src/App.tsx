@@ -44,7 +44,8 @@ export default function App() {
   const [hasRunning, setHasRunning] = useState(false);
   // True from the moment runPipeline is called until all auto phases are done.
   // Keeps polling at 2s even in the brief gap between consecutive phases.
-  const pipelineActiveRef = useRef(false);
+  // Changed from ref to state so polling useEffect responds immediately to changes.
+  const [pipelineActive, setPipelineActive] = useState(false);
 
   // Refs to prevent duplicate pipeline starts
   const pipelineStartedRef = useRef(false);
@@ -116,10 +117,10 @@ export default function App() {
 
       // Clear pipelineActive once all auto phases have a terminal status (completed / failed)
       // and nothing is currently in_progress — this returns polling to idle speed.
-      if (pipelineActiveRef.current && !running) {
+      if (pipelineActive && !running) {
         const autoPhases = PHASES.filter(p => p.auto && p.id !== 'P1');
         const allDone = autoPhases.every(p => s[p.id] === 'completed' || s[p.id] === 'failed');
-        if (allDone) pipelineActiveRef.current = false;
+        if (allDone) setPipelineActive(false);
       }
 
       // NOTE: We no longer auto-start the pipeline from the status poll.
@@ -134,10 +135,10 @@ export default function App() {
   useEffect(() => {
     if (!project) return;
     refreshStatuses();
-    const isFast = hasRunning || pipelineActiveRef.current;
+    const isFast = hasRunning || pipelineActive;
     const interval = setInterval(refreshStatuses, isFast ? 2000 : 12000);
     return () => clearInterval(interval);
-  }, [project, refreshStatuses, hasRunning]);
+  }, [project, refreshStatuses, hasRunning, pipelineActive]);
 
   // Page Visibility API — when user comes back to Chrome after minimizing/switching,
   // fire an immediate refresh so the UI catches up instantly instead of waiting
@@ -186,23 +187,26 @@ export default function App() {
   const handleP1Complete = useCallback(async () => {
     if (!project) return;
     showToast('Phase 1 complete \u2014 starting full pipeline...');
+    // IMPORTANT: Set pipeline active BEFORE the API call so fast polling starts immediately
+    // This prevents the 12s slow poll from missing the early P2 in_progress state
+    setPipelineActive(true);
+    setHasRunning(true);
     // Switch to Documents tab so user sees generated files immediately
     setTab('documents');
     try {
       console.log('[Pipeline] Calling runPipeline for project', project.id);
       const resp = await api.runPipeline(project.id);
       console.log('[Pipeline] runPipeline response:', resp);
-      // Mark pipeline active — keeps polling at 2s throughout the full run
-      pipelineActiveRef.current = true;
-      // Force fast polling immediately — don't wait for the interval to notice
-      setHasRunning(true);
       // Poll aggressively for first ~10s to catch the in_progress transition fast
-      setTimeout(() => refreshStatuses(), 1000);
-      setTimeout(() => refreshStatuses(), 2500);
-      setTimeout(() => refreshStatuses(), 4500);
-      setTimeout(() => refreshStatuses(), 7000);
+      setTimeout(() => refreshStatuses(), 500);
+      setTimeout(() => refreshStatuses(), 1500);
+      setTimeout(() => refreshStatuses(), 3000);
+      setTimeout(() => refreshStatuses(), 6000);
     } catch (err) {
       console.error('[Pipeline] runPipeline FAILED:', err);
+      // If pipeline start failed, clear the active flag so polling returns to normal
+      setPipelineActive(false);
+      setHasRunning(false);
       showToast('Could not auto-start pipeline: ' + (err instanceof Error ? err.message : 'unknown error'));
     }
   }, [project, refreshStatuses]);
@@ -218,7 +222,7 @@ export default function App() {
   // Resetting it here would race with the async status fetch and cause
   // the guard to be false during the window where statuses haven't loaded yet.
   useEffect(() => {
-    pipelineActiveRef.current = false;
+    setPipelineActive(false);
     prevP1StatusRef.current = undefined;
     prevStatusesRef.current = {};
   }, [project]);
@@ -256,15 +260,17 @@ export default function App() {
   const handleRunPipeline = useCallback(async () => {
     if (!project) return;
     try {
-      await api.runPipeline(project.id);
-      pipelineActiveRef.current = true;
+      // Set active BEFORE API call so fast polling starts immediately
+      setPipelineActive(true);
       setHasRunning(true);
+      await api.runPipeline(project.id);
       setTab('documents');
       showToast('Pipeline started — running P2 → P8c...');
       setTimeout(() => refreshStatuses(), 800);
       setTimeout(() => refreshStatuses(), 2000);
       setTimeout(() => refreshStatuses(), 4000);
     } catch (err: unknown) {
+      setPipelineActive(false);
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('400') || msg.includes('Phase 1 must be completed')) {
         showToast('P1 must be completed first. Use the Chat tab to finish Phase 1.');
@@ -459,6 +465,7 @@ export default function App() {
           setCompletedIds([]);
           setChatMessages([]);
           setHasRunning(false);
+          setPipelineActive(false);
           pipelineStartedRef.current = false;
           prevP1StatusRef.current = undefined;
         }}
