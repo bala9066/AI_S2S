@@ -748,19 +748,28 @@ def _render_mermaid_local(code: str, out_path: str) -> bool:
 
     # ── 1. mmdc (mermaid-cli) — preferred, works on Windows + Linux ───────────
     try:
-        with _tmp.NamedTemporaryFile(
-            suffix='.mmd', mode='w', delete=False, encoding='utf-8'
-        ) as f:
-            f.write(code)
-            mmd_file = f.name
+        # Create temp directory and file manually to avoid Windows file handle issues
+        tmp_dir_obj = _tmp.TemporaryDirectory()
+        tmp_dir = tmp_dir_obj.name
+        mmd_file = _pl.Path(tmp_dir) / 'diagram.mmd'
+
+        # Write the mermaid code to the file
+        mmd_file.write_text(code, encoding='utf-8')
+
+        # Now the file is fully written and closed, mmdc can read it
         mmdc_cmd = 'mmdc.cmd' if _os.name == 'nt' else 'mmdc'
         result = _sp.run(
-            [mmdc_cmd, '-i', mmd_file, '-o', out_path,
+            [mmdc_cmd, '-i', str(mmd_file), '-o', out_path,
              '-b', 'white', '-w', '1400', '--quiet'],
             capture_output=True, timeout=30,
         )
-        try: _os.unlink(mmd_file)
-        except Exception: pass
+
+        # Clean up temp directory
+        try:
+            tmp_dir_obj.cleanup()
+        except Exception:
+            pass
+
         if result.returncode == 0 and _pl.Path(out_path).exists():
             if _pl.Path(out_path).stat().st_size > 200:
                 log.debug("mermaid.mmdc.ok")
