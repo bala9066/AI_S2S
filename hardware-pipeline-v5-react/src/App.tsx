@@ -503,9 +503,14 @@ export default function App() {
                   project={project}
                   phase={selectedPhase}
                   phaseStatus={statuses['P1'] || 'pending'}
-                  pipelineStarted={Object.entries(statuses).some(
-                    ([k, v]) => k !== 'P1' && (v === 'completed' || v === 'in_progress')
-                  )}
+                  pipelineStarted={
+                    // When P1 is draft_pending the user has new requirements — always show Approve.
+                    // Old P2+ completed statuses must NOT suppress the button in this case.
+                    statuses['P1'] !== 'draft_pending' &&
+                    Object.entries(statuses).some(
+                      ([k, v]) => k !== 'P1' && (v === 'completed' || v === 'in_progress')
+                    )
+                  }
                   messages={chatMessages}
                   onMessages={setChatMessages}
                   onStatusChange={refreshStatuses}

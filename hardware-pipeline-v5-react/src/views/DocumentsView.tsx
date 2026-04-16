@@ -696,8 +696,10 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
   // Background prefetch all viewable documents after file list loads.
   // Uses parallel batches of 3 for speed — makes "Preview" feel instant.
+  // Skip while pipeline is running — backend is busy with AI inference.
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
+    if (pipelineRunning) return;  // defer — backend busy with AI phase
     let cancelled = false;
     const prefetch = async () => {
       const viewable = filteredFiles.filter(f => VIEWABLE.has(getExt(f.name))
@@ -724,7 +726,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     prefetch();
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, filteredFiles.length]);
+  }, [project?.id, filteredFilesKey, pipelineRunning]);
 
   // Stable key that changes whenever the ACTUAL files change (phase switch, new files added).
   // Using only .length caused bugs when two phases had the same file count — the effect
@@ -734,8 +736,12 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // Background pre-convert all .md files to DOCX so downloads are instant.
   // Shows "Preparing…" label on DOCX button while background conversion is in progress.
   // With backend disk caching, second run is instant (served from cached .docx on disk).
+  // IMPORTANT: Skip preconversion while the pipeline is running — the backend is busy
+  // with AI inference and DOCX conversion would queue up and show "Preparing…" indefinitely.
+  // The effect re-runs once pipelineRunning flips to false, kicking off conversions then.
   useEffect(() => {
     if (!project || filteredFiles.length === 0) return;
+    if (pipelineRunning) return;  // defer — backend busy with AI phase
 
     let cancelled = false;
     const abortControllers: AbortController[] = [];
@@ -801,7 +807,7 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.id, filteredFilesKey]);
+  }, [project?.id, filteredFilesKey, pipelineRunning]);
 
   const fetchContent = async (file: DocFile) => {
     if (!project) return;
