@@ -11,6 +11,7 @@ import CreateProjectModal from './components/CreateProjectModal';
 import LoadProjectModal from './components/LoadProjectModal';
 import LLMSettingsModal from './components/LLMSettingsModal';
 import Toast from './components/Toast';
+import ErrorBoundary from './components/ErrorBoundary';
 import ChatView from './views/ChatView';
 import DocumentsView from './views/DocumentsView';
 
@@ -506,34 +507,38 @@ export default function App() {
             {/* ChatView: only for P1 — kept mounted while on P1 so state is preserved */}
             {selectedPhase.id === 'P1' && (
               <div style={{ display: tab === 'chat' ? 'block' : 'none' }}>
-                <ChatView
-                  project={project}
-                  phase={selectedPhase}
-                  phaseStatus={statuses['P1'] || 'pending'}
-                  pipelineStarted={
-                    // When P1 is draft_pending the user has new requirements — always show Approve.
-                    // Old P2+ completed statuses must NOT suppress the button in this case.
-                    statuses['P1'] !== 'draft_pending' &&
-                    Object.entries(statuses).some(
-                      ([k, v]) => k !== 'P1' && (v === 'completed' || v === 'in_progress')
-                    )
-                  }
-                  messages={chatMessages}
-                  onMessages={setChatMessages}
-                  onStatusChange={refreshStatuses}
-                  onPhaseComplete={() => {
-                    if (!pipelineStartedRef.current) {
-                      pipelineStartedRef.current = true;
-                      handleP1Complete();
+                <ErrorBoundary>
+                  <ChatView
+                    project={project}
+                    phase={selectedPhase}
+                    phaseStatus={statuses['P1'] || 'pending'}
+                    pipelineStarted={
+                      // When P1 is draft_pending the user has new requirements — always show Approve.
+                      // Old P2+ completed statuses must NOT suppress the button in this case.
+                      statuses['P1'] !== 'draft_pending' &&
+                      Object.entries(statuses).some(
+                        ([k, v]) => k !== 'P1' && (v === 'completed' || v === 'in_progress')
+                      )
                     }
-                  }}
-                />
+                    messages={chatMessages}
+                    onMessages={setChatMessages}
+                    onStatusChange={refreshStatuses}
+                    onPhaseComplete={() => {
+                      if (!pipelineStartedRef.current) {
+                        pipelineStartedRef.current = true;
+                        handleP1Complete();
+                      }
+                    }}
+                  />
+                </ErrorBoundary>
               </div>
             )}
             {/* DocumentsView: always mounted, never remounted on phase switch.
                 Phase changes propagate via props so the file cache is preserved. */}
             <div style={{ display: tab === 'documents' ? 'block' : 'none' }}>
-              <DocumentsView project={project} phase={selectedPhase} status={selectedStatus} pipelineRunning={hasRunning} />
+              <ErrorBoundary>
+                <DocumentsView project={project} phase={selectedPhase} status={selectedStatus} pipelineRunning={hasRunning} />
+              </ErrorBoundary>
             </div>
           </div>
         </div>
