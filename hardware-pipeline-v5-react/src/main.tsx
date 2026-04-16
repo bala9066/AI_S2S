@@ -4,6 +4,9 @@ import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary.tsx'
 
+// Remove the pre-React loading indicator once JS has parsed and is about to mount
+document.getElementById('pre-react-loader')?.remove();
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

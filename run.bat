@@ -118,7 +118,10 @@ echo.
 echo   Close this window when finished.
 echo.
 
-start "" "http://localhost:8000/app"
+REM NOTE: Auto-open removed — WebVPN (WebCourier) injects into Chrome at window-open
+REM and causes an Assert Error that blocks the tab. Open manually instead:
+REM   http://localhost:8000/app
+echo   Open in browser:  http://localhost:8000/app
 
 pause
 endlocal
