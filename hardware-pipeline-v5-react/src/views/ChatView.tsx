@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
-import { Project, PhaseMeta } from '../types';
+import type { Project, PhaseMeta } from '../types';
 import { api } from '../api';
 import { ensureMermaid, purgeMermaidScratch, nextMermaidId } from '../utils/mermaid';
 import { parseQuestionsFromAI, shouldShowQuestions, type QuestionCard as QuestionCardType } from '../data/questionSchema';
@@ -60,6 +60,7 @@ function sanitizeMermaid(raw: string): string {
   // Sanitize node labels — strip arrows FIRST
   // Angle brackets → spaces (NOT parentheses — they cause parse errors)
   // Parentheses → spaces (node labels like "Component (PartNumber)" break Mermaid)
+  // IMPORTANT: Remove ALL dash sequences (2 or more) — they get mistaken for edge arrows
   const sanitizeLabel = (inner: string) =>
     inner
       .replace(/-->/g, ' ').replace(/->/g, ' ')  // strip arrows before anything else
@@ -71,7 +72,10 @@ function sanitizeMermaid(raw: string): string {
       .replace(/#/g, ' ')
       .replace(/\|/g, '/')
       .replace(/@/g, ' ')  // @ can cause issues in some Mermaid versions
-      .replace(/-{3,}/g, '--');  // long dash sequences break arrow detection
+      .replace(/-{2,}/g, ' ')  // Remove ALL dash sequences — they become arrows!
+      .replace(/^[-—=]+|[—=-]+$/g, ' ')  // Remove standalone dashes at start/end
+      .replace(/\s{2,}/g, ' ')  // Clean up multiple spaces
+      .trim();
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
   code = code.replace(/\{([^}]*)\}/g, (_m, inner: string) => `{${sanitizeLabel(inner)}}`);

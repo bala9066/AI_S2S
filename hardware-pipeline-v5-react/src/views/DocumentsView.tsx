@@ -154,10 +154,16 @@ function sanitizeMermaidCode(raw: string): string {
     s = s.replace(/#/g, ' ');
     // Pipe | in labels is the Mermaid cell-separator — replace with /
     s = s.replace(/\|/g, '/');
-    // Long dash sequences (---) get mistaken for edge arrows — collapse to double dash
-    s = s.replace(/-{3,}/g, '--');
+    // IMPORTANT: Remove ALL dash sequences (2 or more) entirely — they get mistaken for edge arrows
+    // This prevents "FR-4 Cost Reduction ---" from becoming "FR-4 Cost Reduction --"
+    // which Mermaid then interprets as an arrow operator
+    s = s.replace(/-{2,}/g, ' ');
+    // Also remove standalone dashes at start/end of labels
+    s = s.replace(/^[-—=]+|[—=-]+$/g, ' ');
     // Remove @ which can cause issues in some Mermaid versions
     s = s.replace(/@/g, ' ');
+    // Clean up multiple spaces that result from replacements
+    s = s.replace(/\s{2,}/g, ' ').trim();
     return s;
   };
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
@@ -554,6 +560,21 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     }
   }, [phase.id, status]);
 
+  // Clear all loading/preparing states when switching phases
+  useEffect(() => {
+    return () => {
+      // Clear loading states for all files
+      setLoadingFile({});
+      // Clear converting states
+      setDocxConverting({});
+      // Clear pre-converting states and ref
+      setDocxPreconverting({});
+      docxPreconvertingRef.current.clear();
+      // Clear error states
+      setDocxError({});
+    };
+  }, [phase.id]);
+
   // Tick every second when ANY phase is in_progress
   useEffect(() => {
     const anyRunning = Object.keys(phaseStartTsRef.current).length > 0;
@@ -694,6 +715,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   const contentsRef = useRef<Record<string, string>>({});
   useEffect(() => { contentsRef.current = contents; }, [contents]);
 
+  // Stable key that changes whenever the ACTUAL files change (phase switch, new files added).
+  // Using only .length caused bugs when two phases had the same file count — the effect
+  // would not re-run and would keep running with stale closures from the previous phase.
+  const filteredFilesKey = filteredFiles.map(f => f.name).join('|');
+
   // Background prefetch all viewable documents after file list loads.
   // Uses parallel batches of 3 for speed — makes "Preview" feel instant.
   // Skip while pipeline is running — backend is busy with AI inference.
@@ -727,11 +753,6 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.id, filteredFilesKey, pipelineRunning]);
-
-  // Stable key that changes whenever the ACTUAL files change (phase switch, new files added).
-  // Using only .length caused bugs when two phases had the same file count — the effect
-  // would not re-run and would keep running with stale closures from the previous phase.
-  const filteredFilesKey = filteredFiles.map(f => f.name).join('|');
 
   // Background pre-convert all .md files to DOCX so downloads are instant.
   // Shows "Preparing…" label on DOCX button while background conversion is in progress.

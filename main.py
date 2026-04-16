@@ -819,6 +819,66 @@ def _render_mermaid_local(code: str, out_path: str) -> bool:
     return False
 
 
+def _sanitize_mermaid_code(code: str) -> str:
+    """
+    Sanitize mermaid code to fix common AI-generation errors.
+    This must match the frontend sanitization in DocumentsView.tsx and ChatView.tsx.
+    """
+    import re as _re
+
+    # Strip %%{ init }%% frontmatter and %% comments
+    code = _re.sub(r'^%%\{[\s\S]*?\}%%\s*', '', code, flags=_re.MULTILINE)
+    code = _re.sub(r'%%[^\n]*', '', code)
+
+    # Arrow fixes: em-dash → --, ——> → -->
+    code = code.replace('\u2014\u2014>', '-->').replace('\u2014>', '-->')
+    code = code.replace('——>', '-->').replace('—>', '-->')
+    code = code.replace('==>', '-->')
+    code = _re.sub(r'(\w)\s*->\s*(\w)', r'\1 --> \2', code)
+
+    # Single dash between nodes → -->
+    code = _re.sub(r'(\b[\w\-]+\b)\s+-\s+(\b[\w\-]+[\s\[\(])', r'\1 --> \2', code)
+
+    # Normalise graph → flowchart
+    code = _re.sub(r'^graph\s+(TD|LR|TB|RL|BT)', r'flowchart \1', code, flags=_re.IGNORECASE)
+    code = _re.sub(r'^(flowchart)\n(TD|LR|TB|RL|BT)\b', r'\1 \2', code, flags=_re.MULTILINE)
+
+    # Join multi-line labels
+    lines = code.split('\n')
+    joined = []
+    for line in lines:
+        if joined and _re.search(r'\[', joined[-1]) and not _re.search(r'\]', joined[-1]):
+            joined[-1] = joined[-1].rstrip() + ' ' + line.lstrip()
+        else:
+            joined.append(line)
+    code = '\n'.join(joined)
+
+    # Sanitize node labels
+    def sanitize_label(inner: str) -> str:
+        s = inner
+        s = _re.sub(r'-->', ' ', s)
+        s = _re.sub(r'->', ' ', s)
+        s = s.replace('<', ' ').replace('>', ' ')
+        s = s.replace('(', ' ').replace(')', ' ')
+        s = s.replace('_', '-')
+        s = _re.sub(r'&(?!amp;|lt;|gt;|#)', 'and', s)
+        s = s.replace('"', ' ').replace("'", ' ')
+        s = s.replace('#', ' ')
+        s = s.replace('|', '/')
+        # IMPORTANT: Remove ALL dash sequences (2 or more)
+        s = _re.sub(r'-{2,}', ' ', s)
+        s = _re.sub(r'^[-—=]+|[—=-]+$', ' ', s)
+        s = _re.sub(r'\s{2,}', ' ', s)
+        return s.strip()
+
+    # Apply to square brackets, parens, braces
+    code = _re.sub(r'\[([^\]]*)\]', lambda m: f'[{sanitize_label(m.group(1))}]', code)
+    code = _re.sub(r'\(([^)]*)\)', lambda m: f'({sanitize_label(m.group(1))})', code)
+    code = _re.sub(r'\{([^}]*)\}', lambda m: f'{{{sanitize_label(m.group(1))}}}', code)
+
+    return code
+
+
 def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     """
     Pre-render ```mermaid``` blocks to PNG images using local Node.js + cairosvg.
@@ -835,7 +895,10 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     # ── 1. Collect all mermaid blocks ─────────────────────────────────────────
     blocks = []  # list of (match, code)
     for m in MERMAID_RE.finditer(md_text):
-        blocks.append((m, m.group(1).strip()))
+        # Sanitize the mermaid code BEFORE rendering to fix AI-generation errors
+        original_code = m.group(1).strip()
+        sanitized_code = _sanitize_mermaid_code(original_code)
+        blocks.append((m, sanitized_code))
 
     if not blocks:
         return md_text
