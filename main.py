@@ -728,42 +728,94 @@ async def export_project_zip(project_id: int):
     )
 
 
-_MERMAID_RENDERER_JS = str(
-    pathlib.Path(__file__).parent.parent.parent  # walk up from S2S_V2 if needed
-    / "sessions" / "pensive-laughing-clarke" / "mermaid-renderer" / "render.js"
-)
-# Absolute path to the local mermaid renderer script
-_MERMAID_RENDERER_JS = "/sessions/pensive-laughing-clarke/mermaid-renderer/render.js"
-
-
 def _render_mermaid_local(code: str, out_path: str) -> bool:
     """
-    Render Mermaid diagram code to PNG using local Node.js renderer + cairosvg.
-    No internet required. Returns True on success, False on failure.
+    Render a Mermaid diagram to PNG.  Three methods tried in order:
+
+    1. mmdc  — @mermaid-js/mermaid-cli (npm install -g @mermaid-js/mermaid-cli)
+               Works on any OS, no Python deps.
+    2. Node.js renderer — mermaid_renderer.js bundled in this directory.
+               Requires: node, jsdom, mermaid npm packages, cairosvg.
+               Looks for the script in several locations (robust to OS differences).
+    3. mermaid.ink — public REST API, no local tools needed (requires internet).
+
+    Returns True on success, False when all three methods fail.
     """
     import subprocess as _sp
-    import sys as _sys
+    import pathlib as _pl
+    import tempfile as _tmp
+    import os as _os
 
+    # ── 1. mmdc (mermaid-cli) — preferred, works on Windows + Linux ───────────
     try:
+        with _tmp.NamedTemporaryFile(
+            suffix='.mmd', mode='w', delete=False, encoding='utf-8'
+        ) as f:
+            f.write(code)
+            mmd_file = f.name
+        mmdc_cmd = 'mmdc.cmd' if _os.name == 'nt' else 'mmdc'
         result = _sp.run(
-            ["node", _MERMAID_RENDERER_JS, code],
-            capture_output=True, text=True, timeout=15,
+            [mmdc_cmd, '-i', mmd_file, '-o', out_path,
+             '-b', 'white', '-w', '1400', '--quiet'],
+            capture_output=True, timeout=30,
         )
-        svg_str = result.stdout
-        if result.returncode != 0 or not svg_str or "<svg" not in svg_str:
-            log.debug("mermaid.node.skip: %s", result.stderr[:200])
-            return False
+        try: _os.unlink(mmd_file)
+        except Exception: pass
+        if result.returncode == 0 and _pl.Path(out_path).exists():
+            if _pl.Path(out_path).stat().st_size > 200:
+                log.debug("mermaid.mmdc.ok")
+                return True
+    except (FileNotFoundError, _sp.TimeoutExpired, Exception) as _e:
+        log.debug("mermaid.mmdc.skip: %s", _e)
 
-        # Convert SVG → PNG via cairosvg (site-packages auto-discovered)
-        from cairosvg import svg2png  # type: ignore
-        png_data = svg2png(bytestring=svg_str.encode("utf-8"), scale=2.0,
-                           background_color="white")
-        if png_data and len(png_data) > 200:
-            import pathlib as _pl
-            _pl.Path(out_path).write_bytes(png_data)
+    # ── 2. Bundled Node.js renderer (render.js / mermaid_renderer.js) ─────────
+    _renderer_candidates = [
+        # Bundled inside the project directory — works regardless of OS
+        _pl.Path(__file__).parent / "mermaid_renderer.js",
+        # Sibling directory (dev layout)
+        _pl.Path(__file__).parent.parent / "mermaid-renderer" / "render.js",
+        # Linux VM development path
+        _pl.Path("/sessions/pensive-laughing-clarke/mermaid-renderer/render.js"),
+    ]
+    _renderer_js = next((str(p) for p in _renderer_candidates if p.exists()), None)
+    if _renderer_js:
+        try:
+            result = _sp.run(
+                ["node", _renderer_js, code],
+                capture_output=True, text=True, timeout=15,
+            )
+            svg_str = result.stdout
+            if result.returncode == 0 and svg_str and "<svg" in svg_str:
+                try:
+                    from cairosvg import svg2png  # type: ignore
+                    png_data = svg2png(
+                        bytestring=svg_str.encode("utf-8"),
+                        scale=2.0, background_color="white",
+                    )
+                    if png_data and len(png_data) > 200:
+                        _pl.Path(out_path).write_bytes(png_data)
+                        log.debug("mermaid.node.ok: %s", _renderer_js)
+                        return True
+                except Exception as _cairo_e:
+                    log.debug("mermaid.cairosvg.skip: %s", _cairo_e)
+            else:
+                log.debug("mermaid.node.skip: %s", result.stderr[:200])
+        except Exception as _node_e:
+            log.debug("mermaid.node.error: %s", _node_e)
+
+    # ── 3. mermaid.ink public API (fallback — requires internet) ──────────────
+    try:
+        import base64 as _b64, urllib.request as _req
+        encoded = _b64.urlsafe_b64encode(code.encode('utf-8')).decode()
+        url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=white&width=1400"
+        _req.urlretrieve(url, out_path)
+        if _pl.Path(out_path).exists() and _pl.Path(out_path).stat().st_size > 200:
+            log.debug("mermaid.ink.ok")
             return True
-    except Exception as e:
-        log.debug("mermaid.local.error: %s", e)
+    except Exception as _ink_e:
+        log.debug("mermaid.ink.skip: %s", _ink_e)
+
+    log.warning("mermaid.render.all_failed")
     return False
 
 
