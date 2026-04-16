@@ -233,6 +233,10 @@ export default function App() {
     try {
       await api.executePhase(project.id, phaseId);
       setHasRunning(true);
+      setTab('documents');
+      // Select this phase in the left panel
+      const idx = PHASES.findIndex(p => p.id === phaseId);
+      if (idx >= 0) setSelectedPhaseIdx(idx);
       // Aggressive polls to catch transition quickly
       setTimeout(() => refreshStatuses(), 800);
       setTimeout(() => refreshStatuses(), 2000);
@@ -243,12 +247,27 @@ export default function App() {
     }
   }, [project, refreshStatuses]);
 
+  const handleCancelPhase = useCallback(async (phaseId: string) => {
+    if (!project) return;
+    try {
+      await api.cancelPhase(project.id, phaseId);
+      showToast(`${phaseId} cancelled`);
+      setTimeout(() => refreshStatuses(), 500);
+      setTimeout(() => refreshStatuses(), 1500);
+    } catch {
+      showToast(`Failed to cancel ${phaseId}`);
+    }
+  }, [project, refreshStatuses]);
+
   const handleRerunStale = useCallback(async (staleIds: string[]) => {
     if (!project || staleIds.length === 0) return;
     try {
       await api.resetAndRerun(project.id, staleIds);
       setHasRunning(true);
       setTab('documents');
+      // Select the first stale phase in the left panel
+      const firstStaleIdx = PHASES.findIndex(p => staleIds.includes(p.id));
+      if (firstStaleIdx >= 0) setSelectedPhaseIdx(firstStaleIdx);
       showToast(`Re-running ${staleIds.length} stale phase${staleIds.length > 1 ? 's' : ''}...`);
       setTimeout(() => refreshStatuses(), 800);
       setTimeout(() => refreshStatuses(), 2000);

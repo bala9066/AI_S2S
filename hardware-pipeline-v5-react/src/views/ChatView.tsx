@@ -58,13 +58,69 @@ function sanitizeMermaid(raw: string): string {
   code = code.replace(/\\n/g, ' ');
   code = code.replace(/&lt;/g, '(').replace(/&gt;/g, ')').replace(/&amp;/g, 'and').replace(/&nbsp;/g, ' ');
   code = code.replace(/<[^>]+>/gi, ' ');
-  // Ensure `end` (subgraph close) is always on its own line
+  // Ensure `end` (subgraph close) is always on its own line — trailing case
   code = code.split('\n').map(line => {
     if (/\bend\s*$/.test(line) && !/^\s*end\b/.test(line)) {
       const before = line.replace(/\s+end\s*$/, '').trimEnd();
       return (before ? before + '\n' : '') + 'end';
     }
     return line;
+  }).join('\n');
+  // Ensure `end` is always on its own line — leading case ("end NODE ...")
+  code = code.split('\n').map(line => {
+    const m = line.match(/^(\s*)end\s+(\S.*)$/);
+    if (m) return `${m[1]}end\n${m[1]}${m[2]}`;
+    return line;
+  }).join('\n');
+  // Fix "NODE |label|" (no following node) → "NODE[label]" — orphan pipe-label
+  code = code.split('\n').map(line =>
+    line.replace(/(\w)\s+\|([^|]+)\|(?!\s*[\w\[])/g,
+      (_m, pre, inner) => `${pre}[${inner.trim()}]`)
+  ).join('\n');
+  // Fix "NODEA |label| NODEB" (pipe label but NO arrow) → "NODEA -->|label| NODEB"
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /^(\s*)([\w][\w\-]*)\s+(\|[^|]+\|)\s*([\w])/,
+      (_m, indent, n1, label, n2start) => `${indent}${n1} -->${label} ${n2start}`
+    );
+  }).join('\n');
+  // Fix two+ word-tokens on same line with NO arrow — handles both "NODEA NODEB[" and "A B C" (3+ bare IDs)
+  code = code.split('\n').map(line => {
+    const stripped = line.trim();
+    if (!stripped || /^\s*(subgraph|end|%%)/.test(line)) return line;
+    line = line.replace(
+      /^(\s*)([\w][\w\-]*)(\s+)([\w][\w\-]*[\[\(])/,
+      (_m, indent, n1, _sp, n2) => `${indent}${n1} --> ${n2}`
+    );
+    if (/-->|---/.test(line)) return line;
+    const indent = line.match(/^(\s*)/)?.[1] || '';
+    const tokens = stripped.split(/\s+/);
+    const seqKeywords = /^(participant|actor|activate|deactivate|Note|loop|alt|else|opt|par|rect|end|autonumber|title|as)\b/i;
+    if (tokens.length >= 3 && tokens.every(t => /^[\w][\w\-]*$/.test(t)) && !seqKeywords.test(stripped)) {
+      return indent + tokens.join(' --> ');
+    }
+    return line;
+  }).join('\n');
+  // Fix "NODEA[label] NODEB[label]" — bracket-delimited nodes without arrow between.
+  // Covers the real-world case where the LLM puts two fully-declared nodes on one line
+  // separated only by whitespace, and the regex above (which requires first token to be
+  // a plain identifier) can't match because it has a trailing bracket.
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /([\]\)\}])(\s+)([\w][\w\-]*)(\s*[\[\(\{])/g,
+      (_m, closer, _sp, n2, opener) => `${closer} --> ${n2}${opener}`
+    );
+  }).join('\n');
+  // Fix "NODEA] NODEID |label| NODEB" — pipe-label after a bare identifier that follows a closed node.
+  // Example: "[Clock Mgmt] HOST |JESD204C 8-Lanes| A" → "[Clock Mgmt] --> HOST -->|JESD204C 8-Lanes| A"
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /([\]\)\}])\s+([\w][\w\-]*)\s+(\|[^|]+\|)/g,
+      (_m, closer, node, label) => `${closer} --> ${node} -->${label}`
+    );
   }).join('\n');
   // Fix "NODE [label]" → "NODE[label]"
   code = code.split('\n').map(line => {
@@ -325,8 +381,13 @@ const ChatMessageItem = memo(function ChatMessageItem({ msg, color }: { msg: Cha
   if (msg.role === 'user') {
     return (
       <div style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <div style={{ maxWidth: '75%', padding: '10px 15px', borderRadius: 8, background: `${color}18`, border: `1px solid ${color}33`, fontSize: 13, color: 'var(--text)', lineHeight: 1.6, fontFamily: "'DM Mono',monospace", whiteSpace: 'pre-wrap' }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'flex-end' }}>
+          <div style={{
+            maxWidth: '75%', padding: '11px 16px', borderRadius: '12px 12px 4px 12px',
+            background: `linear-gradient(135deg, ${color}20, ${color}10)`,
+            border: `1px solid ${color}33`, fontSize: 13, color: 'var(--text)',
+            lineHeight: 1.6, fontFamily: "'DM Mono',monospace", whiteSpace: 'pre-wrap',
+          }}>
             {msg.text}
           </div>
         </div>
@@ -335,8 +396,15 @@ const ChatMessageItem = memo(function ChatMessageItem({ msg, color }: { msg: Cha
   }
   return (
     <div style={{ marginBottom: 16 }}>
-      <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--panel3)' }}>
-        <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
+      <div style={{
+        padding: '16px 20px', borderRadius: '12px 12px 12px 4px',
+        background: 'var(--panel2)', border: '1px solid var(--panel3)',
+        borderLeft: `2px solid ${color}44`,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}66` }} />
+          <span style={{ fontSize: 10, color, letterSpacing: '0.1em', fontWeight: 600, fontFamily: "'DM Mono',monospace" }}>AI RESPONSE</span>
+        </div>
         {renderMarkdown(msg.text, color)}
       </div>
     </div>
@@ -1188,32 +1256,48 @@ function QuickReplyPanel({
 // ---- Welcome card ----
 function WelcomeCard({ color, onSuggestion }: { color: string; onSuggestion: (s: string) => void }) {
   const examples = [
-    '3-phase BLDC motor controller, 10kW, 48V bus',
-    'RF amplifier, 40dBm output, 2.4GHz',
-    '48V to 3.3V/5V/12V power supply, 200W total',
+    { text: '3-phase BLDC motor controller, 10kW, 48V bus', icon: '\u26A1', tag: 'Motor' },
+    { text: 'RF amplifier, 40dBm output, 2.4GHz', icon: '\uD83D\uDCE1', tag: 'RF' },
+    { text: '48V to 3.3V/5V/12V power supply, 200W total', icon: '\uD83D\uDD0B', tag: 'Power' },
   ];
   return (
-    <div style={{ background: 'var(--panel2)', border: `1px solid ${color}33`, borderRadius: 10, padding: '20px 22px', marginBottom: 20 }}>
-      <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginBottom: 10 }}>
-        Welcome to Hardware Pipeline!
+    <div style={{ background: `linear-gradient(135deg, var(--panel2), ${color}08)`, border: `1px solid ${color}22`, borderRadius: 12, padding: '24px 24px 20px', marginBottom: 20, position: 'relative', overflow: 'hidden' }}>
+      {/* Decorative glow */}
+      <div style={{ position: 'absolute', top: -40, right: -40, width: 120, height: 120, borderRadius: '50%', background: `radial-gradient(circle, ${color}12, transparent)`, pointerEvents: 'none' }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: `${color}18`, border: `1px solid ${color}33`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
+          <span style={{ filter: `drop-shadow(0 0 4px ${color})` }}>&#9889;</span>
+        </div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', fontFamily: "'Syne',sans-serif" }}>
+            Design Assistant
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--text4)', letterSpacing: '0.08em', fontFamily: "'DM Mono',monospace" }}>HARDWARE PIPELINE</div>
+        </div>
       </div>
-      <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.65, marginBottom: 14 }}>
-        Tell me what you want to design &mdash; I'll instantly generate a complete{' '}
-        <strong style={{ color: 'var(--text)' }}>block diagram, requirements, and BOM</strong>{' '}
-        with real component selection. No long questionnaires.
+      <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.7, marginBottom: 16 }}>
+        Describe your hardware design &mdash; I'll generate a complete{' '}
+        <strong style={{ color }}>block diagram</strong>,{' '}
+        <strong style={{ color }}>requirements</strong>, and{' '}
+        <strong style={{ color }}>BOM</strong>{' '}
+        with real component selection in seconds.
       </div>
-      <div style={{ fontSize: 12, color, fontWeight: 600, marginBottom: 8 }}>Examples:</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: 'var(--text4)', letterSpacing: '0.06em', fontFamily: "'DM Mono',monospace", marginBottom: 8 }}>TRY AN EXAMPLE</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
         {examples.map((ex, i) => (
-          <button key={i} onClick={() => onSuggestion(ex)} style={{ textAlign: 'left', background: `${color}08`, border: `1px solid ${color}22`, borderRadius: 6, padding: '7px 14px', fontSize: 12, color: 'var(--text2)', fontFamily: "'DM Mono',monospace", cursor: 'pointer', transition: 'all 0.15s' }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = color; e.currentTarget.style.color = color; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = `${color}22`; e.currentTarget.style.color = 'var(--text2)'; }}>
-            <em>{ex}</em>
+          <button key={i} onClick={() => onSuggestion(ex.text)} style={{
+            textAlign: 'left', background: 'var(--panel)', border: `1px solid ${color}18`,
+            borderRadius: 8, padding: '10px 14px', fontSize: 12, color: 'var(--text2)',
+            fontFamily: "'DM Mono',monospace", cursor: 'pointer', transition: 'all 0.2s',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = `${color}66`; e.currentTarget.style.background = `${color}0a`; e.currentTarget.style.transform = 'translateX(4px)'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = `${color}18`; e.currentTarget.style.background = 'var(--panel)'; e.currentTarget.style.transform = 'translateX(0)'; }}>
+            <span style={{ fontSize: 16, width: 28, textAlign: 'center', flexShrink: 0 }}>{ex.icon}</span>
+            <span style={{ flex: 1 }}>{ex.text}</span>
+            <span style={{ fontSize: 9, color: `${color}88`, background: `${color}12`, padding: '2px 6px', borderRadius: 3, fontWeight: 600, letterSpacing: '0.05em' }}>{ex.tag}</span>
           </button>
         ))}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text3)' }}>
-        Just describe your design and I'll produce a draft in seconds. &#9889;
       </div>
     </div>
   );
@@ -1250,6 +1334,45 @@ interface Props {
   onMessages: (msgs: ChatMessage[]) => void;
   onStatusChange: () => void;
   onPhaseComplete: () => void;
+}
+
+// ---- Animated thinking indicator with elapsed timer ----
+function ThinkingIndicator({ color }: { color: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  const [dots, setDots] = useState('');
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 400);
+    return () => clearInterval(t);
+  }, []);
+  const phases = [
+    'Decoding your design intent',
+    'Scouting 500K+ components',
+    'Scoring and ranking candidates',
+    'Drafting block diagram',
+    'Finalizing requirements',
+  ];
+  const phaseIdx = Math.min(Math.floor(elapsed / 6), phases.length - 1);
+  const progress = Math.min((elapsed / 45) * 100, 95);
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{
+          width: 20, height: 20, borderRadius: '50%',
+          border: `2px solid ${color}44`, borderTopColor: color,
+          animation: 'spin 0.7s linear infinite',
+        }} />
+        <span style={{ fontSize: 13, color: 'var(--text2)', fontFamily: "'DM Mono',monospace" }}>{phases[phaseIdx]}{dots}</span>
+        <span style={{ fontSize: 11, color: 'var(--text4)', marginLeft: 'auto', fontFamily: "'DM Mono',monospace" }}>{elapsed}s</span>
+      </div>
+      <div style={{ height: 3, borderRadius: 2, background: `${color}15`, overflow: 'hidden' }}>
+        <div style={{ height: '100%', borderRadius: 2, background: `linear-gradient(90deg, ${color}, ${color}88)`, width: `${progress}%`, transition: 'width 1s ease-out', boxShadow: `0 0 8px ${color}40` }} />
+      </div>
+    </div>
+  );
 }
 
 // ---- Main ChatView ----
@@ -1496,11 +1619,21 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                 </div>
               </div>
             )}
-            {/* loading-clarify: spinner */}
+            {/* loading-clarify: animated analysis indicator */}
             {preStage === 'loading-clarify' && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '200px', gap: 12 }}>
-                <div style={{ width: 16, height: 16, border: '2px solid rgba(0,198,167,0.3)', borderTopColor: color, borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                <span style={{ fontSize: 13, color: 'var(--text3)' }}>Analysing specification...</span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '240px', gap: 16 }}>
+                <div style={{ position: 'relative', width: 48, height: 48 }}>
+                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${color}15` }} />
+                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid transparent', borderTopColor: color, animation: 'spin 0.8s linear infinite' }} />
+                  <div style={{ position: 'absolute', inset: 6, borderRadius: '50%', border: '2px solid transparent', borderTopColor: `${color}66`, animation: 'spin 1.2s linear infinite reverse' }} />
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
+                    <span style={{ filter: `drop-shadow(0 0 4px ${color})` }}>&#9889;</span>
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4, fontFamily: "'Syne',sans-serif" }}>Analysing your specification</div>
+                  <div style={{ fontSize: 12, color: 'var(--text3)', fontFamily: "'DM Mono',monospace" }}>Preparing design questions<span style={{ animation: 'blink 1s step-end infinite' }}>...</span></div>
+                </div>
               </div>
             )}
             {/* clarifying: question cards */}
@@ -1649,18 +1782,22 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
         {/* Streaming / loading indicator */}
         {(loading || streaming) && (
           <div style={{ marginBottom: 16 }}>
-            <div style={{ padding: '14px 18px', borderRadius: 8, background: 'var(--panel2)', border: '1px solid var(--panel3)' }}>
-              <div style={{ fontSize: 10, color, marginBottom: 8, letterSpacing: '0.1em' }}>AI RESPONSE</div>
+            <div style={{
+              padding: '16px 20px', borderRadius: '12px 12px 12px 4px',
+              background: 'var(--panel2)', border: '1px solid var(--panel3)',
+              borderLeft: `2px solid ${color}44`,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: color, boxShadow: `0 0 6px ${color}66` }} />
+                <span style={{ fontSize: 10, color, letterSpacing: '0.1em', fontWeight: 600, fontFamily: "'DM Mono',monospace" }}>AI RESPONSE</span>
+              </div>
               {streaming ? (
                 <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.65, whiteSpace: 'pre-wrap', fontFamily: "'DM Mono',monospace" }}>
                   {streaming}
-                  <span style={{ display: 'inline-block', width: 7, height: 14, background: color, marginLeft: 2, animation: 'blink 1s step-end infinite' }} />
+                  <span style={{ display: 'inline-block', width: 2, height: 15, background: color, marginLeft: 2, animation: 'blink 0.8s step-end infinite', borderRadius: 1 }} />
                 </div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, animation: 'pulse 1s ease-in-out infinite' }} />
-                  <span style={{ fontSize: 12, color: 'var(--text3)' }}>Thinking...</span>
-                </div>
+                <ThinkingIndicator color={color} />
               )}
             </div>
           </div>

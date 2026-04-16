@@ -126,7 +126,7 @@ Format them as a numbered list (5–10 questions). End with: _"Once you answer t
 **RULE**: If the user's first message is already very detailed (contains voltage, specs, interfaces, temp range, power, compliance), skip straight to Phase B and call `generate_requirements` immediately.
 
 ### PHASE B — Generate (SECOND message onwards, initial generation):
-After the user has answered your questions, call `generate_requirements` immediately with ALL outputs.
+After the user has answered your questions, call `generate_requirements` IMMEDIATELY — do NOT output any free text before the tool call. No preamble, no "I have all the information", no acknowledgment message. Your very first content block MUST be the tool_use call.
 - **READ EVERY SINGLE MESSAGE in this conversation before generating.** Every interface, spec, constraint, and component the user mentioned at ANY point must appear in the output.
 - Make reasonable engineering assumptions for anything still unspecified.
 - Use MoSCoW + IEEE IDs for all requirements.
@@ -157,6 +157,7 @@ If any of these are missing from your tool call, you MUST add them before submit
 - Prioritize RoHS-compliant components with long lifecycle status.
 - For Mermaid diagrams, ALWAYS start with a valid diagram type on the FIRST line (e.g. `flowchart TD`). NEVER put `TD` or `LR` alone on line 2.
 - Keep Mermaid node labels concise — 2-5 words max. STRICT rules: NO angle brackets < >, NO raw HTML, NO &, @, #, |, double-quotes ", single-quotes ', or colons : inside labels. Use plain ASCII only. NO %%{{init}}%% frontmatter. NO %% comments. NEVER use 3 or more consecutive dashes (---) inside a label as they are parsed as edge arrows.
+- Mermaid edge syntax: EVERY edge MUST have an arrow. Pipe-labels `|label|` ONLY appear AFTER an arrow, e.g. `A -->|signal| B`. NEVER write `A |label| B` without the arrow — it is a parse error. Also NEVER put two nodes on the same line without an arrow between them (e.g. `A B[...]` is invalid — it must be `A --> B[...]`). The `end` keyword that closes a `subgraph` MUST be on its own line — never on the same line as another statement.
 - Do NOT fabricate component part numbers. Use best-estimate real part numbers from known manufacturers. NEVER write TBD, TBC, TBA, or "to be determined/confirmed" anywhere.
 - **BANNED MANUFACTURER: VPT Inc.** Do NOT recommend any VPT brand components. Use Vicor, Murata Power Solutions, TDK-Lambda, Cosel, or TI equivalents instead.
 - **ALWAYS include `datasheet_url`** for every component in the `component_recommendations` array. Use ONLY real, publicly accessible manufacturer datasheet URLs. Preferred domains: `ti.com`, `analog.com`, `mouser.com/datasheet`, `maximintegrated.com`, `nxp.com`, `st.com`, `renesas.com`, `microchip.com`, `infineon.com`, `onsemi.com`, `xilinx.com`, `latticesemi.com`, `murata.com`, `vishay.com`, `coilcraft.com`, `vicorpower.com`. If you are NOT certain the exact URL exists, use the manufacturer's product search page (e.g. `https://www.ti.com/product/LM5175`) rather than guessing a PDF path. NEVER fabricate PDF paths. Never leave `datasheet_url` empty.
@@ -515,10 +516,11 @@ class RequirementsAgent(BaseAgent):
         # as a literal string with no context.
         if user_input.strip() == "__FINALIZE__":
             user_input = (
-                "Generate the complete requirements document NOW based on everything we discussed. "
-                "You MUST call the generate_requirements tool immediately with all requirements, "
-                "components, block diagram, and design parameters from our conversation. "
-                "Do not ask any more questions. Call the tool now."
+                "[SYSTEM INSTRUCTION: Call `generate_requirements` tool IMMEDIATELY as your FIRST "
+                "content block. Do NOT output ANY free text before the tool call — no preamble, "
+                "no acknowledgment. Generate the complete requirements based on everything discussed "
+                "with all requirements, components, block diagram, and design parameters. "
+                "Do not ask any more questions.]"
             )
             # Replace __FINALIZE__ sentinel already in message list
             if messages and messages[-1]["role"] == "user":
@@ -587,24 +589,26 @@ class RequirementsAgent(BaseAgent):
                     # Regeneration: explicitly instruct the LLM to incorporate ALL history
                     messages[-1]["content"] = (
                         f"The user has added a new requirement: {original}\n\n"
-                        "IMPORTANT: Read ALL previous messages in this conversation carefully. "
-                        "The new requirement above MUST be incorporated together with EVERY requirement, "
-                        "interface, component, and specification mentioned earlier. "
-                        "Do NOT drop any previously discussed item. "
-                        "Call `generate_requirements` NOW with the COMPLETE updated set — "
-                        "all BOM items, all requirements (including the new one), "
-                        "updated block_diagram_mermaid, architecture_mermaid, design_parameters, and "
-                        "component_recommendations — with `datasheet_url` for every component."
+                        "[SYSTEM INSTRUCTION: Call `generate_requirements` tool IMMEDIATELY as your FIRST "
+                        "content block. Do NOT output ANY free text before the tool call. "
+                        "Read ALL previous messages carefully. The new requirement above MUST be "
+                        "incorporated together with EVERY requirement, interface, component, and "
+                        "specification mentioned earlier. Do NOT drop any previously discussed item. "
+                        "Include the COMPLETE updated set — all BOM items, all requirements (including "
+                        "the new one), updated block_diagram_mermaid, architecture_mermaid, "
+                        "design_parameters, and component_recommendations — with `datasheet_url` for "
+                        "every component.]"
                     )
                 else:
                     messages[-1]["content"] = (
                         f"{original}\n\n"
-                        "You have all the information needed. Call the `generate_requirements` tool NOW "
-                        "incorporating EVERY requirement, interface, component and specification from this "
-                        "entire conversation. Do not drop any detail. Include the complete BOM, "
+                        "[SYSTEM INSTRUCTION: Call `generate_requirements` tool IMMEDIATELY as your FIRST "
+                        "content block. Do NOT output ANY free text before the tool call — no preamble, "
+                        "no acknowledgment, no 'I have all the information'. Your response must START with "
+                        "the tool_use block. Include EVERY requirement, interface, component and specification "
+                        "from this entire conversation. Do not drop any detail. Include the complete BOM, "
                         "requirements list, block_diagram_mermaid, architecture_mermaid, design_parameters, "
-                        "and component_recommendations — with `datasheet_url` for every component. "
-                        "Do not ask more questions."
+                        "and component_recommendations — with `datasheet_url` for every component.]"
                     )
             elif phase_already_complete and not user_wants_regen:
                 # Phase is done and user is asking a pure question (no hw spec detected)
@@ -666,13 +670,10 @@ class RequirementsAgent(BaseAgent):
             # Always build the rich requirements summary from the tool data.
             # This lets the user review key design parameters, requirements table,
             # component selections, and the block diagram BEFORE clicking Approve.
-            # If the LLM also produced a natural-language preamble, prepend it.
+            # Do NOT prepend LLM preamble text — it creates an unwanted intermediate
+            # "I have all the information..." message in the chat UI.
             rich_summary = self._build_response_summary(generate_req_input)
-            preamble = response_content.strip()
-            if preamble and len(preamble) > 60:
-                response_content = preamble + "\n\n---\n\n" + rich_summary
-            else:
-                response_content = rich_summary
+            response_content = rich_summary
             return {
                 "response": (response_content
                              + "\n\n✅ **Phase 1 Complete!** Review the requirements above and click **Approve & Start Pipeline** to continue."),
@@ -1120,6 +1121,12 @@ class RequirementsAgent(BaseAgent):
         table_a = build_rail_table([0, 1])   # 5V and 3.3V
         table_b = build_rail_table([2, 3])   # 2.5V and 1.8V
 
+        # Check if the 2.5V/1.8V rails actually have any power data —
+        # if both rail totals are zero, skip that table entirely so the
+        # user doesn't see a table full of dashes.
+        has_low_rail_data = (rail_totals_typ[2] > 0 or rail_totals_max[2] > 0 or
+                             rail_totals_typ[3] > 0 or rail_totals_max[3] > 0)
+
         lines = [
             f"# Power Calculation",
             f"## {project_name}",
@@ -1133,12 +1140,13 @@ class RequirementsAgent(BaseAgent):
             "",
         ]
         lines.extend(table_a)
-        lines += [
-            "",
-            "## Power Budget — 2.5 V & 1.8 V Rails",
-            "",
-        ]
-        lines.extend(table_b)
+        if has_low_rail_data:
+            lines += [
+                "",
+                "## Power Budget — 2.5 V & 1.8 V Rails",
+                "",
+            ]
+            lines.extend(table_b)
         lines += [
             "",
             "---",
@@ -1427,8 +1435,18 @@ class RequirementsAgent(BaseAgent):
         from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
 
         # ── URL bad-pattern filter (fast, no network) ──────────────────────────
+        # The LLM commonly invents direct .pdf links that don't exist on the
+        # server (e.g. /media/…/HMC1099.pdf). These return 200 but serve a
+        # generic error page or redirect to homepage, making them useless.
+        # Strategy: ALWAYS reject direct .pdf URLs and fabricated deep paths;
+        # the fallback builder will produce a reliable manufacturer product
+        # page link instead.
         _BAD_PATTERNS = [
             r'/vpt[/-]', r'vptpower\.com', r'\bvpt\b',
+            r'\.pdf(\?|#|$)',                       # all direct PDF links — LLM fabricates these
+            r'/media/en/technical-documentation/',   # Analog Devices deep path
+            r'/lit/ds/',                             # TI fabricated datasheet paths
+            r'ww1\.microchip\.com/downloads/',       # Microchip fabricated paths
         ]
         def _filter_url(url: str) -> str:
             if not url or not url.startswith('http'):
@@ -1464,6 +1482,17 @@ class RequirementsAgent(BaseAgent):
             'vicor':                 'https://www.vicorpower.com/search?q={part}',
             'te connectivity':       'https://www.te.com/en/search.html#q={part}',
             'mouser':                'https://www.mouser.com/Search/Refine?Keyword={part}',
+            'mini-circuits':         'https://www.minicircuits.com/WebStore/modelSearch.html?model={part}',
+            'hmc':                   'https://www.analog.com/en/search.html#q={part}',
+            'maxim':                 'https://www.analog.com/en/search.html#q={part}',
+            'maxim integrated':      'https://www.analog.com/en/search.html#q={part}',
+            'national instruments':  'https://www.ni.com/en/search.html#q={part}',
+            'samtec':                'https://www.samtec.com/search/{part}',
+            'amphenol':              'https://www.amphenol.com/search?q={part}',
+            'coilcraft':             'https://www.coilcraft.com/en-us/search/?q={part}',
+            'tdk':                   'https://product.tdk.com/en/search/emc/{part}',
+            'tdk-lambda':            'https://www.tdk-lambda.com/search/?q={part}',
+            'cosel':                 'https://en.cosel.co.jp/product/search/?q={part}',
         }
         def _fallback_url(part: str, mfr: str) -> str:
             """Build a manufacturer search page URL for the given part number."""

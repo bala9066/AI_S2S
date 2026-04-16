@@ -215,7 +215,7 @@ export default function PhaseHeader({ phase, status, tab, onTabChange, onExecute
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
                 <div style={{ width: 10, height: 10, borderRadius: '50%', border: `2px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
                 <span style={{ fontSize: 12, color: phase.color, fontFamily: "'DM Mono', monospace" }}>
-                  AI agent running — see Documents tab for live output
+                  AI agent running — see Documents tab for live progress
                 </span>
               </div>
             )}

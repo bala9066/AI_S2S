@@ -42,12 +42,54 @@ class NetlistGenerator:
             "metadata": metadata or {},
         }
 
+    @staticmethod
+    def _clean_label(text) -> str:
+        """Scrub characters that break Mermaid's flowchart parser from a label.
+
+        Removes/replaces: parens, brackets, braces, pipes, quotes, angle brackets,
+        newlines, tabs, #, @, and collapses 2+ dashes (which Mermaid reads as arrows).
+        """
+        import re as _re
+        if text is None:
+            return ""
+        s = str(text)
+        s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+        s = s.replace("(", " ").replace(")", " ")
+        s = s.replace("{", " ").replace("}", " ")
+        s = s.replace("[", " ").replace("]", " ")
+        s = s.replace("|", "/").replace('"', " ").replace("'", " ")
+        s = s.replace("<", " ").replace(">", " ")
+        s = s.replace("#", " ").replace("@", " ")
+        s = _re.sub(r"[\u2013\u2014]", "-", s)      # em/en dash → hyphen
+        s = _re.sub(r"-{2,}", " ", s)               # 2+ dashes → space
+        s = _re.sub(r"^[-=]+|[-=]+$", "", s)         # trim dash/equals at ends
+        s = _re.sub(r"\s{2,}", " ", s).strip()
+        return s
+
     def to_mermaid(self, netlist: Dict) -> str:
         lines = ["graph TB"]
         for node in netlist.get("nodes", []):
-            lines.append(f"    {node['id']}[{node['name']} ({node['type']})]")
+            raw_id = str(node.get("id", "N") or "N")
+            # Node IDs must be alphanumeric — replace anything non-wordchar with _
+            import re as _re
+            nid = _re.sub(r"[^\w]", "_", raw_id) or "N"
+            nname = self._clean_label(node.get("name", ""))
+            ntype = self._clean_label(node.get("type", ""))
+            label = f"{nname} {ntype}".strip() if ntype else (nname or nid)
+            if not label:
+                label = nid
+            lines.append(f"    {nid}[{label}]")
         for edge in netlist.get("edges", []):
-            lines.append(f"    {edge['source']} -->|{edge.get('signal', '')}| {edge['target']}")
+            import re as _re
+            src = _re.sub(r"[^\w]", "_", str(edge.get("source", "") or ""))
+            tgt = _re.sub(r"[^\w]", "_", str(edge.get("target", "") or ""))
+            sig = self._clean_label(edge.get("signal", ""))
+            if not src or not tgt:
+                continue
+            if sig:
+                lines.append(f"    {src} -->|{sig}| {tgt}")
+            else:
+                lines.append(f"    {src} --> {tgt}")
         return "\n".join(lines)
 
     def save(self, netlist: Dict, output_dir: Path, project_name: str) -> Path:

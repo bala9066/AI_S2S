@@ -382,6 +382,8 @@ class BaseAgent(ABC):
                     "type": "function",
                     "function": {"name": tool_choice["name"]},
                 }
+            elif tool_choice and tool_choice.get("type") == "any":
+                kwargs["tool_choice"] = "required"  # OpenAI equivalent of Anthropic "any"
             else:
                 kwargs["tool_choice"] = "auto"
 

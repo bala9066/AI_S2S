@@ -78,6 +78,9 @@ export const api = {
   executePhase: (id: number, phaseId: string) =>
     req(`/api/v1/projects/${id}/phases/${phaseId}/execute`, { method: 'POST' }),
 
+  cancelPhase: (id: number, phaseId: string) =>
+    req(`/api/v1/projects/${id}/phases/${phaseId}/cancel`, { method: 'POST' }),
+
   // Reset stale phases to 'pending' then re-run the pipeline
   resetAndRerun: (id: number, phaseIds: string[]) =>
     req(`/api/v1/projects/${id}/phases/reset`, {

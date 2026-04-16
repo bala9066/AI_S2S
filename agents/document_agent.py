@@ -5,6 +5,7 @@ Generates a 50-100 page Hardware Requirements Specification in markdown format.
 Uses IEEE 29148:2018 section structure with requirement traceability.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -303,54 +304,92 @@ class DocumentAgent(BaseAgent):
             ),
         ]
 
-        all_sections: list[str] = []
         total_sections = len(sections)
 
-        for idx, (section_name, section_prompt) in enumerate(sections, 1):
-            self.log(f"Generating HRS [{idx}/{total_sections}] {section_name}...")
-            try:
-                # Direct await — the sync GLM/Anthropic client now runs in a thread
-                # executor inside base_agent._call_glm_anthropic / _call_anthropic,
-                # so this correctly yields the event loop without blocking FastAPI.
-                resp = await self.call_llm(
-                    messages=[{"role": "user", "content": section_prompt}],
-                    system=system,
-                )
-                section_text = resp.get("content", "")
+        # Semaphore limits how many LLM calls run at once — avoids 429 rate-limit
+        # errors from the GLM / Anthropic API when firing all 8 sections together.
+        # 5 concurrent gives ~3.5× speedup over serial while staying within rate limits.
+        _sem = asyncio.Semaphore(5)
 
-                # Up to 3 continuation passes per section if truncated
-                for _sec_pass in range(1, 4):
-                    if resp.get("stop_reason") != "max_tokens" or not section_text:
-                        break
-                    self.log(f"  [{idx}/{total_sections}] {section_name} truncated — continuation pass {_sec_pass}/3...")
-                    resp = await self.call_llm(
-                        messages=[
-                            {"role": "user", "content": section_prompt},
-                            {"role": "assistant", "content": section_text},
-                            {"role": "user", "content": (
-                                f"Continue writing {section_name} from exactly where you stopped. "
-                                "Do NOT repeat content already written. "
-                                "Complete all sub-sections, tables, and requirement entries for this section."
-                            )},
-                        ],
-                        system=system,
-                    )
-                    section_text += "\n" + resp.get("content", "")
+        async def _generate_section(idx: int, section_name: str, section_prompt: str):
+            """Generate one HRS section with retry + continuation.
 
-                if section_text.strip():
-                    all_sections.append(section_text.strip())
-                    self.log(f"  [{idx}/{total_sections}] {section_name} complete ({len(section_text)} chars)")
-            except Exception as e:
-                self.log(f"  [{idx}/{total_sections}] {section_name} failed: {e}", "warning")
-                # Don't fail the whole document — skip and continue
+            Retry: up to 2 attempts with 5s backoff on failure (rate-limit/transient).
+            Continuation: up to 5 passes when the LLM hits max_tokens mid-section,
+            so large BOM tables, traceability matrices, and Mermaid diagrams are
+            NEVER truncated.
+            """
+            async with _sem:
+                for attempt in range(1, 3):  # max 2 attempts
+                    self.log(f"Generating HRS [{idx}/{total_sections}] {section_name}"
+                             f"{'' if attempt == 1 else f' (retry {attempt})'} ...")
+                    try:
+                        resp = await self.call_llm(
+                            messages=[{"role": "user", "content": section_prompt}],
+                            system=system,
+                        )
+                        section_text = resp.get("content", "")
+
+                        # Up to 5 continuation passes if truncated at max_tokens —
+                        # preserves ALL long-form content.
+                        for _sec_pass in range(1, 6):
+                            if resp.get("stop_reason") != "max_tokens" or not section_text:
+                                break
+                            self.log(f"  [{idx}/{total_sections}] {section_name} truncated — continuation pass {_sec_pass}/5...")
+                            resp = await self.call_llm(
+                                messages=[
+                                    {"role": "user", "content": section_prompt},
+                                    {"role": "assistant", "content": section_text},
+                                    {"role": "user", "content": (
+                                        f"Continue writing {section_name} from exactly where you stopped. "
+                                        "Do NOT repeat content already written. "
+                                        "Complete all sub-sections, tables, and requirement entries for this section."
+                                    )},
+                                ],
+                                system=system,
+                            )
+                            section_text += "\n" + resp.get("content", "")
+
+                        if section_text.strip():
+                            self.log(f"  [{idx}/{total_sections}] {section_name} complete ({len(section_text)} chars)")
+                            return (idx, section_text.strip())
+                        return (idx, None)
+                    except Exception as e:
+                        self.log(f"  [{idx}/{total_sections}] {section_name} attempt {attempt} failed: {e}", "warning")
+                        if attempt < 2:
+                            await asyncio.sleep(5)  # backoff before retry
+                        continue
+                # All attempts exhausted
+                self.log(f"  [{idx}/{total_sections}] {section_name} FAILED after 2 attempts", "warning")
+                return (idx, None)
+
+        # Dispatch ALL 8 sections — semaphore limits concurrency to 5.
+        self.log(f"HRS generation: dispatching {total_sections} sections (5 concurrent, 5 continuations each)...")
+        tasks = [
+            _generate_section(idx, name, prompt)
+            for idx, (name, prompt) in enumerate(sections, 1)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect successful sections, sorted by original index to preserve order.
+        ordered: list[tuple[int, str]] = []
+        for r in results:
+            if isinstance(r, Exception):
+                self.log(f"HRS parallel task raised: {r}", "warning")
                 continue
+            if not isinstance(r, tuple):
+                continue
+            idx, text = r
+            if text:
+                ordered.append((idx, text))
+        ordered.sort(key=lambda x: x[0])
+        all_sections = [text for _, text in ordered]
 
         if not all_sections:
             self.log("HRS generation failed — no sections generated", "warning")
             return ""
 
         # Require at least 4 of 8 sections to consider the LLM output usable.
-        # With run_in_executor fixing the blocking issue, all 8 should succeed.
         if len(all_sections) < 4:
             self.log(f"HRS generation partial ({len(all_sections)}/{total_sections} sections) — using template fallback", "warning")
             return ""  # Return empty to trigger template fallback

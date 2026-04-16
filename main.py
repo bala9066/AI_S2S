@@ -635,7 +635,7 @@ async def run_pipeline(project_id: int, background_tasks: BackgroundTasks):
     return {"status": "pipeline_started", "project_id": project_id}
 
 
-VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7a", "P8a", "P8b", "P8c"}
+VALID_PHASES = {"P1", "P2", "P3", "P4", "P5", "P6", "P7", "P7a", "P8a", "P8b", "P8c"}
 
 @app.post("/api/v1/projects/{project_id}/phases/{phase_id}/execute", tags=["pipeline"])
 async def execute_single_phase(project_id: int, phase_id: str, background_tasks: BackgroundTasks):
@@ -651,6 +651,21 @@ async def execute_single_phase(project_id: int, phase_id: str, background_tasks:
         return {"status": "phase_started", "phase_id": phase_id, "project_id": project_id}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/v1/projects/{project_id}/phases/{phase_id}/cancel", tags=["pipeline"])
+async def cancel_phase(project_id: int, phase_id: str):
+    """Cancel a running phase by setting its status to 'pending'.
+    Note: the background LLM task may still complete, but the frontend
+    will stop polling and the phase can be re-run cleanly."""
+    if phase_id not in VALID_PHASES:
+        raise HTTPException(400, f"Invalid phase '{phase_id}'")
+    proj = _project_svc().get(project_id)
+    if not proj:
+        raise HTTPException(404, f"Project {project_id} not found")
+    _project_svc().set_phase_status(project_id, phase_id, "pending")
+    log.info("api.phase_cancelled", extra={"project_id": project_id, "phase_id": phase_id})
+    return {"status": "cancelled", "phase_id": phase_id, "project_id": project_id}
 
 
 class ResetPhasesRequest(BaseModel):

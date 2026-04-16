@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from agents.base_agent import BaseAgent
-from agents.sbom_generator import generate_sbom
+# from agents.sbom_generator import generate_sbom  # SBOM removed from pipeline
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -111,30 +111,8 @@ Generate a complete compliance report with:
 
         outputs = {report_file.name: report_content}
 
-        # --- CycloneDX SBOM generation ---
-        try:
-            self.log("Generating CycloneDX 1.4 SBOM...")
-            sbom_result = generate_sbom(
-                project_name=project_name,
-                output_dir=output_dir,
-                components_text=components,
-                requirements_text=requirements,
-            )
-            outputs["sbom.json"] = sbom_result["sbom_json"]
-            # sbom_summary.md intentionally excluded from outputs — not shown in UI
-            self.log(
-                f"SBOM generated: {sbom_result['component_count']} components "
-                f"-> {sbom_result['sbom_path']}"
-            )
-        except Exception as e:
-            self.log(f"SBOM generation failed (non-fatal): {e}", "warning")
-
         return {
-            "response": (
-                f"Compliance validation complete. "
-                f"CycloneDX SBOM generated with "
-                f"{len([k for k in outputs if k == 'sbom.json'])} SBOM file(s)."
-            ),
+            "response": "Compliance validation complete.",
             "phase_complete": True,
             "outputs": outputs,
         }

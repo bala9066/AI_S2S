@@ -4,6 +4,7 @@ import type { Project, PhaseMeta, PhaseStatusValue } from '../types';
 import { api } from '../api';
 import { getVisibleDocuments } from '../data/phases';
 import { loadMermaid, renderMermaid, purgeMermaidScratch } from '../utils/mermaid';
+import SchematicView from '../components/schematic/SchematicView';
 
 interface DocFile {
   name: string;
@@ -53,6 +54,25 @@ const VIEWABLE = new Set(['md', 'txt', 'json', 'html', 'csv', 'net', 'xdc', 'py'
 
 function sanitizeMermaidCode(raw: string): string {
   let code = raw.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Label sanitizer — declared at top so any step can call it (avoids TDZ errors)
+  const sanitizeLabel = (inner: string) => {
+    let s = inner;
+    s = s.replace(/-->/g, ' ').replace(/->/g, ' ');
+    s = s.replace(/</g, ' ').replace(/>/g, ' ');
+    s = s.replace(/\(/g, ' ').replace(/\)/g, ' ');
+    s = s.replace(/_/g, '-');
+    s = s.replace(/&(?!amp;|lt;|gt;|#)/g, 'and');
+    s = s.replace(/"/g, ' ').replace(/'/g, ' ');
+    s = s.replace(/#/g, ' ');
+    s = s.replace(/\|/g, '/');
+    s = s.replace(/-{2,}/g, ' ');
+    s = s.replace(/^[-—=]+|[—=-]+$/g, ' ');
+    s = s.replace(/@/g, ' ');
+    s = s.replace(/[\[\]]/g, ' ');
+    s = s.replace(/\s{2,}/g, ' ').trim();
+    return s;
+  };
 
   // ── 0. Strip %%{ init }%% frontmatter and %% comments (cause parse errors in some versions)
   code = code.replace(/^%%\{[\s\S]*?\}%%\s*/m, '');
@@ -138,17 +158,72 @@ function sanitizeMermaidCode(raw: string): string {
     return line;
   }).join('\n');
 
-  // ── 7b. Fix two word-tokens on same line with NO arrow — agent forgot the arrow
-  // Pattern: "  NODEA NODEB[" (no --> between them on a non-subgraph line)
-  // Convert to: "  NODEA --> NODEB["
+  // ── 7c-lead. LEADING `end`: "  end NODE ..." — split into two lines
+  //   (The agent collapsed the subgraph-close and the next statement onto one line.)
+  code = code.split('\n').map(line => {
+    const m = line.match(/^(\s*)end\s+(\S.*)$/);
+    if (m) return `${m[1]}end\n${m[1]}${m[2]}`;
+    return line;
+  }).join('\n');
+
+  // ── 7b-pre. Fix "NODEA |label| NODEB" — pipe-label with no arrow before it
+  // Real syntax is "NODEA -->|label| NODEB". Inject the missing arrow.
+  // Guard: skip if already preceded by an arrow end (e.g. "A -->|x| B") — those won't
+  // match because the char before the space is '>' not a word character.
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /^(\s*)([\w][\w\-]*)\s+(\|[^|]+\|)\s*([\w])/,
+      (_m, indent, n1, label, n2start) => `${indent}${n1} -->${label} ${n2start}`
+    );
+  }).join('\n');
+
+  // ── 7b. Fix two+ word-tokens on same line with NO arrow — agent forgot arrows
+  // Handles both "NODEA NODEB[" and "RF_Front_End Downconvert Digitize" (3+ bare IDs).
+  // Strategy: split non-subgraph lines on whitespace, if ≥2 consecutive bare identifiers
+  // (no arrow, bracket, or pipe between them), insert " --> " between each pair.
   code = code.split('\n').map(line => {
     const stripped = line.trim();
     if (!stripped || /^\s*subgraph\b/.test(line) || /^\s*end\b/.test(line)) return line;
-    if (/^\s*%%/.test(line)) return line; // comment
-    // Match: indent + NODEID  NODEID[ (two identifiers, second followed by bracket — no arrow between)
-    return line.replace(
+    if (/^\s*%%/.test(line)) return line;
+    // First: handle "NODEA NODEB[" (identifier then bracket-prefixed identifier)
+    line = line.replace(
       /^(\s*)([\w][\w\-]*)(\s+)([\w][\w\-]*[\[\(])/,
       (_m, indent, n1, _sp, n2) => `${indent}${n1} --> ${n2}`
+    );
+    // Then: handle 3+ bare identifiers like "RF_Front_End Downconvert Digitize"
+    // Only if the line has NO arrows at all and has 3+ space-separated tokens
+    if (/-->|---/.test(line)) return line;
+    const indent = line.match(/^(\s*)/)?.[1] || '';
+    const tokens = stripped.split(/\s+/);
+    const seqKeywords = /^(participant|actor|activate|deactivate|Note|loop|alt|else|opt|par|rect|end|autonumber|title|as)\b/i;
+    if (tokens.length >= 3 && tokens.every(t => /^[\w][\w\-]*$/.test(t)) && !seqKeywords.test(stripped)) {
+      return indent + tokens.join(' --> ');
+    }
+    return line;
+  }).join('\n');
+
+  // ── 7b-post. Fix "NODEA[label] NODEB[label]" — bracket-delimited nodes without arrow
+  //   Also handles "NODEA(label) NODEB[label]" and "NODEA{label} NODEB[label]"
+  //   Real cause: LLM dropped the arrow between two fully-declared nodes on one line.
+  //   Applies /g to handle multiple occurrences per line (rare but possible).
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /([\]\)\}])(\s+)([\w][\w\-]*)(\s*[\[\(\{])/g,
+      (_m, closer, _sp, n2, opener) => `${closer} --> ${n2}${opener}`
+    );
+  }).join('\n');
+
+  // ── 7b-mid. Fix "NODEA] NODEID |label| NODEB" — pipe-label after a bare identifier
+  //   that follows a closed node. Example: "[Clock Mgmt] HOST |JESD204C 8-Lanes| A"
+  //   Correct form: "[Clock Mgmt] --> HOST -->|JESD204C 8-Lanes| A"
+  //   Insert --> before the bare identifier AND --> before the pipe-label.
+  code = code.split('\n').map(line => {
+    if (/^\s*(subgraph|end|%%)/.test(line)) return line;
+    return line.replace(
+      /([\]\)\}])\s+([\w][\w\-]*)\s+(\|[^|]+\|)/g,
+      (_m, closer, node, label) => `${closer} --> ${node} -->${label}`
     );
   }).join('\n');
 
@@ -161,40 +236,7 @@ function sanitizeMermaidCode(raw: string): string {
   }).join('\n');
 
   // ── 9. Sanitize node labels: remove characters that break the parser
-  const sanitizeLabel = (inner: string) => {
-    let s = inner;
-    // Strip arrow operators FIRST — before any > → ) replacement
-    // Prevents "LNA(LNA --> Filter)" from becoming "LNA(LNA --) Filter)"
-    s = s.replace(/-->/g, ' ').replace(/->/g, ' ');
-    // Remove angle brackets — convert to space (NOT parentheses, which cause parse errors)
-    s = s.replace(/</g, ' ').replace(/>/g, ' ');
-    // Remove parentheses entirely — they confuse Mermaid's node parser
-    // Pattern like "Component (PartNumber)" breaks parsing
-    s = s.replace(/\(/g, ' ').replace(/\)/g, ' ');
-    // Underscores trigger subscript parsing in Mermaid — replace with hyphen or space
-    s = s.replace(/_/g, '-');
-    // & outside HTML entity → 'and'
-    s = s.replace(/&(?!amp;|lt;|gt;|#)/g, 'and');
-    // Single and double quotes confuse the parser (single quotes act as string delimiters)
-    s = s.replace(/"/g, ' ').replace(/'/g, ' ');
-    // Hash # can be interpreted as a color — escape it
-    s = s.replace(/#/g, ' ');
-    // Pipe | in labels is the Mermaid cell-separator — replace with /
-    s = s.replace(/\|/g, '/');
-    // IMPORTANT: Remove ALL dash sequences (2 or more) entirely — they get mistaken for edge arrows
-    // This prevents "FR-4 Cost Reduction ---" from becoming "FR-4 Cost Reduction --"
-    // which Mermaid then interprets as an arrow operator
-    s = s.replace(/-{2,}/g, ' ');
-    // Also remove standalone dashes at start/end of labels
-    s = s.replace(/^[-—=]+|[—=-]+$/g, ' ');
-    // Remove @ which can cause issues in some Mermaid versions
-    s = s.replace(/@/g, ' ');
-    // Remove nested [ or ] — they break the label parser (e.g. "Clock Buffer [HMC700]")
-    s = s.replace(/[\[\]]/g, ' ');
-    // Clean up multiple spaces that result from replacements
-    s = s.replace(/\s{2,}/g, ' ').trim();
-    return s;
-  };
+  //     (sanitizeLabel is hoisted to the top of this function so it can be used earlier too)
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
   code = code.replace(/\(([^)]*)\)/g, (_m, inner: string) => `(${sanitizeLabel(inner)})`);
   code = code.replace(/\{([^}]*)\}/g, (_m, inner: string) => `{${sanitizeLabel(inner)}}`);
@@ -526,13 +568,45 @@ function GeneratingState({ phase, elapsed }: { phase: PhaseMeta; elapsed: number
     ? `${mins}m ${secs.toString().padStart(2, '0')}s`
     : `${secs}s`;
 
+  // Compute cumulative time thresholds from subSteps
+  const steps = phase.subSteps || [];
+  const stepTimesSeconds: number[] = [];
+  let cumulative = 0;
+  for (const step of steps) {
+    // Parse time string: "12s" -> 12, "2 min" -> 120, "120s" -> 120, "48s" -> 48
+    const t = step.time || '10s';
+    let sec = 10;
+    const minMatch = t.match(/([\d.]+)\s*min/i);
+    const secMatch = t.match(/([\d.]+)\s*s/i);
+    if (minMatch) sec = parseFloat(minMatch[1]) * 60;
+    else if (secMatch) sec = parseFloat(secMatch[1]);
+    cumulative += sec;
+    stepTimesSeconds.push(cumulative);
+  }
+
+  // Figure out which step is active based on elapsed time
+  let activeIdx = 0;
+  for (let i = 0; i < stepTimesSeconds.length; i++) {
+    if (elapsed >= stepTimesSeconds[i]) activeIdx = i + 1;
+  }
+  activeIdx = Math.min(activeIdx, steps.length - 1);
+
+  // Overall progress percentage
+  const totalEstSec = stepTimesSeconds.length > 0 ? stepTimesSeconds[stepTimesSeconds.length - 1] : 240;
+  const overallPct = Math.min(95, Math.round((elapsed / totalEstSec) * 100));
+
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 12 }}>
+      {/* Header with spinner */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 8 }}>
         <div style={{ width: 14, height: 14, borderRadius: '50%', border: `2.5px solid ${phase.color}`, borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }} />
-        <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>AI agent running — generating documents...</div>
+        <div style={{ fontSize: 14, color: phase.color, fontWeight: 600 }}>
+          {steps.length > 0 ? steps[activeIdx].label : 'AI agent running...'}
+        </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, marginBottom: 12 }}>
+
+      {/* Elapsed / Estimated / Progress bar */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 20, marginBottom: 6 }}>
         <div style={{ fontSize: 12, color: 'var(--text4)', fontFamily: "'DM Mono', monospace" }}>
           Elapsed: <span style={{ color: phase.color }}>{elapsedStr}</span>
         </div>
@@ -540,8 +614,75 @@ function GeneratingState({ phase, elapsed }: { phase: PhaseMeta; elapsed: number
           Estimated: <span style={{ color: phase.color }}>{phase.time}</span>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--text4)', maxWidth: 380, margin: '0 auto', lineHeight: 1.7 }}>
-        Output files will appear here automatically once the phase completes.
+
+      {/* Overall progress bar */}
+      <div style={{ maxWidth: 400, margin: '0 auto 16px', padding: '0 4px' }}>
+        <div style={{ height: 4, borderRadius: 2, background: `${phase.color}18` }}>
+          <div style={{
+            height: '100%', borderRadius: 2, background: phase.color,
+            width: `${overallPct}%`, transition: 'width 1s ease',
+            boxShadow: `0 0 8px ${phase.color}40`,
+          }} />
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text4)', textAlign: 'right', marginTop: 2, fontFamily: "'DM Mono', monospace" }}>
+          {overallPct}%
+        </div>
+      </div>
+
+      {/* Sub-step list */}
+      {steps.length > 0 && (
+        <div style={{ maxWidth: 440, margin: '0 auto' }}>
+          {steps.map((step, i) => {
+            const isDone = i < activeIdx;
+            const isActive = i === activeIdx;
+            const isPending = i > activeIdx;
+            return (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 6,
+                opacity: isPending ? 0.35 : 1, transition: 'opacity 0.5s',
+              }}>
+                {/* Step indicator */}
+                <div style={{
+                  width: 18, height: 18, borderRadius: '50%', flexShrink: 0, marginTop: 1,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 10, fontWeight: 700, fontFamily: "'DM Mono', monospace",
+                  background: isDone ? phase.color : isActive ? `${phase.color}30` : 'transparent',
+                  border: `1.5px solid ${isDone || isActive ? phase.color : 'var(--border)'}`,
+                  color: isDone ? '#070b14' : isActive ? phase.color : 'var(--text4)',
+                  boxShadow: isActive ? `0 0 8px ${phase.color}40` : 'none',
+                }}>
+                  {isDone ? '\u2713' : (i + 1)}
+                </div>
+                {/* Step text */}
+                <div>
+                  <div style={{
+                    fontSize: 12, fontWeight: isActive ? 600 : 400,
+                    color: isDone ? 'var(--text2)' : isActive ? phase.color : 'var(--text4)',
+                    fontFamily: "'DM Mono', monospace",
+                  }}>
+                    {step.label}
+                  </div>
+                  {(isDone || isActive) && step.detail && (
+                    <div style={{ fontSize: 10, color: 'var(--text4)', lineHeight: 1.5, marginTop: 1 }}>
+                      {step.detail}
+                    </div>
+                  )}
+                </div>
+                {/* Time chip */}
+                <div style={{
+                  fontSize: 10, color: isDone ? phase.color : 'var(--text4)',
+                  fontFamily: "'DM Mono', monospace", marginLeft: 'auto', flexShrink: 0, marginTop: 2,
+                }}>
+                  {step.time}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: 'var(--text4)', maxWidth: 380, margin: '12px auto 0', lineHeight: 1.7, textAlign: 'center' }}>
+        Output files will appear here automatically once complete.
       </div>
     </>
   );
@@ -587,6 +728,9 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // phaseStartTs: maps phase.id → wall-clock ms when that phase first went in_progress
   const phaseStartTsRef = useRef<Record<string, number>>({});
   const [elapsedByPhase, setElapsedByPhase] = useState<Record<string, number>>({});
+
+  // P4-only sub-tab: "files" (default document list) vs "schematic" (interactive gate-level schematic)
+  const [p4SubTab, setP4SubTab] = useState<'files' | 'schematic'>('files');
 
   // Record start time when a phase first enters in_progress
   useEffect(() => {
@@ -1126,8 +1270,28 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     );
   }
 
+  // P4-only: render the Schematic view when the sub-tab is active
+  if (phase.id === 'P4' && p4SubTab === 'schematic' && project) {
+    return (
+      <div style={{ paddingTop: 18, display: 'flex', flexDirection: 'column', minHeight: 700 }}>
+        <P4SubTabSwitch current={p4SubTab} onChange={setP4SubTab} color={phase.color} />
+        <div style={{
+          flex: 1, marginTop: 12, border: '1px solid var(--border2)',
+          borderRadius: 10, overflow: 'hidden', background: 'var(--panel)',
+        }}>
+          <SchematicView projectId={project.id} color={phase.color} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ paddingTop: 18 }}>
+      {/* P4-only: sub-tab switcher above the document list */}
+      {phase.id === 'P4' && (
+        <P4SubTabSwitch current={p4SubTab} onChange={setP4SubTab} color={phase.color} />
+      )}
+
       {/* Phase details accordion — collapsed by default when documents exist */}
       <PhaseDetails phase={phase} color={phase.color} collapsed />
 
@@ -1421,6 +1585,74 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── P4SubTabSwitch — toggles between "Files" (default document list) and
+//    "Schematic" (interactive gate-level schematic viewer). P4 only.
+function P4SubTabSwitch({
+  current,
+  onChange,
+  color,
+}: {
+  current: 'files' | 'schematic';
+  onChange: (v: 'files' | 'schematic') => void;
+  color: string;
+}) {
+  const Tab = ({ id, label, icon }: { id: 'files' | 'schematic'; label: string; icon: string }) => {
+    const active = current === id;
+    return (
+      <button
+        onClick={() => onChange(id)}
+        style={{
+          fontSize: 11,
+          fontFamily: "'DM Mono', monospace",
+          letterSpacing: '0.08em',
+          padding: '6px 14px',
+          border: `1px solid ${active ? color + '66' : 'var(--border2)'}`,
+          background: active ? `${color}14` : 'var(--panel2)',
+          color: active ? color : 'var(--text3)',
+          borderRadius: 5,
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          transition: 'all 0.15s',
+        }}
+      >
+        <span style={{ fontSize: 12 }}>{icon}</span>
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 8,
+        marginBottom: 14,
+        padding: '4px 0',
+        borderBottom: '1px solid var(--border2)',
+        paddingBottom: 12,
+      }}
+    >
+      <Tab id="files" label="FILES" icon="📄" />
+      <Tab id="schematic" label="SCHEMATIC" icon="⬡" />
+      <span
+        style={{
+          marginLeft: 'auto',
+          alignSelf: 'center',
+          fontSize: 10,
+          color: 'var(--text4)',
+          fontFamily: "'DM Mono', monospace",
+          letterSpacing: '0.08em',
+        }}
+      >
+        {current === 'schematic' ? 'GATE-LEVEL · INTERACTIVE · PDF EXPORT' : 'GENERATED OUTPUTS'}
+      </span>
     </div>
   );
 }
