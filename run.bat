@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 REM ── Always run from the folder that contains this .bat file ───────────────
 cd /d "%~dp0"
 
-title Hardware Pipeline — Starting...
+title Hardware Pipeline - Starting...
 
 echo.
 echo  ============================================================
@@ -77,25 +77,26 @@ REM ── Start FastAPI backend in a new window ──────────�
 echo.
 echo  [2/2] Starting FastAPI backend  ->  http://localhost:8000
 set BACKEND_CMD=%PYTHON_CMD% -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info --reload
-start "S2S — FastAPI Backend" cmd /k "title S2S — FastAPI Backend && cd /d "%~dp0" && %BACKEND_CMD%"
+start "S2S - FastAPI Backend" cmd /k "title S2S - FastAPI Backend && cd /d "%~dp0" && %BACKEND_CMD%"
 
 REM ── Poll until backend is healthy (up to 30 seconds) ────────────────────────
 echo  [*]  Waiting for backend...
 set TRIES=0
 
 :healthloop
-timeout /t 2 /nobreak >nul
+timeout /t 1 /nobreak >nul
 %PYTHON_CMD% -c "import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/health',timeout=3); sys.exit(0)" >nul 2>&1
 if %errorlevel%==0 (
     echo  [OK]  Backend is healthy!
     goto :backend_ready
 )
 set /a TRIES=TRIES+1
-if %TRIES% lss 15 (
-    echo  [*]  Still waiting... ^(%TRIES%/15^)
+if %TRIES% lss 30 (
+    echo  [*]  Still waiting... ^(%TRIES%/30^)
     goto :healthloop
 )
 echo  [WARN] Backend health check timed out after 30s. Proceeding anyway...
+echo         (Backend may still be starting - try refreshing the browser)
 
 :backend_ready
 
@@ -112,7 +113,7 @@ echo   Health ->  http://localhost:8000/health
 echo  ============================================================
 echo.
 echo   One window is running:
-echo     "S2S — FastAPI Backend"   (keep open)
+echo     "S2S - FastAPI Backend"   (keep open)
 echo.
 echo   Close this window when finished.
 echo.
