@@ -808,7 +808,15 @@ def _render_mermaid_local(code: str, out_path: str) -> bool:
         import base64 as _b64, urllib.request as _req
         encoded = _b64.urlsafe_b64encode(code.encode('utf-8')).decode()
         url = f"https://mermaid.ink/img/{encoded}?type=png&bgColor=white&width=1400"
-        _req.urlretrieve(url, out_path)
+        # Use browser-like headers to avoid 403 Forbidden errors
+        req = _req.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/png'
+        })
+        with _req.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+        with open(out_path, 'wb') as f:
+            f.write(data)
         if _pl.Path(out_path).exists() and _pl.Path(out_path).stat().st_size > 200:
             log.debug("mermaid.ink.ok")
             return True
