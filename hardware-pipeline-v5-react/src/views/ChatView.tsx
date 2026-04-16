@@ -1775,3 +1775,4 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
     </div>
   );
 }
+            Send

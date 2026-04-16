@@ -549,6 +549,11 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
   // it checks if the generation still matches. If not, it skips the state update.
   const generationRef = useRef<number>(0);
 
+  // ── User-initiated abort controllers ─────────────────────────────────────────
+  // Tracks AbortControllers for in-flight Preview fetches and DOCX downloads.
+  // All are aborted on phase switch so the UI never stays stuck in Loading.../Converting...
+  const activeUserAborts = useRef(new Set<AbortController>());
+
   // ── Persistent elapsed timer — keyed by phase.id so switching phases doesn't reset it ──
   // phaseStartTs: maps phase.id → wall-clock ms when that phase first went in_progress
   const phaseStartTsRef = useRef<Record<string, number>>({});
@@ -572,6 +577,12 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     // Increment generation to invalidate all in-flight async operations from previous phase
     generationRef.current += 1;
 
+    // Abort ALL in-flight user-initiated fetches (Preview + DOCX download).
+    // This immediately unblocks any hanging requests from the previous phase so
+    // their loading/converting states are never left visible on the new phase.
+    activeUserAborts.current.forEach(c => c.abort());
+    activeUserAborts.current.clear();
+
     // Clear all states immediately on phase change
     setLoadingFile({});
     setDocxConverting({});
@@ -585,6 +596,8 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
 
     return () => {
       // Double-clear in cleanup to catch any async operations
+      activeUserAborts.current.forEach(c => c.abort());
+      activeUserAborts.current.clear();
       setLoadingFile({});
       setDocxConverting({});
       setDocxPreconverting({});
@@ -894,24 +907,37 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     // Capture the generation at fetch start — check before setting state
     const startGeneration = generationRef.current;
 
+    // AbortController: aborted on phase switch (via activeUserAborts) OR after 20s timeout.
+    // Without this, if the backend is busy the fetch hangs forever and "Loading..." never clears.
+    const controller = new AbortController();
+    activeUserAborts.current.add(controller);
+    const timeoutId = setTimeout(() => controller.abort(), 20_000);
+
     setLoadingFile(prev => ({ ...prev, [file.name]: true }));
     try {
-      const text = await api.getDocumentText(project.id, file.name);
+      const text = await api.getDocumentText(project.id, file.name, controller.signal);
+      clearTimeout(timeoutId);
       // Only set state if generation hasn't changed (phase didn't switch during fetch)
       if (generationRef.current === startGeneration) {
+        contentsRef.current = { ...contentsRef.current, [file.name]: text };
         setContents(prev => ({ ...prev, [file.name]: text }));
         setExpanded(file.name);
       }
-    } catch {
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message === 'AbortError');
       // Only set state if generation hasn't changed
-      if (generationRef.current === startGeneration) {
+      if (generationRef.current === startGeneration && !isAbort) {
         setContents(prev => ({ ...prev, [file.name]: 'Could not load document.' }));
         setExpanded(file.name);
       }
-    }
-    // Only clear loading state if generation hasn't changed
-    if (generationRef.current === startGeneration) {
-      setLoadingFile(prev => ({ ...prev, [file.name]: false }));
+    } finally {
+      clearTimeout(timeoutId);
+      activeUserAborts.current.delete(controller);
+      // Always clear loading state (finally runs even if fetch was aborted or timed out)
+      if (generationRef.current === startGeneration) {
+        setLoadingFile(prev => ({ ...prev, [file.name]: false }));
+      }
     }
   };
 
@@ -956,10 +982,20 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       return;
     }
 
+    // AbortController: aborted on phase switch OR after 90s timeout.
+    // Prevents "Converting…" from being permanently stuck when backend is slow.
+    const controller = new AbortController();
+    activeUserAborts.current.add(controller);
+    const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
     // Pre-convert not ready yet — show "Converting…" spinner while we wait
     setDocxConverting(prev => ({ ...prev, [file.name]: true }));
     try {
-      const resp = await fetch(`/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`);
+      const resp = await fetch(
+        `/api/v1/projects/${project.id}/docx/${encodeURIComponent(file.name)}`,
+        { signal: controller.signal },
+      );
+      clearTimeout(timeoutId);
       if (!resp.ok) {
         let detail = '';
         try { const j = await resp.json(); detail = j.detail || ''; } catch { /* ignore */ }
@@ -971,15 +1007,18 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
       clickDownload(url, docxName);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (err) {
+      clearTimeout(timeoutId);
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message === 'AbortError');
       console.error('DOCX download failed:', err);
-      // Only show error if generation hasn't changed
-      if (generationRef.current === startGeneration) {
-        // Surface error to user
+      // Only show error if generation hasn't changed and it wasn't a phase-switch abort
+      if (generationRef.current === startGeneration && !isAbort) {
         setDocxError(prev => ({ ...prev, [file.name]: String(err) }));
         setTimeout(() => setDocxError(prev => { const n = { ...prev }; delete n[file.name]; return n; }), 6000);
       }
     } finally {
-      // Only clear converting state if generation hasn't changed
+      clearTimeout(timeoutId);
+      activeUserAborts.current.delete(controller);
+      // Always clear converting state — finally runs even on abort/timeout/phase switch
       if (generationRef.current === startGeneration) {
         setDocxConverting(prev => ({ ...prev, [file.name]: false }));
       }
@@ -1356,4 +1395,3 @@ export default function DocumentsView({ project, phase, status, pipelineRunning 
     </div>
   );
 }
-     

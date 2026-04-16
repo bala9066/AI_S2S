@@ -1,4 +1,4 @@
-import { Project, Statuses, StatusesRaw } from './types';
+import type { Project, Statuses, StatusesRaw } from './types';
 
 // Same-origin when served by FastAPI (port 8000 or behind a proxy).
 // Fall back to explicit localhost:8000 when opened directly as file:// or via Vite dev server.
@@ -111,8 +111,8 @@ export const api = {
   listDocuments: (id: number): Promise<{ name: string; size: number }[]> =>
     req(`/api/v1/projects/${id}/documents`),
 
-  getDocumentText: async (id: number, filename: string): Promise<string> => {
-    const res = await fetch(`${BASE}/api/v1/projects/${id}/documents/${encodeURIComponent(filename)}`);
+  getDocumentText: async (id: number, filename: string, signal?: AbortSignal): Promise<string> => {
+    const res = await fetch(`${BASE}/api/v1/projects/${id}/documents/${encodeURIComponent(filename)}`, { signal });
     if (!res.ok) throw new Error(`${res.status}`);
     return res.text();
   },
