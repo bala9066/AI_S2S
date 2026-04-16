@@ -309,14 +309,12 @@ class DocumentAgent(BaseAgent):
         for idx, (section_name, section_prompt) in enumerate(sections, 1):
             self.log(f"Generating HRS [{idx}/{total_sections}] {section_name}...")
             try:
-                # Add timeout wrapper for each LLM call
-                import asyncio
-                resp = await asyncio.wait_for(
-                    self.call_llm(
-                        messages=[{"role": "user", "content": section_prompt}],
-                        system=system,
-                    ),
-                    timeout=120.0  # 2 minutes per section
+                # Direct await — the sync GLM/Anthropic client now runs in a thread
+                # executor inside base_agent._call_glm_anthropic / _call_anthropic,
+                # so this correctly yields the event loop without blocking FastAPI.
+                resp = await self.call_llm(
+                    messages=[{"role": "user", "content": section_prompt}],
+                    system=system,
                 )
                 section_text = resp.get("content", "")
 
@@ -325,30 +323,23 @@ class DocumentAgent(BaseAgent):
                     if resp.get("stop_reason") != "max_tokens" or not section_text:
                         break
                     self.log(f"  [{idx}/{total_sections}] {section_name} truncated — continuation pass {_sec_pass}/3...")
-                    resp = await asyncio.wait_for(
-                        self.call_llm(
-                            messages=[
-                                {"role": "user", "content": section_prompt},
-                                {"role": "assistant", "content": section_text},
-                                {"role": "user", "content": (
-                                    f"Continue writing {section_name} from exactly where you stopped. "
-                                    "Do NOT repeat content already written. "
-                                    "Complete all sub-sections, tables, and requirement entries for this section."
-                                )},
-                            ],
-                            system=system,
-                        ),
-                        timeout=60.0  # 1 minute for continuation
+                    resp = await self.call_llm(
+                        messages=[
+                            {"role": "user", "content": section_prompt},
+                            {"role": "assistant", "content": section_text},
+                            {"role": "user", "content": (
+                                f"Continue writing {section_name} from exactly where you stopped. "
+                                "Do NOT repeat content already written. "
+                                "Complete all sub-sections, tables, and requirement entries for this section."
+                            )},
+                        ],
+                        system=system,
                     )
                     section_text += "\n" + resp.get("content", "")
 
                 if section_text.strip():
                     all_sections.append(section_text.strip())
                     self.log(f"  [{idx}/{total_sections}] {section_name} complete ({len(section_text)} chars)")
-            except asyncio.TimeoutError:
-                self.log(f"  [{idx}/{total_sections}] {section_name} timed out after 2 minutes", "warning")
-                # Don't fail the whole document — skip and continue
-                continue
             except Exception as e:
                 self.log(f"  [{idx}/{total_sections}] {section_name} failed: {e}", "warning")
                 # Don't fail the whole document — skip and continue
@@ -358,7 +349,8 @@ class DocumentAgent(BaseAgent):
             self.log("HRS generation failed — no sections generated", "warning")
             return ""
 
-        # If fewer than 4 sections succeeded, fall back to template
+        # Require at least 4 of 8 sections to consider the LLM output usable.
+        # With run_in_executor fixing the blocking issue, all 8 should succeed.
         if len(all_sections) < 4:
             self.log(f"HRS generation partial ({len(all_sections)}/{total_sections} sections) — using template fallback", "warning")
             return ""  # Return empty to trigger template fallback
@@ -375,38 +367,4 @@ class DocumentAgent(BaseAgent):
         return ""
 
     async def _extract_requirements(self, requirements_content: str, project_name: str) -> list:
-        """Extract structured requirements from markdown using LLM."""
-        system_prompt = """Extract structured hardware requirements from the markdown content.
-Return a JSON array of requirements with fields: id, text, priority (HIGH/MEDIUM/LOW)."""
-
-        try:
-            response = await self.call_llm(
-                messages=[{
-                    "role": "user",
-                    "content": f"Extract structured requirements from:\n\n{requirements_content[:8000]}\n\nReturn JSON array."
-                }],
-                system=system_prompt,
-            )
-
-            content = response.get("content", "")
-            # Try to extract JSON from the response
-            import re
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
-        except Exception as e:
-            self.log(f"Failed to extract structured requirements: {e}", "warning")
-
-        # Fallback: return basic structure
-        return [
-            {"id": "REQ-HW-001", "text": "System shall meet all specified requirements", "priority": "HIGH"}
-        ]
-
-    async def _extract_components(self, components_content: str) -> dict:
-        """Extract component data from markdown."""
-        if not components_content:
-            return {}
-
-        return {
-            "components_markdown": components_content[:5000],
-        }
+        """Extract stru

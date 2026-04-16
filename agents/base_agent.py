@@ -8,6 +8,7 @@ Default fallback order (auto-detected from .env API keys):
 Override with PRIMARY_MODEL env var.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -301,7 +302,12 @@ class BaseAgent(ABC):
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
 
-        response = self._anthropic_client.messages.create(**kwargs)
+        # Run the synchronous Anthropic client in a thread pool executor so it
+        # does NOT block the FastAPI event loop during long LLM calls.
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: self._anthropic_client.messages.create(**kwargs)
+        )
 
         # Parse response
         content_text = ""
@@ -500,7 +506,12 @@ class BaseAgent(ABC):
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
 
-        response = glm_client.messages.create(**kwargs)
+        # Run the synchronous GLM client in a thread pool executor so it
+        # does NOT block the FastAPI event loop during long LLM calls.
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: glm_client.messages.create(**kwargs)
+        )
 
         content_text = ""
         tool_calls = []
