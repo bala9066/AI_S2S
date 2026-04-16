@@ -1082,12 +1082,12 @@ class RequirementsAgent(BaseAgent):
             sel_labels = [RAIL_LABELS[i] for i in rail_indices]
             # Header
             h1 = "| SI | Description | Part No | Qty"
-            h2 = "|----|-------------|---------|----"
             for lbl in sel_labels:
                 h1 += f" | {lbl} TYP (W) | {lbl} MAX (W)"
-                h2 += " |-----------|-----------|"
             h1 += " | Total TYP (W) | Total MAX (W) |"
-            h2 += "---------------|---------------|"
+            # Separator: auto-built from column count so it always matches the header
+            ncols = h1.count('|') - 1
+            h2 = '| ' + ' | '.join(['---'] * ncols) + ' |'
             t_lines = [h1, h2]
             for row in rows:
                 tot_typ_row = 0.0

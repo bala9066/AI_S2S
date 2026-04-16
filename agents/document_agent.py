@@ -367,4 +367,23 @@ class DocumentAgent(BaseAgent):
         return ""
 
     async def _extract_requirements(self, requirements_content: str, project_name: str) -> list:
-        """Extract stru
+        """Extract structured requirements list from Phase 1 requirements markdown."""
+        if not requirements_content:
+            return [{"id": "REQ-HW-001", "text": "System shall meet all specified requirements", "priority": "HIGH"}]
+        import re
+        reqs = []
+        for match in re.finditer(r'(REQ-HW-\d+)[^\n]*?\|[^\|]+\|([^\|]+)\|([^\|]+)', requirements_content):
+            reqs.append({
+                "id": match.group(1),
+                "text": match.group(2).strip(),
+                "priority": match.group(3).strip(),
+            })
+        if not reqs:
+            reqs = [{"id": "REQ-HW-001", "text": "System shall meet all specified requirements", "priority": "HIGH"}]
+        return reqs
+
+    async def _extract_components(self, components_content: str) -> dict:
+        """Extract component data from markdown for template fallback."""
+        if not components_content:
+            return {}
+        return {"components_markdown": components_content[:5000]}

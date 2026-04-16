@@ -92,6 +92,12 @@ function sanitizeMermaidCode(raw: string): string {
       joinedLines.push(line);
     }
     code = joinedLines.join('\n');
+    // Auto-close any still-unclosed [ on a single line (LLM forgot closing bracket)
+    code = code.split('\n').map(line => {
+      const opens = (line.match(/\[/g) || []).length;
+      const closes = (line.match(/\]/g) || []).length;
+      return opens > closes ? line + ']'.repeat(opens - closes) : line;
+    }).join('\n');
   }
 
   // ── 4. Ensure known diagram type on line 1
@@ -110,6 +116,27 @@ function sanitizeMermaidCode(raw: string): string {
 
   // ── 7. Strip all HTML tags (no <br/> either — causes parse errors in Mermaid 10)
   code = code.replace(/<[^>]+>/gi, ' ');
+
+  // ── 7d. Fix misused |label| as node labels — should be [label]
+  // Real Mermaid edge labels: "A -->|label| B"  (|label| always has a target node after it)
+  // LLMs sometimes write "NODE |label|" or "NODE |label|\n" — pipe-label with no following node
+  // Convert: NODEID |Some Label| → NODEID[Some Label]
+  // Guard (?!\s*[\w\[]) ensures we don't touch real edge labels that have a node after the closing |
+  code = code.split('\n').map(line =>
+    line.replace(/(\w)\s+\|([^|]+)\|(?!\s*[\w\[])/g,
+      (_m, pre, inner) => `${pre}[${sanitizeLabel(inner)}]`)
+  ).join('\n');
+
+  // ── 7c. Ensure `end` (subgraph close keyword) is always on its own line
+  // LLMs sometimes write "  NODEA NODEB end" collapsing the closing keyword onto a content line
+  code = code.split('\n').map(line => {
+    // Match lines where `end` appears as a trailing standalone word but the line doesn't START with end
+    if (/\bend\s*$/.test(line) && !/^\s*end\b/.test(line)) {
+      const before = line.replace(/\s+end\s*$/, '').trimEnd();
+      return (before ? before + '\n' : '') + 'end';
+    }
+    return line;
+  }).join('\n');
 
   // ── 7b. Fix two word-tokens on same line with NO arrow — agent forgot the arrow
   // Pattern: "  NODEA NODEB[" (no --> between them on a non-subgraph line)
@@ -162,6 +189,8 @@ function sanitizeMermaidCode(raw: string): string {
     s = s.replace(/^[-—=]+|[—=-]+$/g, ' ');
     // Remove @ which can cause issues in some Mermaid versions
     s = s.replace(/@/g, ' ');
+    // Remove nested [ or ] — they break the label parser (e.g. "Clock Buffer [HMC700]")
+    s = s.replace(/[\[\]]/g, ' ');
     // Clean up multiple spaces that result from replacements
     s = s.replace(/\s{2,}/g, ' ').trim();
     return s;

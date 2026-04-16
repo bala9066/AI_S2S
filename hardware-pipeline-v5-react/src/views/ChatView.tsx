@@ -42,6 +42,12 @@ function sanitizeMermaid(raw: string): string {
       joinedLines.push(line);
     }
     code = joinedLines.join('\n');
+    // Auto-close any still-unclosed [ on a single line (LLM forgot closing bracket)
+    code = code.split('\n').map(line => {
+      const opens = (line.match(/\[/g) || []).length;
+      const closes = (line.match(/\]/g) || []).length;
+      return opens > closes ? line + ']'.repeat(opens - closes) : line;
+    }).join('\n');
   }
   // Ensure known diagram type on line 1
   const first = code.split('\n')[0].trim().toLowerCase();
@@ -52,6 +58,14 @@ function sanitizeMermaid(raw: string): string {
   code = code.replace(/\\n/g, ' ');
   code = code.replace(/&lt;/g, '(').replace(/&gt;/g, ')').replace(/&amp;/g, 'and').replace(/&nbsp;/g, ' ');
   code = code.replace(/<[^>]+>/gi, ' ');
+  // Ensure `end` (subgraph close) is always on its own line
+  code = code.split('\n').map(line => {
+    if (/\bend\s*$/.test(line) && !/^\s*end\b/.test(line)) {
+      const before = line.replace(/\s+end\s*$/, '').trimEnd();
+      return (before ? before + '\n' : '') + 'end';
+    }
+    return line;
+  }).join('\n');
   // Fix "NODE [label]" → "NODE[label]"
   code = code.split('\n').map(line => {
     if (/^\s*subgraph\b/.test(line)) return line.replace(/^(\s*subgraph\s+[\w-]+)\s+\[/, '$1[');
@@ -74,6 +88,7 @@ function sanitizeMermaid(raw: string): string {
       .replace(/@/g, ' ')  // @ can cause issues in some Mermaid versions
       .replace(/-{2,}/g, ' ')  // Remove ALL dash sequences — they become arrows!
       .replace(/^[-—=]+|[—=-]+$/g, ' ')  // Remove standalone dashes at start/end
+      .replace(/[\[\]]/g, ' ')  // Remove nested [ ] — they break the label parser
       .replace(/\s{2,}/g, ' ')  // Clean up multiple spaces
       .trim();
   code = code.replace(/\[([^\]]*)\]/g, (_m, inner: string) => `[${sanitizeLabel(inner)}]`);
