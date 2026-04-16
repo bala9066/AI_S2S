@@ -907,7 +907,12 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
     def render_diagram(idx_code):
         idx, code = idx_code
         img_path = str(tmp / f"diagram_{idx}.png")
+        log.debug(f"mermaid.render.start idx={idx} path={img_path}")
         success = _render_mermaid_local(code, img_path)
+        if success:
+            log.info(f"mermaid.render.ok idx={idx} size={Path(img_path).stat().st_size if Path(img_path).exists() else 0}")
+        else:
+            log.warning(f"mermaid.render.failed idx={idx}")
         return idx, img_path if success else None
 
     results: dict[int, str | None] = {}
@@ -917,12 +922,16 @@ def _render_mermaid_diagrams_sync(md_text: str, tmp_dir: str) -> str:
             idx, path = fut.result()
             results[idx] = path
 
+    log.info(f"mermaid.render.summary total={len(blocks)} success={sum(1 for p in results.values() if p)} failed={sum(1 for p in results.values() if not p)}")
+
     # ── 3. Replace blocks in reverse order (preserves string offsets) ─────────
     result_md = md_text
     for i, (m, code) in reversed(list(enumerate(blocks))):
         idx = i + 1
         img_path = results.get(idx)
         if img_path:
+            # Use absolute path for both pandoc and python-docx
+            # This ensures the image can be found regardless of working directory
             replacement = f"\n\n**System Architecture Diagram {idx}**\n\n![Diagram {idx}]({img_path})\n\n"
         else:
             replacement = (
@@ -1002,6 +1011,7 @@ async def convert_document_to_docx(project_id: int, filename: str):
                 ["pandoc", str(tmp_md), "-o", str(out_path),
                  "--from=markdown", "--to=docx",
                  "-V", "geometry:margin=2.5cm",
+                 "--resource-path", str(tmpdir),  # Tell pandoc where to find images
                  "--standalone"],
                 capture_output=True, text=True, timeout=60,
             )
@@ -1117,16 +1127,24 @@ async def convert_document_to_docx(project_id: int, filename: str):
                     img_alt, img_path = img_m.group(1), img_m.group(2).strip()
                     import pathlib as _pl2
                     _img_p = _pl2.Path(img_path)
-                    if _img_p.exists() and _img_p.suffix.lower() == ".png":
+                    log.debug(f"docx.img path={_img_p} exists={_img_p.exists()}")
+                    if _img_p.exists() and _img_p.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif"):
                         try:
-                            doc.add_picture(str(_img_p), width=Inches(5.5))
-                            if img_alt:
+                            # Get image size to determine width
+                            from PIL import Image as _PILImage
+                            with _PILImage.open(_img_p) as _img:
+                                _width, _height = _img.size
+                                # Scale to max 6 inches wide
+                                _scaled_width = min(_width / 100.0, 6.0)
+                            doc.add_picture(str(_img_p), width=Inches(_scaled_width))
+                            if img_alt and img_alt != f"Diagram {img_alt}":
                                 cap = doc.add_paragraph(img_alt)
                                 cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
                         except Exception as _img_err:
-                            log.debug("docx.fallback.img_err: %s", _img_err)
+                            log.warning(f"docx.img.error path={_img_p} error={_img_err}")
                             doc.add_paragraph(f"[Diagram: {img_alt}]")
                     else:
+                        log.warning(f"docx.img.not_found path={_img_p}")
                         doc.add_paragraph(f"[Diagram: {img_alt}]")
 
             # ── Code block (skip non-mermaid fenced blocks) ───────────────────
