@@ -304,13 +304,19 @@ class DocumentAgent(BaseAgent):
         ]
 
         all_sections: list[str] = []
+        total_sections = len(sections)
 
-        for section_name, section_prompt in sections:
-            self.log(f"Generating HRS {section_name}...")
+        for idx, (section_name, section_prompt) in enumerate(sections, 1):
+            self.log(f"Generating HRS [{idx}/{total_sections}] {section_name}...")
             try:
-                resp = await self.call_llm(
-                    messages=[{"role": "user", "content": section_prompt}],
-                    system=system,
+                # Add timeout wrapper for each LLM call
+                import asyncio
+                resp = await asyncio.wait_for(
+                    self.call_llm(
+                        messages=[{"role": "user", "content": section_prompt}],
+                        system=system,
+                    ),
+                    timeout=120.0  # 2 minutes per section
                 )
                 section_text = resp.get("content", "")
 
@@ -318,33 +324,49 @@ class DocumentAgent(BaseAgent):
                 for _sec_pass in range(1, 4):
                     if resp.get("stop_reason") != "max_tokens" or not section_text:
                         break
-                    self.log(f"  {section_name} truncated — continuation pass {_sec_pass}/3...")
-                    resp = await self.call_llm(
-                        messages=[
-                            {"role": "user", "content": section_prompt},
-                            {"role": "assistant", "content": section_text},
-                            {"role": "user", "content": (
-                                f"Continue writing {section_name} from exactly where you stopped. "
-                                "Do NOT repeat content already written. "
-                                "Complete all sub-sections, tables, and requirement entries for this section."
-                            )},
-                        ],
-                        system=system,
+                    self.log(f"  [{idx}/{total_sections}] {section_name} truncated — continuation pass {_sec_pass}/3...")
+                    resp = await asyncio.wait_for(
+                        self.call_llm(
+                            messages=[
+                                {"role": "user", "content": section_prompt},
+                                {"role": "assistant", "content": section_text},
+                                {"role": "user", "content": (
+                                    f"Continue writing {section_name} from exactly where you stopped. "
+                                    "Do NOT repeat content already written. "
+                                    "Complete all sub-sections, tables, and requirement entries for this section."
+                                )},
+                            ],
+                            system=system,
+                        ),
+                        timeout=60.0  # 1 minute for continuation
                     )
                     section_text += "\n" + resp.get("content", "")
 
                 if section_text.strip():
                     all_sections.append(section_text.strip())
+                    self.log(f"  [{idx}/{total_sections}] {section_name} complete ({len(section_text)} chars)")
+            except asyncio.TimeoutError:
+                self.log(f"  [{idx}/{total_sections}] {section_name} timed out after 2 minutes", "warning")
+                # Don't fail the whole document — skip and continue
+                continue
             except Exception as e:
-                self.log(f"  {section_name} generation failed: {e}", "warning")
+                self.log(f"  [{idx}/{total_sections}] {section_name} failed: {e}", "warning")
                 # Don't fail the whole document — skip and continue
                 continue
 
         if not all_sections:
+            self.log("HRS generation failed — no sections generated", "warning")
             return ""
 
+        # If fewer than 4 sections succeeded, fall back to template
+        if len(all_sections) < 4:
+            self.log(f"HRS generation partial ({len(all_sections)}/{total_sections} sections) — using template fallback", "warning")
+            return ""  # Return empty to trigger template fallback
+
         # Join sections with a horizontal rule for readability
-        return "\n\n---\n\n".join(all_sections)
+        full_hrs = "\n\n---\n\n".join(all_sections)
+        self.log(f"HRS generation complete: {len(full_hrs)} characters across {len(all_sections)} sections")
+        return full_hrs
 
     def _load_file(self, path: Path) -> str:
         """Load a file's content or return empty string."""
