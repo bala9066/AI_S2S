@@ -446,54 +446,200 @@ class RequirementsAgent(BaseAgent):
             )
         return base
 
+    # ── Static clarification question templates (Tier 3 — always works) ─────────
+    _CLARIFY_TEMPLATES: dict = {
+        "RF": {
+            "intro": "Let me clarify a few key RF parameters before starting the design.",
+            "questions": [
+                {"id": "q1", "question": "What is the operating frequency range?", "why": "Defines component selection", "options": ["0.1–1 GHz", "1–6 GHz", "5–18 GHz", "18–40 GHz"]},
+                {"id": "q2", "question": "What is the required noise figure (NF)?", "why": "Drives LNA selection", "options": ["< 1 dB", "1–3 dB", "3–6 dB", "> 6 dB"]},
+                {"id": "q3", "question": "What is the supply voltage?", "why": "Power rail design", "options": ["3.3 V", "5 V", "12 V", "Custom / dual rail"]},
+                {"id": "q4", "question": "What is the required dynamic range?", "why": "ADC & AGC sizing", "options": ["< 60 dB", "60–80 dB", "80–100 dB", "> 100 dB"]},
+                {"id": "q5", "question": "What output interface is needed?", "why": "Determines backend", "options": ["Analog IF", "Digital (LVDS/JESD)", "USB / Ethernet", "SPI / I2C"]},
+                {"id": "q6", "question": "What is the operating temperature range?", "why": "Component grade", "options": ["0–70 °C (Commercial)", "-40–85 °C (Industrial)", "-55–125 °C (Military)", "Custom"]},
+                {"id": "q7", "question": "Which compliance standards apply?", "why": "Certification cost", "options": ["FCC Part 15", "MIL-STD-461", "CE / ETSI", "None / Internal"]},
+                {"id": "q8", "question": "What is the form factor / board size?", "why": "Layout constraints", "options": ["< 50×50 mm", "50–100 mm", "100–200 mm", "No constraint"]},
+            ],
+        },
+        "Digital": {
+            "intro": "A few quick questions to fully specify your digital design.",
+            "questions": [
+                {"id": "q1", "question": "What is the core supply voltage?", "why": "FPGA / MCU selection", "options": ["1.0 V", "1.8 V", "3.3 V", "5 V"]},
+                {"id": "q2", "question": "What is the target clock frequency?", "why": "Timing closure", "options": ["< 100 MHz", "100–250 MHz", "250–500 MHz", "> 500 MHz"]},
+                {"id": "q3", "question": "What high-speed interfaces are required?", "why": "PHY selection", "options": ["USB 2/3", "PCIe", "Ethernet (GbE)", "JESD204B/C"]},
+                {"id": "q4", "question": "What is the memory requirement?", "why": "BOM cost impact", "options": ["< 64 MB", "64–512 MB", "512 MB–4 GB", "> 4 GB"]},
+                {"id": "q5", "question": "What is the operating temperature range?", "why": "Component grade", "options": ["0–70 °C (Commercial)", "-40–85 °C (Industrial)", "-55–125 °C (Military)", "Custom"]},
+                {"id": "q6", "question": "Are real-time / RTOS constraints required?", "why": "OS & CPU sizing", "options": ["Bare-metal", "FreeRTOS / Zephyr", "Linux (embedded)", "No constraint"]},
+                {"id": "q7", "question": "Which compliance standards apply?", "why": "Certification cost", "options": ["FCC Part 15", "CE / EMC", "IEC 61508 (SIL)", "None / Internal"]},
+                {"id": "q8", "question": "What is the form factor?", "why": "Layout constraints", "options": ["Custom PCB", "SOM / SBC", "Arduino / Raspberry Pi carrier", "No constraint"]},
+            ],
+        },
+        "Motor": {
+            "intro": "Let me confirm the motor drive parameters before component selection.",
+            "questions": [
+                {"id": "q1", "question": "What is the motor bus voltage?", "why": "Gate driver & FET sizing", "options": ["12 V", "24 V", "48 V", "> 100 V"]},
+                {"id": "q2", "question": "What is the peak phase current?", "why": "MOSFET & shunt sizing", "options": ["< 5 A", "5–20 A", "20–100 A", "> 100 A"]},
+                {"id": "q3", "question": "What motor type is used?", "why": "Control algorithm", "options": ["BLDC / PMSM", "Stepper", "ACIM", "DC brushed"]},
+                {"id": "q4", "question": "What control interface is required?", "why": "MCU selection", "options": ["PWM only", "CAN / CANopen", "EtherCAT", "RS-485 / Modbus"]},
+                {"id": "q5", "question": "What position feedback is needed?", "why": "Encoder / resolver", "options": ["Hall sensors", "Incremental encoder", "Absolute encoder", "Sensorless (back-EMF)"]},
+                {"id": "q6", "question": "What is the switching frequency?", "why": "Inductor & EMC design", "options": ["< 10 kHz", "10–50 kHz", "50–200 kHz", "> 200 kHz"]},
+                {"id": "q7", "question": "What is the operating temperature range?", "why": "Thermal design", "options": ["0–70 °C", "-40–85 °C", "-55–125 °C", "Custom"]},
+                {"id": "q8", "question": "Which safety / compliance standards apply?", "why": "Certification path", "options": ["IEC 61800", "ISO 26262 (automotive)", "MIL-STD", "None"]},
+            ],
+        },
+        "Power": {
+            "intro": "A few questions to pin down your power supply requirements.",
+            "questions": [
+                {"id": "q1", "question": "What is the input voltage range?", "why": "Topology selection", "options": ["5–12 V (low)", "12–48 V (medium)", "48–400 V (high)", "AC mains (85–264 V)"]},
+                {"id": "q2", "question": "What output voltage(s) are required?", "why": "Regulation stages", "options": ["Single rail", "Dual rail (±)", "Multiple rails (3+)", "Adjustable / programmable"]},
+                {"id": "q3", "question": "What is the maximum output current?", "why": "FET & inductor sizing", "options": ["< 1 A", "1–5 A", "5–20 A", "> 20 A"]},
+                {"id": "q4", "question": "What efficiency is targeted?", "why": "Topology & IC choice", "options": ["> 95 %", "90–95 %", "85–90 %", "< 85 % acceptable"]},
+                {"id": "q5", "question": "What isolation is required?", "why": "Transformer & safety", "options": ["Non-isolated (buck/boost)", "Isolated (flyback/LLC)", "Medical-grade (2xMOPP)", "No constraint"]},
+                {"id": "q6", "question": "What is the switching frequency?", "why": "Magnetics sizing", "options": ["< 100 kHz", "100–500 kHz", "500 kHz–2 MHz", "> 2 MHz"]},
+                {"id": "q7", "question": "What is the operating temperature range?", "why": "Derating & thermals", "options": ["0–70 °C (Commercial)", "-40–85 °C (Industrial)", "-55–125 °C (Military)", "Custom"]},
+                {"id": "q8", "question": "Which compliance standards apply?", "why": "Certification path", "options": ["IEC 62368 (AV/IT)", "IEC 60601 (Medical)", "MIL-STD-704", "None / Internal"]},
+            ],
+        },
+    }
+
+    def _build_template_questions(
+        self,
+        user_requirement: str,
+        design_type: Optional[str] = "RF",
+    ) -> dict:
+        """
+        Tier 3: generate clarification questions from static templates.
+        Zero API calls — always succeeds instantly.
+        Selects template by design_type; falls back to RF template.
+        """
+        dt = (design_type or "RF").strip()
+        # Normalise aliases
+        _alias = {
+            "rf": "RF", "radio": "RF", "analog": "RF",
+            "digital": "Digital", "fpga": "Digital", "mcu": "Digital",
+            "motor": "Motor", "bldc": "Motor", "drive": "Motor",
+            "power": "Power", "psu": "Power", "supply": "Power",
+        }
+        key = _alias.get(dt.lower(), dt)
+        tmpl = self._CLARIFY_TEMPLATES.get(key, self._CLARIFY_TEMPLATES["RF"])
+        logger.info("requirements_agent.clarify_tier3_template design_type=%s key=%s", dt, key)
+        return dict(tmpl)  # shallow copy so callers can't mutate the class-level dict
+
     def get_clarification_questions(
         self,
         user_requirement: str,
         design_type: Optional[str] = "RF",
     ) -> dict:
         """
-        Use tool_use (forced) to return structured clarification cards.
-        The AI cannot respond in free text — it MUST call show_clarification_cards.
+        Return structured clarification card data for the frontend.
+
+        Strategy (three-tier for maximum reliability):
+          Tier 1 — forced tool_choice (works with Anthropic claude-* and glm-4.7):
+                   Ask the model to call show_clarification_cards as a tool.
+          Tier 2 — plain JSON in text (works with most other models):
+                   Ask the model to reply with raw JSON, then parse it.
+          Tier 3 — local template (always works, zero API calls):
+                   Return pre-built questions matching the design_type.
 
         Returns:
             { "intro": str, "questions": [{ "id", "question", "why", "options" }] }
         """
-        # Prefer GLM, fall back to Anthropic if configured
-        if not settings.glm_api_key and not self._anthropic_client:
-            raise ValueError("No LLM API key configured — set GLM_API_KEY or ANTHROPIC_API_KEY.")
+        use_glm = bool(settings.glm_api_key)
+        has_llm = use_glm or bool(self._anthropic_client)
+
+        if not has_llm:
+            logger.info("requirements_agent.clarify_no_llm — using template (Tier 3)")
+            return self._build_template_questions(user_requirement, design_type)
 
         # Determine which client and model to use
-        use_glm = bool(settings.glm_api_key)
         model = settings.glm_fast_model if use_glm else settings.fast_model
 
         if use_glm:
-            # Use GLM via Z.AI (Anthropic-compatible endpoint)
-            _hc = _make_sync_httpx_client()
+            # Pass "api.z.ai" so _make_sync_httpx_client can correctly apply
+            # the NO_PROXY bypass check for the Windows system proxy.
+            _hc = _make_sync_httpx_client("api.z.ai")
             client = _anthropic.Anthropic(
                 api_key=settings.glm_api_key,
                 base_url=settings.glm_base_url,
                 **({"http_client": _hc} if _hc else {}),
             )
         else:
-            # Fall back to Anthropic client
             client = self._anthropic_client
 
-        response = client.messages.create(
-            model=model,
-            max_tokens=1000,
-            system=_CLARIFICATION_SYSTEM,
-            tools=[CLARIFICATION_TOOL],
-            tool_choice={"type": "tool", "name": "show_clarification_cards"},
-            messages=[
-                {"role": "user", "content": f"Design type: {design_type}\nRequirement: {user_requirement}"}
-            ],
+        user_msg = f"Design type: {design_type}\nRequirement: {user_requirement}"
+
+        # ── Tier 1: forced tool_choice ────────────────────────────────────────
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=1200,
+                system=_CLARIFICATION_SYSTEM,
+                tools=[CLARIFICATION_TOOL],
+                tool_choice={"type": "tool", "name": "show_clarification_cards"},
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "show_clarification_cards":
+                    logger.info("requirements_agent.clarify_tier1_ok model=%s", model)
+                    return block.input
+            logger.warning(
+                "requirements_agent.clarify_tier1_no_tool model=%s stop_reason=%s — trying Tier 2",
+                model, getattr(response, "stop_reason", "?"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "requirements_agent.clarify_tier1_failed model=%s error=%s — trying Tier 2",
+                model, str(exc),
+            )
+
+        # ── Tier 2: plain JSON in text ────────────────────────────────────────
+        _JSON_SYSTEM = (
+            "You are a senior hardware design engineer. "
+            "Given a hardware specification, return ONLY a valid JSON object — "
+            "no markdown fences, no explanation, no extra text. Schema:\n"
+            '{"intro":"<one sentence, max 20 words>",'
+            '"questions":['
+            '{"id":"q1","question":"<question ending with ?>","why":"<max 6 words>",'
+            '"options":["<opt1>","<opt2>","<opt3>"]},'
+            "...5 to 8 items"
+            "]}"
         )
+        try:
+            resp2 = client.messages.create(
+                model=model,
+                max_tokens=1500,
+                system=_JSON_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            raw_text = "".join(
+                getattr(b, "text", "") for b in resp2.content
+            ).strip()
+            # Strip accidental markdown fences
+            raw_text = re.sub(r"^```[a-z]*\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text).strip()
+            # Sometimes models prepend a short sentence before the JSON
+            json_start = raw_text.find("{")
+            if json_start > 0:
+                raw_text = raw_text[json_start:]
 
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "show_clarification_cards":
-                return block.input   # Already a clean Python dict — no parsing needed
+            data = json.loads(raw_text)
+            if not isinstance(data.get("questions"), list) or len(data["questions"]) < 2:
+                raise ValueError("Malformed JSON response")
+            for i, q in enumerate(data["questions"]):
+                q.setdefault("id", f"q{i+1}")
+                q.setdefault("why", "")
+                q.setdefault("options", ["Yes", "No"])
+            data.setdefault("intro", f"Let me clarify a few details for your {design_type} design.")
+            logger.info("requirements_agent.clarify_tier2_ok model=%s questions=%d", model, len(data["questions"]))
+            return data
+        except Exception as exc2:
+            logger.warning(
+                "requirements_agent.clarify_tier2_failed model=%s error=%s — falling back to template",
+                model, str(exc2),
+            )
 
-        raise ValueError(f"No tool_use block returned. Check API key and model availability (model: {model}).")
+        # ── Tier 3: local template — guaranteed success ───────────────────────
+        return self._build_template_questions(user_requirement, design_type)
 
     async def execute(self, project_context: dict, user_input: str) -> dict:
         """

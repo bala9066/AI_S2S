@@ -143,7 +143,15 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requirement, design_type: designType }),
     });
-    if (!res.ok) throw new Error(`Clarify failed: ${res.status}`);
+    if (!res.ok) {
+      // Surface the actual server error message so we can debug
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        detail = body.detail || body.message || JSON.stringify(body);
+      } catch { /* ignore parse errors */ }
+      throw new Error(detail);
+    }
     return res.json();
   },
 };

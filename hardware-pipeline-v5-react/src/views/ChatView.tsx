@@ -1313,16 +1313,7 @@ function cleanAiText(text: string): string {
     .trim();
 }
 
-// ── Clarification-flow types & constants ─────────────────────────────────────
-interface ClarificationQuestion { id: string; question: string; why: string; options: string[]; }
-interface ClarificationData { intro: string; questions: ClarificationQuestion[]; }
-const Q_COLORS_CLARIFY = ['var(--teal)', 'var(--blue)', '#f59e0b', '#8b5cf6', 'var(--teal)'];
-const CLARIFY_SUGGESTIONS = [
-  { label: 'RF receiver, 5-18GHz wideband', icon: '[RF]' },
-  { label: 'BLDC motor controller, 48V, 10kW', icon: '[Motor]' },
-  { label: 'FPGA-based digital signal processor', icon: '[FPGA]' },
-  { label: 'Power supply, 24V to 5V, 10A', icon: '[Power]' },
-];
+// (preStage clarification flow removed — chat starts directly)
 
 // ---- Props ----
 interface Props {
@@ -1381,31 +1372,13 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState('');
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  // phaseCompleted: true when backend says P1 is completed — hides "Generate Documents" button.
-  // Initialized from phaseStatus prop so it's correct even on page reload / project load.
+  const [retryText, setRetryText] = useState('');
+  // phaseCompleted: true when backend says P1 is completed
   const [phaseCompleted, setPhaseCompleted] = useState(phaseStatus === 'completed');
   // showApproveCard: shows the approve / pipeline-running card
   const [showApproveCard, setShowApproveCard] = useState(phaseStatus === 'completed');
-  // approveClicked: true once P2+ pipeline has actually been kicked off.
-  // Driven by pipelineStarted prop (P2+ has in_progress or completed activity),
-  // NOT just by phaseStatus — P1 can be done without the pipeline having started.
+  // approveClicked: true once P2+ pipeline has actually been kicked off
   const [approveClicked, setApproveClicked] = useState(pipelineStarted);
-
-  // ── Pre-stage clarification flow state ────────────────────────────────────
-  type PreStage = 'waiting' | 'loading-clarify' | 'clarifying' | 'done';
-  const [preStage, setPreStage] = useState<PreStage>(
-    phaseStatus === 'completed' ? 'done' : 'waiting'
-  );
-  const [requirement, setRequirement] = useState('');
-  const [clarification, setClarification] = useState<ClarificationData | null>(null);
-  const [clarifyAnswers, setClarifyAnswers] = useState<Record<string, string>>({});
-  const [clarifyError, setClarifyError] = useState('');
-  const [retryText, setRetryText] = useState('');
-  // "Other" option state for clarification cards
-  const [otherActiveQId, setOtherActiveQId] = useState<string | null>(null);
-  const [otherInputValues, setOtherInputValues] = useState<Record<string, string>>({});
-  // Optional free-text field shown after all question cards
-  const [clarifySpecificReqs, setClarifySpecificReqs] = useState('');
 
   // Keep state in sync when props change (e.g. status poll)
   useEffect(() => {
@@ -1413,7 +1386,6 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       setPhaseCompleted(true);
       setShowApproveCard(true);
     } else if (phaseStatus === 'draft_pending') {
-      // User has chatted again after a pipeline run — reset so approve button re-appears
       setShowApproveCard(true);
       setApproveClicked(false);
     } else {
@@ -1424,11 +1396,6 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   useEffect(() => {
     if (pipelineStarted) setApproveClicked(true);
   }, [pipelineStarted]);
-
-  // Debug: log when showApproveCard changes
-  useEffect(() => {
-    console.log('[ChatView] showApproveCard changed to:', showApproveCard, 'phaseStatus:', phaseStatus);
-  }, [showApproveCard, phaseStatus]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const color = phase.color;
@@ -1443,7 +1410,6 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           role: m.role === 'assistant' ? 'ai' : 'user' as 'user' | 'ai',
           text: m.content,
         })));
-        setPreStage('done'); // skip clarification flow when history exists
       }
     } catch { /* silent */ }
     setHistoryLoaded(true);
@@ -1452,8 +1418,9 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [messages, showApproveCard, phaseCompleted, streaming]);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, showApproveCard, phaseCompleted]);
 
   /** Silently finalize Phase 1 — no user bubble, no input echo */
   const finalizePhase = async () => {
@@ -1478,8 +1445,9 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           setShowApproveCard(true);
         }
       }, 16);
-    } catch {
-      onMessages([...messages, { role: 'ai', text: '⚠️ Cannot reach the backend server.\n\n**To fix:** Double-click `run.bat` (or `INSTALL.bat` on first use) in the project folder, wait for the "Backend is healthy" message, then try again.\n\nIf already running, check that nothing else is using port 8000.' }]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onMessages([...messages, { role: 'ai', text: `⚠️ Backend error: ${msg}` }]);
       setStreaming('');
       setLoading(false);
     }
@@ -1487,25 +1455,18 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
 
   const sendMessage = async (text: string) => {
     if (!project || !text.trim() || loading) return;
-    setRetryText(''); // clear any previous retry state on fresh send
+    setRetryText('');
     const updated = [...messages, { role: 'user' as const, text }];
     onMessages(updated);
     setInput('');
     setLoading(true);
     setStreaming('');
-    // Hide both the approve card and "Pipeline is running" card while user is chatting.
-    // They re-appear after the AI responds if the phase is still complete/draft_pending.
-    if (showApproveCard) setShowApproveCard(false);
+    if (showApproveCard && !approveClicked) setShowApproveCard(false);
 
     try {
       const result = await api.chat(project.id, text);
-      // Strip backend boilerplate referencing non-existent UI buttons
-      // If the backend returned an empty response, show a helpful fallback
       const rawText = result.text || 'I processed your request. Check the Documents tab to see updated outputs, or try rephrasing your request.';
       const cleanText = cleanAiText(rawText);
-      // Typewriter animation — 16ms/16chars (~60fps, ~1000 chars/sec)
-      // Streaming div uses plain pre-wrap text (no markdown parsing per tick) for smooth rendering.
-      // Full markdown is only rendered once, when the message is committed to messages[].
       let idx = 0;
       const interval = setInterval(() => {
         idx = Math.min(idx + 16, cleanText.length);
@@ -1520,7 +1481,6 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
             setPhaseCompleted(true);
             setShowApproveCard(true);
           } else if (result.draftPending) {
-            // Backend says requirements are captured — show approve button again
             setShowApproveCard(true);
             setApproveClicked(false);
           }
@@ -1528,256 +1488,60 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       }, 16);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isNetworkErr = !msg.startsWith('HTTP ');
-      const display = isNetworkErr
-        ? '⚠️ Cannot reach the backend.\n\nDouble-click **run.bat** in the project folder and wait for "Application startup complete", then try again.'
-        : `⚠️ Server error — ${msg}\n\nCheck the uvicorn terminal window for the full traceback.`;
-      onMessages([...updated, { role: 'ai', text: display }]);
+      const lowered = msg.toLowerCase();
+      const isRateLimit =
+        lowered.includes('429') ||
+        lowered.includes('rate limit') ||
+        lowered.includes('rate-limited') ||
+        lowered.includes('too many requests') ||
+        lowered.includes('quota') ||
+        lowered.includes('http 503');
+      const friendly = isRateLimit
+        ? '⏳ The AI provider is temporarily rate-limited (HTTP 429). Please wait ~60 seconds and send your message again.'
+        : `⚠️ Backend error: ${msg}`;
+      onMessages([...updated, { role: 'ai', text: friendly }]);
       setStreaming('');
       setLoading(false);
-      setRetryText(text); // store so user can retry without re-typing
+      setRetryText(text);
     }
   };
 
   const handleRetry = () => {
     if (!retryText) return;
-    // Remove the last two messages (failed user bubble + error AI bubble) before retrying
     const trimmed = messages.slice(0, -2);
     onMessages(trimmed);
     sendMessage(retryText);
   };
 
-  // ── Pre-stage clarification handlers ─────────────────────────────────────
-  const handleRequirementSubmit = async (req: string) => {
-    if (!req.trim() || !project) return;
-    setRequirement(req);
-    setPreStage('loading-clarify');
-    setClarifyError('');
-    try {
-      const data = await api.clarifyRequirement(
-        project.id, req, project.design_type || 'RF'
-      );
-      setClarification(data);
-      setClarifyAnswers({});
-      setPreStage('clarifying');
-    } catch {
-      setClarifyError('Could not load clarification questions. Please try again.');
-      setPreStage('waiting');
-    }
-  };
-
-  const handleClarifyAnswer = (qId: string, opt: string) => {
-    setClarifyAnswers(prev => ({ ...prev, [qId]: opt }));
-  };
-
-  const allClarifyAnswered =
-    clarification !== null &&
-    clarification.questions.every(q => clarifyAnswers[q.id] !== undefined);
-
-  const handleConfirmAnswers = () => {
-    if (!clarification || !allClarifyAnswered) return;
-    const lines = clarification.questions
-      .map(q => `${q.question} -> ${clarifyAnswers[q.id]}`)
-      .join('\n');
-    const extra = clarifySpecificReqs.trim()
-      ? `\n\nAdditional requirements: ${clarifySpecificReqs.trim()}`
-      : '';
-    const fullMessage = `${requirement}\n\n${lines}${extra}`;
-    setPreStage('done');
-    setInput(''); // Clear the chat input field
-    sendMessage(fullMessage);
-  };
-
-  // lastAiText intentionally removed — QuickReplyPanel no longer shown in chat flow.
+  // Derive last AI message text for QuickReplyPanel
+  const lastAiText = messages.length > 0 && messages[messages.length - 1].role === 'ai'
+    ? messages[messages.length - 1].text
+    : '';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
-      {preStage !== 'done' ? (
-        /* ── Pre-stage clarification flow ── */
-        <>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0 80px' }}>
-            {/* waiting: suggestion chips */}
-            {preStage === 'waiting' && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', padding: '32px 16px', gap: 24 }}>
-                {clarifyError && (
-                  <div style={{ fontSize: 12, color: '#f59e0b', textAlign: 'center' }}>{clarifyError}</div>
-                )}
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontFamily: "'Syne',sans-serif", fontSize: 18, fontWeight: 700, color: 'var(--text)', marginBottom: 4 }}>Describe your hardware project</div>
-                  <div style={{ fontSize: 11, color: 'var(--text4)', letterSpacing: '0.08em', textTransform: 'uppercase' as const, fontFamily: "'DM Mono',monospace" }}>or pick a quick start</div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, width: '100%', maxWidth: 480 }}>
-                  {CLARIFY_SUGGESTIONS.map(s => (
-                    <button key={s.label} onClick={() => handleRequirementSubmit(s.label)}
-                      style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 13px', background: 'var(--panel)', border: `1px solid ${color}22`, borderRadius: 6, cursor: 'pointer', textAlign: 'left' as const, color: 'var(--text2)', fontFamily: "'DM Mono',monospace", fontSize: 12, lineHeight: 1.5 }}
-                      onMouseEnter={e => { e.currentTarget.style.borderColor = color; e.currentTarget.style.color = color; }}
-                      onMouseLeave={e => { e.currentTarget.style.borderColor = `${color}22`; e.currentTarget.style.color = 'var(--text2)'; }}>
-                      <span style={{ fontSize: 14, flexShrink: 0 }}>{s.icon}</span>
-                      <span>{s.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* loading-clarify: animated analysis indicator */}
-            {preStage === 'loading-clarify' && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '240px', gap: 16 }}>
-                <div style={{ position: 'relative', width: 48, height: 48 }}>
-                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: `2px solid ${color}15` }} />
-                  <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '2px solid transparent', borderTopColor: color, animation: 'spin 0.8s linear infinite' }} />
-                  <div style={{ position: 'absolute', inset: 6, borderRadius: '50%', border: '2px solid transparent', borderTopColor: `${color}66`, animation: 'spin 1.2s linear infinite reverse' }} />
-                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
-                    <span style={{ filter: `drop-shadow(0 0 4px ${color})` }}>&#9889;</span>
-                  </div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: 4, fontFamily: "'Syne',sans-serif" }}>Analysing your specification</div>
-                  <div style={{ fontSize: 12, color: 'var(--text3)', fontFamily: "'DM Mono',monospace" }}>Preparing design questions<span style={{ animation: 'blink 1s step-end infinite' }}>...</span></div>
-                </div>
-              </div>
-            )}
-            {/* clarifying: question cards */}
-            {preStage === 'clarifying' && clarification && (
-              <div style={{ padding: '0 4px' }}>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
-                  <div style={{ background: `${color}18`, border: `1px solid ${color}33`, borderRadius: '8px 8px 2px 8px', padding: '9px 13px', maxWidth: '80%', fontSize: 13, color: 'var(--text)', lineHeight: 1.5, fontFamily: "'DM Mono',monospace" }}>
-                    {requirement}
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6, marginBottom: 16 }}>
-                  {clarification.intro}
-                </div>
-                {clarification.questions.map((q, qi) => {
-                  const qColor = Q_COLORS_CLARIFY[qi % Q_COLORS_CLARIFY.length];
-                  const sel = clarifyAnswers[q.id];
-                  return (
-                    <div key={q.id} style={{ marginBottom: 18 }}>
-                      <div style={{ fontSize: 10, color: qColor, letterSpacing: '0.1em', textTransform: 'uppercase' as const, fontWeight: 600, fontFamily: "'DM Mono',monospace", marginBottom: 4 }}>
-                        Q{qi + 1} &middot; {q.why}
-                      </div>
-                      <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, marginBottom: 9 }}>
-                        {q.question}
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 7 }}>
-                        {q.options.map(opt => {
-                          const isSel = sel === opt;
-                          return (
-                            <button key={opt} onClick={() => { handleClarifyAnswer(q.id, opt); setOtherActiveQId(null); }}
-                              style={{ padding: '6px 13px', fontSize: 12, fontFamily: "'DM Mono',monospace", background: isSel ? `${qColor}22` : 'var(--panel)', border: `0.5px solid ${isSel ? qColor : qColor + '44'}`, borderRadius: 4, cursor: 'pointer', color: isSel ? 'var(--text)' : 'var(--text3)', transition: 'all 0.12s' }}
-                              onMouseEnter={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor; e.currentTarget.style.color = 'var(--text)'; } }}
-                              onMouseLeave={e => { if (!isSel) { e.currentTarget.style.borderColor = qColor + '44'; e.currentTarget.style.color = 'var(--text3)'; } }}>
-                              {isSel ? '\u2713 ' : ''}{opt}
-                            </button>
-                          );
-                        })}
-                        {/* "Other" option — always visible */}
-                        {otherActiveQId !== q.id ? (
-                          <button
-                            onClick={() => { setOtherActiveQId(q.id); }}
-                            style={{ padding: '6px 13px', fontSize: 12, fontFamily: "'DM Mono',monospace", background: (sel && !q.options.includes(sel)) ? `${qColor}22` : 'var(--panel)', border: `0.5px solid ${(sel && !q.options.includes(sel)) ? qColor : qColor + '44'}`, borderRadius: 4, cursor: 'pointer', color: (sel && !q.options.includes(sel)) ? 'var(--text)' : 'var(--text3)', transition: 'all 0.12s' }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = qColor; e.currentTarget.style.color = 'var(--text)'; }}
-                            onMouseLeave={e => { if (!(sel && !q.options.includes(sel))) { e.currentTarget.style.borderColor = qColor + '44'; e.currentTarget.style.color = 'var(--text3)'; } }}>
-                            {(sel && !q.options.includes(sel)) ? `\u2713 ${sel}` : '✏ Other'}
-                          </button>
-                        ) : (
-                          <div style={{ display: 'flex', gap: 6, width: '100%', marginTop: 4 }}>
-                            <input
-                              autoFocus
-                              value={otherInputValues[q.id] || ''}
-                              onChange={e => setOtherInputValues(prev => ({ ...prev, [q.id]: e.target.value }))}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && (otherInputValues[q.id] || '').trim()) {
-                                  handleClarifyAnswer(q.id, otherInputValues[q.id].trim());
-                                  setOtherActiveQId(null);
-                                } else if (e.key === 'Escape') {
-                                  setOtherActiveQId(null);
-                                }
-                              }}
-                              placeholder="Type your answer..."
-                              style={{ flex: 1, background: 'var(--panel)', border: `1px solid ${qColor}66`, borderRadius: 4, padding: '5px 10px', fontSize: 12, color: 'var(--text)', fontFamily: "'DM Mono',monospace", outline: 'none' }}
-                            />
-                            <button
-                              disabled={!(otherInputValues[q.id] || '').trim()}
-                              onClick={() => { if ((otherInputValues[q.id] || '').trim()) { handleClarifyAnswer(q.id, otherInputValues[q.id].trim()); setOtherActiveQId(null); } }}
-                              style={{ padding: '5px 12px', fontSize: 11, background: (otherInputValues[q.id] || '').trim() ? qColor : 'var(--panel2)', border: 'none', borderRadius: 4, cursor: (otherInputValues[q.id] || '').trim() ? 'pointer' : 'default', color: (otherInputValues[q.id] || '').trim() ? '#070b14' : 'var(--text4)', fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>
-                              OK
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {allClarifyAnswered && (
-                  <>
-                    {/* Optional free-text card */}
-                    <div style={{ marginBottom: 18, marginTop: 4 }}>
-                      <div style={{ fontSize: 10, color: 'var(--text4)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, fontWeight: 600, fontFamily: "'DM Mono',monospace", marginBottom: 4 }}>
-                        ANY SPECIFIC REQUIREMENTS? <span style={{ opacity: 0.6, textTransform: 'none' as const, letterSpacing: 0, fontWeight: 400 }}>optional</span>
-                      </div>
-                      <textarea
-                        value={clarifySpecificReqs}
-                        onChange={e => setClarifySpecificReqs(e.target.value)}
-                        placeholder="e.g. Must operate at -40\xB0C to +85\xB0C, use SMA connectors, IPC Class 3..."
-                        rows={3}
-                        style={{ width: '100%', background: 'var(--panel)', border: `1px solid ${clarifySpecificReqs.trim() ? color + '66' : 'var(--panel3)'}`, borderRadius: 5, padding: '9px 12px', fontSize: 12, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'vertical' as const, outline: 'none', lineHeight: 1.65, boxSizing: 'border-box' as const, transition: 'border-color 0.2s' }}
-                        onFocus={e => { e.target.style.borderColor = color + '99'; }}
-                        onBlur={e => { e.target.style.borderColor = clarifySpecificReqs.trim() ? color + '66' : 'var(--panel3)'; }}
-                      />
-                    </div>
-                    <div style={{ paddingBottom: 16 }}>
-                      <button onClick={handleConfirmAnswers}
-                        style={{ width: '100%', padding: '11px 0', background: `${color}12`, border: `0.5px solid ${color}80`, borderRadius: 4, color, fontSize: 13, fontFamily: "'DM Mono',monospace", cursor: 'pointer', letterSpacing: '0.02em' }}>
-                        Generate requirements spec &rarr;
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-          {preStage === 'waiting' && (
-            <div style={{ position: 'sticky', bottom: 0, left: 0, right: 0, background: 'linear-gradient(transparent, var(--navy) 20%)', padding: '16px 0 4px' }}>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <textarea
-                  value={requirement}
-                  onChange={e => setRequirement(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRequirementSubmit(requirement); } }}
-                  placeholder="Type your hardware requirement..."
-                  rows={1}
-                  style={{ flex: 1, background: 'var(--panel)', border: '1px solid var(--panel3)', borderRadius: 6, padding: '11px 14px', fontSize: 13, color: 'var(--text)', fontFamily: "'DM Mono',monospace", resize: 'none' as const, outline: 'none', lineHeight: 1.5, transition: 'border-color 0.2s' }}
-                  onFocus={e => { e.target.style.borderColor = color; }}
-                  onBlur={e => { e.target.style.borderColor = 'var(--panel3)'; }}
-                />
-                <button
-                  onClick={() => handleRequirementSubmit(requirement)}
-                  disabled={!requirement.trim()}
-                  style={{ padding: '0 18px', borderRadius: 6, cursor: requirement.trim() ? 'pointer' : 'default', fontSize: 12, fontFamily: "'DM Mono',monospace", fontWeight: 700, background: requirement.trim() ? color : 'var(--panel2)', border: 'none', color: requirement.trim() ? '#070b14' : 'var(--text4)', transition: 'all 0.15s', whiteSpace: 'nowrap' as const }}>
-                  Send &rarr;
-                </button>
-              </div>
-            </div>
-          )}
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } } @keyframes blink { 50% { opacity: 0; } } @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
-        </>
-      ) : (
-        /* ── Chat flow ── */
-        <>
-          {/* Scrollable messages area */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 80px 0' }}>
-            {/* Welcome card — show only when no messages */}
-            {messages.length === 0 && !loading && (
-              <WelcomeCard color={color} onSuggestion={sendMessage} />
-            )}
+      {/* Scrollable messages area */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 80px 0' }}>
+        {/* Welcome card — show only when no messages */}
+        {messages.length === 0 && !loading && (
+          <WelcomeCard color={color} onSuggestion={sendMessage} />
+        )}
 
         {/* Message history */}
         {messages.map((msg, i) => (
           <ChatMessageItem key={i} msg={msg} color={color} />
         ))}
 
-        {/* QuickReplyPanel removed — clarification is handled by the pre-stage flow
-            before the first message. Users type freely after that. */}
+        {/* QuickReplyPanel — shows after last AI message with questions */}
+        {lastAiText && !loading && !streaming && (
+          <QuickReplyPanel
+            aiMessage={lastAiText}
+            designDescription={project?.description || project?.name || ''}
+            color={color}
+            onSend={sendMessage}
+            disabled={loading}
+          />
+        )}
 
         {/* Streaming / loading indicator */}
         {(loading || streaming) && (
@@ -1823,7 +1587,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                 background: color, border: 'none', color: '#070b14',
                 boxShadow: `0 0 20px ${color}40`, transition: 'all 0.2s',
               }}>
-              Approve &amp; Run Pipeline →
+              Approve &amp; Run Pipeline &#8594;
             </button>
           </div>
         )}
@@ -1837,12 +1601,12 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
           }}>
             <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, animation: 'pulse 1s ease-in-out infinite' }} />
             <span style={{ fontSize: 12, color: 'var(--text2)' }}>
-              Pipeline is running — check <strong style={{ color }}>Documents</strong> tab for generated outputs
+              Pipeline is running &#8212; check <strong style={{ color }}>Documents</strong> tab for generated outputs
             </span>
           </div>
         )}
 
-        {/* Retry button — shown when last send failed (network / server error) */}
+        {/* Retry button */}
         {retryText && !loading && (
           <div style={{ textAlign: 'center', marginBottom: 12 }}>
             <button
@@ -1853,7 +1617,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
                 background: `${color}18`, border: `1px solid ${color}66`,
                 color, transition: 'all 0.15s',
               }}>
-              ↺ Retry last message
+              &#8635; Retry last message
             </button>
           </div>
         )}
@@ -1871,7 +1635,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
               }}
               onMouseEnter={e => { e.currentTarget.style.background = `${color}18`; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-              Generate Documents →
+              Generate Documents &#8594;
             </button>
           </div>
         )}
@@ -1913,7 +1677,7 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
               color: input.trim() && !loading ? '#070b14' : 'var(--text4)',
               transition: 'all 0.15s', whiteSpace: 'nowrap',
             }}>
-            Send →
+            Send &#8594;
           </button>
         </div>
       </div>
@@ -1921,9 +1685,8 @@ export default function ChatView({ project, phase, phaseStatus, pipelineStarted,
       <style>{`
         @keyframes blink { 50% { opacity: 0; } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
-        </>
-      )}
     </div>
   );
 }

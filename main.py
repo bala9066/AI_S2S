@@ -429,11 +429,19 @@ async def get_clarification_questions(project_id: int, body: ClarifyRequest):
         raise HTTPException(404, f"Project {project_id} not found")
 
     try:
+        import asyncio
         from agents.requirements_agent import RequirementsAgent
         agent = RequirementsAgent()
-        result = agent.get_clarification_questions(
-            user_requirement=body.requirement,
-            design_type=body.design_type,
+        # get_clarification_questions is synchronous (makes a blocking HTTP call to the
+        # LLM API).  Run it in a thread-pool executor so it doesn't block the FastAPI
+        # event loop — without this the entire server would stall during the LLM call.
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: agent.get_clarification_questions(
+                user_requirement=body.requirement,
+                design_type=body.design_type,
+            ),
         )
         return result
     except ValueError as exc:
